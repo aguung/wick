@@ -66,11 +66,11 @@ func TestEncryptShortValueRoundTrips(t *testing.T) {
 	}
 }
 
-func TestMaskAndUnmaskSensitive(t *testing.T) {
+func TestMaskAndUnmask(t *testing.T) {
 	s := newTestService(t)
 	creds := []string{"super-secret-pass", "another-cred-value"}
 	body := `{"username":"alice","password":"super-secret-pass","backup":"super-secret-pass","other":"another-cred-value"}`
-	masked := s.MaskSensitive(body, creds, "u-1")
+	masked := s.Mask(body, creds, "u-1")
 	if strings.Contains(masked, "super-secret-pass") {
 		t.Fatalf("plaintext leaked: %s", masked)
 	}
@@ -95,7 +95,7 @@ func TestMaskAndUnmaskSensitive(t *testing.T) {
 			}
 		}
 	}
-	roundtrip, err := s.UnmaskSensitive(masked, "u-1")
+	roundtrip, err := s.Unmask(masked, "u-1")
 	if err != nil {
 		t.Fatalf("unmask: %v", err)
 	}
@@ -106,8 +106,8 @@ func TestMaskAndUnmaskSensitive(t *testing.T) {
 
 func TestUnmaskWrongUserErrors(t *testing.T) {
 	s := newTestService(t)
-	masked := s.MaskSensitive("password=super-secret-pass", []string{"super-secret-pass"}, "u-A")
-	if _, err := s.UnmaskSensitive(masked, "u-B"); err == nil {
+	masked := s.Mask("password=super-secret-pass", []string{"super-secret-pass"}, "u-A")
+	if _, err := s.Unmask(masked, "u-B"); err == nil {
 		t.Fatal("expected unmask to fail for different user")
 	}
 }
@@ -122,11 +122,11 @@ func TestDisabledServicePassesThrough(t *testing.T) {
 		t.Fatal("expected disabled")
 	}
 	body := `{"password":"super-secret-pass"}`
-	masked := s.MaskSensitive(body, []string{"super-secret-pass"}, "u")
+	masked := s.Mask(body, []string{"super-secret-pass"}, "u")
 	if masked != body {
 		t.Fatalf("disabled mask should be passthrough, got %q", masked)
 	}
-	out, err := s.UnmaskSensitive(body, "u")
+	out, err := s.Unmask(body, "u")
 	if err != nil {
 		t.Fatalf("disabled unmask: %v", err)
 	}

@@ -19,7 +19,7 @@ var skillLabels = map[string]string{
 	"connector-module":  "Create/edit a connector (`connectors/`)",
 	"design-system":     "UI styling, colors, spacing, components",
 	"config-tags":       "Adding/editing `wick:\"...\"` config fields — widget types, modifiers, key derivation",
-	"encrypted-fields":  "Handling credentials/tokens that flow through the LLM — `secret` tag, `c.MaskSensitive`, `wick_enc_` tokens",
+	"encrypted-fields":  "Handling credentials/tokens that flow through the LLM — `secret` tag, `c.Mask` / `c.MaskIgnoreCase`, `wick_enc_` tokens",
 }
 
 func skillCmd(tpl, designSystem embed.FS) *cobra.Command {

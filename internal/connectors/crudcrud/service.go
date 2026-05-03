@@ -76,7 +76,12 @@ func maskSecretWords(c *connector.Ctx, resp any) (any, error) {
 	if err != nil {
 		return resp, nil
 	}
-	masked := c.MaskSensitive(string(raw), words, c.CfgBool("secret_words_ignore_case"))
+	var masked string
+	if c.CfgBool("secret_words_ignore_case") {
+		masked = c.MaskIgnoreCase(string(raw), words)
+	} else {
+		masked = c.Mask(string(raw), words)
+	}
 	return json.RawMessage(masked), nil
 }
 

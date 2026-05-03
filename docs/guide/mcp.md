@@ -118,7 +118,7 @@ sequenceDiagram
     Note over MCP: decrypt any wick_enc_ tokens<br/>under user's per-user key
     MCP->>Op: ExecuteFunc(plaintext)
     Op-->>MCP: response (plaintext sensitive values)
-    Note over MCP: mask values from `secret` fields<br/>+ values c.MaskSensitive declared
+    Note over MCP: mask values from `secret` fields<br/>+ values c.Mask / c.MaskIgnoreCase declared
     MCP-->>LLM: response with wick_enc_ tokens
     LLM->>MCP: wick_execute(next_tool, params: {token: "wick_enc_..."})
     Note over MCP: decrypt under same user's key<br/>→ plaintext for ExecuteFunc
@@ -137,7 +137,7 @@ When a user explicitly asks for the plaintext behind a token (or wants to mint a
 
 The crypto is **never** run over MCP — running it inline would defeat the purpose by putting plaintext (encrypt) or the user-revealed value (decrypt) into the LLM's context window. The user opens the URL, logs in, pastes the value, and copies the result.
 
-For the full mechanism — `secret` tag semantics, `c.MaskSensitive` for dynamic responses, key rotation, `WICK_ENC_KEY` / `WICK_ENC_DISABLE` env vars — see the [Encrypted Fields reference](../reference/encrypted-fields).
+For the full mechanism — `secret` tag semantics, `c.Mask` / `c.MaskIgnoreCase` for dynamic responses, key rotation, `WICK_ENC_KEY` / `WICK_ENC_DISABLE` env vars — see the [Encrypted Fields reference](../reference/encrypted-fields).
 
 ## Auth modes
 

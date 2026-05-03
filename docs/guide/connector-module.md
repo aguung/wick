@@ -113,7 +113,7 @@ The `wick:"..."` tag grammar is shared with Tools and Jobs. See the **[Config Ta
 | `desc=...` | Help text shown next to the field |
 | `key=custom_name` | Override the snake_cased field name |
 
-Read at runtime via `c.Cfg("base_url")`, `c.CfgInt("port")`, `c.CfgBool("use_tls")`. Reads always return plaintext — the encrypted-fields layer happens around `ExecuteFunc`, not inside it. For sensitive values that come back from the upstream API and aren't declared as Configs/Input fields, mask them yourself with `c.MaskSensitive(data, values)` before returning.
+Read at runtime via `c.Cfg("base_url")`, `c.CfgInt("port")`, `c.CfgBool("use_tls")`. Reads always return plaintext — the encrypted-fields layer happens around `ExecuteFunc`, not inside it. For sensitive values that come back from the upstream API and aren't declared as Configs/Input fields, mask them yourself with `c.Mask(data, values)` (or `c.MaskIgnoreCase` for case-folded matching) before returning.
 
 ### Per-operation `Input` structs
 

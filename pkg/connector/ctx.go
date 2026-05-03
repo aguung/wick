@@ -48,8 +48,8 @@ type Ctx struct {
 	// connectors can mask sensitive values that aren't declared as
 	// `secret` Configs/Input fields (dynamic API responses, DB row data,
 	// etc.) without importing internal/enc directly. nil when wick boots
-	// without an enc service or with WICK_ENC_DISABLE — c.MaskSensitive
-	// then becomes a passthrough.
+	// without an enc service or with WICK_ENC_DISABLE — c.Mask /
+	// c.MaskIgnoreCase then become passthroughs.
 	masker Masker
 }
 
@@ -85,8 +85,8 @@ type ProgressReporter interface {
 // test. Downstream code does not call this directly. Pass a nil
 // ProgressReporter for non-streaming calls; ReportProgress will be a
 // no-op when the reporter is absent. Pass a nil Masker when running
-// without the encrypted-fields layer; c.MaskSensitive becomes a
-// passthrough.
+// without the encrypted-fields layer; c.Mask / c.MaskIgnoreCase become
+// passthroughs.
 func NewCtx(ctx context.Context, instanceID string, configs, input map[string]string, httpClient *http.Client, progress ProgressReporter, masker Masker) *Ctx {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -121,21 +121,36 @@ func (c *Ctx) Context() context.Context { return c.ctx }
 // Useful for structured logging.
 func (c *Ctx) InstanceID() string { return c.instanceID }
 
-// MaskSensitive replaces every occurrence of each value in `values`
-// inside `data` with a wick_enc_ token, scoped to the calling user's
-// per-user key. Use it for sensitive plaintext that arrives from an
-// upstream API and is NOT declared as a `secret` Configs/Input field
-// — those are masked automatically by the framework.
+// Mask replaces every occurrence of each value in `values` inside
+// `data` with a wick_enc_ token, scoped to the calling user's per-user
+// key. Use it for sensitive plaintext that arrives from an upstream
+// API and is NOT declared as a `secret` Configs/Input field — those
+// are masked automatically by the framework.
 //
 // Identical values within one call receive identical tokens (per-call
 // dedup cache), so the LLM does not mistake duplicates for distinct
 // credentials. Returns `data` unchanged when the framework was booted
 // without the encrypted-fields layer or with WICK_ENC_DISABLE set.
-func (c *Ctx) MaskSensitive(data string, values []string, caseInsensitive bool) string {
+//
+// Match is case-sensitive. For case-folded matching ("Admin" == "admin"
+// share one token) use MaskIgnoreCase.
+func (c *Ctx) Mask(data string, values []string) string {
 	if c.masker == nil {
 		return data
 	}
-	return c.masker.Mask(data, values, caseInsensitive)
+	return c.masker.Mask(data, values, false)
+}
+
+// MaskIgnoreCase is the case-folded variant of Mask. Every case variant
+// of a keyword in `data` is replaced with a single token derived from
+// the keyword's configured form, so the round-tripped plaintext matches
+// what was configured regardless of which case variant appeared in the
+// upstream response.
+func (c *Ctx) MaskIgnoreCase(data string, values []string) string {
+	if c.masker == nil {
+		return data
+	}
+	return c.masker.Mask(data, values, true)
 }
 
 // ReportProgress emits a progress event to the active MCP session, if

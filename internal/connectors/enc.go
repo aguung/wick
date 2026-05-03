@@ -6,10 +6,10 @@ import (
 )
 
 // userMasker binds an enc.Service + user UUID into the narrow
-// connector.Masker interface so connectors can call c.MaskSensitive
-// without importing internal/enc or knowing the user UUID. Returns
-// nil (which c.MaskSensitive treats as passthrough) when encryption
-// is unavailable or globally disabled.
+// connector.Masker interface so connectors can call c.Mask /
+// c.MaskIgnoreCase without importing internal/enc or knowing the user
+// UUID. Returns nil (treated as passthrough) when encryption is
+// unavailable or globally disabled.
 func userMasker(svc *enc.Service, userUUID string) connector.Masker {
 	if svc == nil || svc.Disabled() {
 		return nil
@@ -24,9 +24,9 @@ type maskerAdapter struct {
 
 func (m *maskerAdapter) Mask(data string, values []string, caseInsensitive bool) string {
 	if caseInsensitive {
-		return m.svc.MaskSensitiveCI(data, values, m.user)
+		return m.svc.MaskIgnoreCase(data, values, m.user)
 	}
-	return m.svc.MaskSensitive(data, values, m.user)
+	return m.svc.Mask(data, values, m.user)
 }
 
 // unmaskMap returns a copy of m with every wick_enc_ token replaced by
@@ -58,7 +58,7 @@ func unmaskMap(svc *enc.Service, m map[string]string, userUUID string) (map[stri
 // masked in the connector's response — every config + input field
 // whose `wick:"..."` tag carries `secret` or `encrypt`. Order is:
 // configs first, then op-specific input. Empty values are skipped so
-// MaskSensitive does not no-op-loop over them.
+// Mask does not no-op-loop over them.
 func collectSensitiveValues(mod connector.Module, op *connector.Operation, configs, input map[string]string) []string {
 	var out []string
 	for _, c := range mod.Configs {

@@ -13,12 +13,12 @@
 //
 // Two operation modes:
 //
-//   - MaskSensitive(data, values, user) — replaces every occurrence of
-//     each plaintext value in data with its wick_enc_ token, sharing one
+//   - Mask(data, values, user) — replaces every occurrence of each
+//     plaintext value in data with its wick_enc_ token, sharing one
 //     token per identical plaintext within the same call so the LLM
 //     does not mistake duplicates for distinct credentials.
-//   - UnmaskSensitive(data, user) — inverse: scans data for wick_enc_
-//     tokens and replaces each with its plaintext.
+//   - Unmask(data, user) — inverse: scans data for wick_enc_ tokens
+//     and replaces each with its plaintext.
 //
 // Disabled() reports whether WICK_ENC_DISABLE is set — when true,
 // callers should skip mask/unmask and pass values through unchanged.
@@ -89,8 +89,8 @@ func New(masterKeyHex string) (*Service, error) {
 }
 
 // Disabled reports whether encryption is opt-out via the env var. When
-// true, MaskSensitive/UnmaskSensitive return data unchanged and
-// EncryptValue/DecryptValue refuse to operate.
+// true, Mask/Unmask return data unchanged and EncryptValue/DecryptValue
+// refuse to operate.
 func (s *Service) Disabled() bool { return s.disabled }
 
 // disabledFromEnv reads WICK_ENC_DISABLE — anything truthy disables.
@@ -201,14 +201,14 @@ func IsToken(s string) bool {
 	return strings.HasPrefix(s, Prefix)
 }
 
-// MaskSensitive replaces every occurrence of every value in `values`
-// inside `data` with its wick_enc_ token. Identical values receive
-// identical tokens within one call — the per-call cache guarantees
-// the LLM does not see two distinct ciphertexts for the same secret
-// and conclude they are different secrets.
+// Mask replaces every occurrence of every value in `values` inside
+// `data` with its wick_enc_ token. Identical values receive identical
+// tokens within one call — the per-call cache guarantees the LLM does
+// not see two distinct ciphertexts for the same secret and conclude
+// they are different secrets.
 //
 // When the service is disabled, returns data unchanged.
-func (s *Service) MaskSensitive(data string, values []string, userUUID string) string {
+func (s *Service) Mask(data string, values []string, userUUID string) string {
 	if s.disabled || data == "" || len(values) == 0 {
 		return data
 	}
@@ -232,16 +232,15 @@ func (s *Service) MaskSensitive(data string, values []string, userUUID string) s
 	return out
 }
 
-// MaskSensitiveCI is the case-insensitive variant of MaskSensitive.
-// Every case variant of a keyword in `data` is replaced with a single
-// token derived from the keyword's configured form (so the LLM, when
-// it passes the token back, gets the configured spelling on decrypt).
-// Keywords that differ only in case share one token via a lowercased
-// cache key.
+// MaskIgnoreCase is the case-insensitive variant of Mask. Every case
+// variant of a keyword in `data` is replaced with a single token derived
+// from the keyword's configured form (so the LLM, when it passes the
+// token back, gets the configured spelling on decrypt). Keywords that
+// differ only in case share one token via a lowercased cache key.
 //
 // Implementation uses regexp with the (?i) flag and quotes the keyword
 // so regex metacharacters in user-supplied values are matched literally.
-func (s *Service) MaskSensitiveCI(data string, values []string, userUUID string) string {
+func (s *Service) MaskIgnoreCase(data string, values []string, userUUID string) string {
 	if s.disabled || data == "" || len(values) == 0 {
 		return data
 	}
@@ -277,14 +276,14 @@ func (s *Service) MaskSensitiveCI(data string, values []string, userUUID string)
 // characters.
 var tokenRegex = regexp.MustCompile(`wick_enc_[A-Za-z0-9_\-]+`)
 
-// UnmaskSensitive scans data for wick_enc_ tokens and replaces each
-// with its plaintext. Returns an error when ANY token fails to decrypt
+// Unmask scans data for wick_enc_ tokens and replaces each with its
+// plaintext. Returns an error when ANY token fails to decrypt
 // (typically: the key was rotated since the token was issued, or the
 // token was issued for a different user). Tokens are de-duplicated so
 // repeated occurrences only pay decryption cost once.
 //
 // When the service is disabled, returns data unchanged with no error.
-func (s *Service) UnmaskSensitive(data, userUUID string) (string, error) {
+func (s *Service) Unmask(data, userUUID string) (string, error) {
 	if s.disabled || data == "" {
 		return data, nil
 	}

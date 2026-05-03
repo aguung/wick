@@ -1,6 +1,6 @@
 ---
 name: encrypted-fields
-description: Use when a connector handles credentials, tokens, or any value the LLM should carry between calls without ever seeing the plaintext. Covers the `secret` tag (auto-mask), manual `enc.MaskSensitive` for dynamic response data, the `wick_enc_<base64url>` token format, per-user keys, and the MCP redirect tools (`wick_encrypt`, `wick_decrypt`).
+description: Use when a connector handles credentials, tokens, or any value the LLM should carry between calls without ever seeing the plaintext. Covers the `secret` tag (auto-mask), manual `c.Mask` / `c.MaskIgnoreCase` for dynamic response data, the `wick_enc_<base64url>` token format, per-user keys, and the MCP redirect tools (`wick_encrypt`, `wick_decrypt`).
 allowed-tools: Read, Grep, Glob, Edit, Write
 paths:
   - "internal/connectors/**/*.go"
@@ -62,18 +62,20 @@ If `response.Token` happens to echo the API key, wick's auto-mask replaces it wi
 
 ### Recipe 2: a sensitive value that comes back from the upstream API
 
-The API returns a session token in its response. The token is **not** in your Configs — it's dynamic. Auto-mask only covers values present in your Configs / Input. For the dynamic case, call `c.MaskSensitive` before returning:
+The API returns a session token in its response. The token is **not** in your Configs — it's dynamic. Auto-mask only covers values present in your Configs / Input. For the dynamic case, call `c.Mask` before returning:
 
 ```go
 func login(c *connector.Ctx) (any, error) {
     // ... POST credentials, get { session_token, user, expires } back
     body, _ := io.ReadAll(resp.Body)
-    masked := c.MaskSensitive(string(body), []string{result.SessionToken})
+    masked := c.Mask(string(body), []string{result.SessionToken})
     return masked, nil
 }
 ```
 
-`c.MaskSensitive` is bound to the calling user's per-user key automatically — connectors never see the user UUID directly. When wick boots without the encrypted-fields layer (tests) or with `WICK_ENC_DISABLE=true`, it becomes a passthrough.
+Use `c.MaskIgnoreCase(data, values)` instead when keyword matching should fold case — every case variant of a keyword in `data` collapses to a single token derived from the keyword's configured form (so `"Admin"` and `"admin"` share one token; decrypt yields the configured spelling).
+
+Both methods are bound to the calling user's per-user key automatically — connectors never see the user UUID directly. When wick boots without the encrypted-fields layer (tests) or with `WICK_ENC_DISABLE=true`, they become passthroughs.
 
 Inputs the LLM passes in `wick_enc_` form (e.g. the same session token in a follow-up call) decrypt automatically — your op sees plaintext.
 
@@ -91,7 +93,7 @@ The LLM passes back the `wick_enc_` token from the previous response → wick de
 
 ## What NOT to do
 
-- **Don't manually call `EncryptValue` in `ExecuteFunc`.** Let the framework do it via `secret` tag or `MaskSensitive`. Manual encrypt risks shipping a token to a place the LLM was already fine with plaintext for.
+- **Don't manually call `EncryptValue` in `ExecuteFunc`.** Let the framework do it via `secret` tag or `c.Mask` / `c.MaskIgnoreCase`. Manual encrypt risks shipping a token to a place the LLM was already fine with plaintext for.
 - **Don't tag generic values `secret`.** A field whose value is `"true"`, `"1"`, `"abc"`, or a short ID will substring-match all over the response and silently mint tokens for noise. There is no min-length floor — admin discipline is the only gate.
 - **Don't expose plaintext through a different channel.** If your op also writes to `c.ReportProgress`, logs, or a side-effect (file, queue), those are NOT auto-masked. Mask them yourself before emitting.
 - **Don't hardcode the master key in code.** The bootstrap auto-generates it; production sets `WICK_ENC_KEY` from a vault. See "Operator knobs" below.
@@ -132,5 +134,5 @@ Use this when you need to:
 ## When in doubt
 
 - A field smells sensitive → tag it `secret`. Cost is one substring scan per response, benefit is plaintext never crossing the LLM context.
-- A response carries a value that wasn't in Configs → `enc.MaskSensitive(body, []string{value}, c.UserUUID())` before returning.
+- A response carries a value that wasn't in Configs → `c.Mask(body, []string{value})` before returning. Use `c.MaskIgnoreCase` instead when keyword matching should fold case.
 - A user asks for the plaintext of a `wick_enc_` → point them at `/tools/encfields/decrypt`. Do not try to decode the value yourself — you can't, because the key is per-user.

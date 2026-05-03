@@ -479,7 +479,7 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 			// bertag.
 			if s.enc != nil && !s.enc.Disabled() {
 				values := collectSensitiveValues(mod, op, configs, input)
-				res.ResponseJSON = s.enc.MaskSensitive(res.ResponseJSON, values, p.UserID)
+				res.ResponseJSON = s.enc.Mask(res.ResponseJSON, values, p.UserID)
 			}
 		}
 	}

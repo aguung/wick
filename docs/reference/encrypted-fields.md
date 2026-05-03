@@ -68,9 +68,9 @@ That's the only code change needed for the common case. Wick reflects the tag at
 
 There is no min-length floor — admins are responsible for making sure sensitive fields don't carry generic values like `"true"`, `"1"`, or short IDs that would substring-match all over the response.
 
-## Dynamic values: `c.MaskSensitive`
+## Dynamic values: `c.Mask` / `c.MaskIgnoreCase`
 
-For sensitive values that are NOT in `Configs` or `Input` — e.g. a session token returned by an upstream login API — call `c.MaskSensitive` before returning:
+For sensitive values that are NOT in `Configs` or `Input` — e.g. a session token returned by an upstream login API — call `c.Mask` before returning. Use `c.MaskIgnoreCase` when keyword matching should fold case (e.g. "Admin" and "admin" share one token):
 
 ```go
 func login(c *connector.Ctx) (any, error) {
@@ -86,12 +86,12 @@ func login(c *connector.Ctx) (any, error) {
     }
     json.Unmarshal(raw, &result)
 
-    masked := c.MaskSensitive(string(raw), []string{result.SessionToken})
+    masked := c.Mask(string(raw), []string{result.SessionToken})
     return masked, nil
 }
 ```
 
-`c.MaskSensitive(data, values)` is bound to the calling user's per-user key automatically; connectors never see the user UUID. When wick is booted without the encrypted-fields layer (tests) or with `WICK_ENC_DISABLE=true`, the call is a passthrough.
+`c.Mask(data, values)` and `c.MaskIgnoreCase(data, values)` are bound to the calling user's per-user key automatically; connectors never see the user UUID. When wick is booted without the encrypted-fields layer (tests) or with `WICK_ENC_DISABLE=true`, the call is a passthrough.
 
 ## Manual UI: `/tools/encfields`
 
@@ -142,7 +142,7 @@ DB-stored key lives at `configs.encryption_key` (auto-generated on first boot, r
 ## Common pitfalls
 
 - **Tagging a generic value `secret`.** A field whose value is `"true"`, `"1"`, `"abc"`, or a short ID will substring-match all over the response and silently mint tokens for noise. Pick distinct values for sensitive fields.
-- **Manually calling `EncryptValue` in `ExecuteFunc`.** Don't — let the framework do it via the `secret` tag (auto-mask) or `c.MaskSensitive` (dynamic). Manual encrypt risks shipping a token to a place the LLM was already fine with plaintext for, breaking subsequent tool calls.
+- **Manually calling `EncryptValue` in `ExecuteFunc`.** Don't — let the framework do it via the `secret` tag (auto-mask) or `c.Mask` / `c.MaskIgnoreCase` (dynamic). Manual encrypt risks shipping a token to a place the LLM was already fine with plaintext for, breaking subsequent tool calls.
 - **Logging or progress-reporting plaintext.** Auto-mask only covers the value `ExecuteFunc` returns. If you also write to `c.ReportProgress`, structured logs, or a queue, mask those yourself first.
 - **Trying to decrypt over MCP.** `wick_decrypt` deliberately returns a URL — the cipher never runs in the LLM's context window. Direct the user there.
 

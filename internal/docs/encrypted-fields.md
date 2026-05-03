@@ -25,9 +25,10 @@ tahu isinya. Connector code tidak perlu berubah.**
 1. **Dua jalur encrypt.** Middleware auto-mask nilai yang ada di `Configs`
    bertag `secret` — connector tidak perlu tahu. Untuk data sensitif
    dinamis di response yang tidak ada di Configs (email, data DB, response API
-   eksternal), connector panggil `enc.MaskSensitive(data, values)` sebelum return.
+   eksternal), connector panggil `c.Mask(data, values)` (atau
+   `c.MaskIgnoreCase` untuk case-folding) sebelum return.
 2. **Auto encrypt pada output.** Setelah `ExecuteFunc` return, response
-   di-marshal ke string lalu `enc.MaskSensitive` replace semua nilai yang
+   di-marshal ke string lalu `enc.Mask` replace semua nilai yang
    match field bertag `secret` dengan `wick_enc_<ciphertext>`
    sebelum dikirim ke LLM.
 3. **Auto decrypt pada input.** Sebelum `ExecuteFunc` dipanggil, wick scan
@@ -92,14 +93,14 @@ ExecuteFunc return → marshal ke JSON string
 Middleware kumpulkan sensitive values dari Configs + Input
 (hanya field bertag secret — post-decrypt plaintext)
         ↓
-enc.MaskSensitive(data, values, userUUID) string
+enc.Mask(data, values, userUUID) string
         ↓
 String hasil dikirim ke LLM (sudah ter-mask)
 ```
 
 ```go
 // internal/enc/enc.go (simplified)
-func (s *Service) MaskSensitive(data string, values []string, userUUID string) string {
+func (s *Service) Mask(data string, values []string, userUUID string) string {
     cache := map[string]string{}
     out := data
     for _, v := range values {
@@ -123,7 +124,7 @@ jawab pilih value yg distinct (jangan tag field yg valuenya `"true"`,
 kemunculannya di seluruh response).
 
 Data sensitif dinamis (email, data DB, response API eksternal) tidak ter-cover
-di jalur ini — connector panggil `enc.MaskSensitive` sendiri sebelum return.
+di jalur ini — connector panggil `c.Mask` / `c.MaskIgnoreCase` sendiri sebelum return.
 
 **Encrypt cache** di-scope per-request: nilai identik dalam satu response
 dapat token yang sama, sehingga LLM tidak mengira dua kemunculan credential
@@ -131,8 +132,9 @@ yang sama adalah dua credential berbeda. Cache di-destroy setelah response
 dikirim.
 
 **Package:** `internal/enc/` — fungsi utama yang di-export:
-- `MaskSensitive(data string, values []string, userUUID string) string` — auto-mask, dipakai connectors.Service.Execute + connector
-- `UnmaskSensitive(data, userUUID string) (string, error)` — auto-decrypt input/configs, dipakai connectors.Service.Execute
+- `Mask(data string, values []string, userUUID string) string` — auto-mask, dipakai connectors.Service.Execute + connector
+- `MaskIgnoreCase(data, values, userUUID) string` — case-folded variant
+- `Unmask(data, userUUID string) (string, error)` — auto-decrypt input/configs, dipakai connectors.Service.Execute
 - `EncryptValue(plain, userUUID string) (string, error)` — single-value encrypt, dipakai manual UI
 - `DecryptValue(token, userUUID string) (string, error)` — single-value decrypt, dipakai manual UI
 - `IsToken(s string) bool` / `Disabled() bool` — helpers
@@ -142,7 +144,7 @@ dikirim.
 ```
 LLM kirim params (JSON atau plain text)
         ↓
-enc.UnmaskSensitive(data string) (string, error)
+enc.Unmask(data string) (string, error)
   Scan semua wick_enc_ token → decrypt ke plaintext
   (pakai derived_key user saat ini; gagal decrypt → error 400)
         ↓
@@ -348,7 +350,7 @@ dekat). Revisit kalau MCP spec support `server_system_prompt` di `initialize`.
 AES-256-GCM pada string pendek (password, token, ID) = operasi mikro-detik,
 tidak terasa. Perlu diperhatikan:
 
-- **Scan string response**: setelah marshal, `MaskSensitive` scan string
+- **Scan string response**: setelah marshal, `Mask` scan string
   dengan `strings.ReplaceAll` per sensitive value. Kalau response besar dan
   banyak sensitive values, overhead O(n×m). Mitigasi: encrypt cache (tidak
   re-encrypt nilai yang sama dalam satu request) + skip empty values. Tidak
