@@ -527,17 +527,32 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 	// plaintext via Ctx.Cfg / Ctx.Input. A failed decrypt is fatal
 	// here — running the op against a still-encrypted credential
 	// would silently authenticate as nothing.
+	//
+	// The plaintexts produced by these decrypts are seeded into the
+	// per-call masker (below) so the post-Execute auto-mask phase
+	// re-tokenizes them on the way out, even when the receiving
+	// field carries no `secret` tag — the LLM treats wick_enc_ as
+	// opaque and may pass it into any field, so the round trip must
+	// not depend on tag discipline alone.
 	input := p.Input
+	masker := newMaskerAdapter(s.enc, p.UserID)
 	if s.enc != nil && !s.enc.Disabled() {
-		var err error
-		configs, err = unmaskMap(s.enc, configs, p.UserID)
+		var (
+			err     error
+			decCfg  []string
+			decIn   []string
+		)
+		configs, decCfg, err = unmaskMap(s.enc, configs, p.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt configs: %w", err)
 		}
-		input, err = unmaskMap(s.enc, input, p.UserID)
+		input, decIn, err = unmaskMap(s.enc, input, p.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt input: %w", err)
 		}
+		masker.add(decCfg)
+		masker.add(decIn)
+		masker.add(collectSensitiveValues(mod, op, configs, input))
 	}
 
 	startedAt := time.Now()
@@ -557,9 +572,37 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 
-	cctx := connector.NewCtx(ctx, c.ID, configs, input, s.httpClient, p.Progress, userMasker(s.enc, p.UserID))
+	// Pass a nil interface (not a typed-nil *maskerAdapter) when enc is
+	// disabled so connector.Ctx's nil-check on c.Mask short-circuits.
+	var ctxMasker connector.Masker
+	if masker != nil {
+		ctxMasker = masker
+	}
+	cctx := connector.NewCtx(ctx, c.ID, configs, input, s.httpClient, p.Progress, ctxMasker)
 	value, execErr := op.Execute(cctx)
 	latencyMs := int(time.Since(startedAt).Milliseconds())
+
+	// maskOut replays every sensitive plaintext seen during this call
+	// against an outgoing string — used by both the success and error
+	// paths so plaintext can never reach the LLM or audit log via an
+	// error message either. The masker has been fed by three sources:
+	//   1. plaintexts produced by decrypting wick_enc_ tokens in
+	//      configs / input — round-trip protection that does not
+	//      depend on the receiving field's tag.
+	//   2. plaintext values of every Configs/Input field tagged
+	//      `secret` (covers credentials sent in plaintext, e.g. by
+	//      the admin form).
+	//   3. values the connector explicitly passed to c.Mask /
+	//      c.MaskIgnoreCase — dynamic sensitive data the connector
+	//      pulled from upstream.
+	// Dedup happens inside snapshot() so identical values collapse
+	// to a single Mask invocation.
+	maskOut := func(s string) string {
+		if masker == nil || s == "" {
+			return s
+		}
+		return masker.svc.Mask(s, masker.snapshot(), p.UserID)
+	}
 
 	res := &ExecuteResult{
 		RunID:     run.ID,
@@ -567,25 +610,15 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 	}
 	if execErr != nil {
 		res.Status = entity.ConnectorRunStatusError
-		res.ErrorMessage = execErr.Error()
+		res.ErrorMessage = maskOut(execErr.Error())
 	} else {
 		bytes, mErr := json.Marshal(value)
 		if mErr != nil {
 			res.Status = entity.ConnectorRunStatusError
-			res.ErrorMessage = "marshal response: " + mErr.Error()
+			res.ErrorMessage = maskOut("marshal response: " + mErr.Error())
 		} else {
 			res.Status = entity.ConnectorRunStatusSuccess
-			res.ResponseJSON = string(bytes)
-			// Auto-encrypt: replace any sensitive plaintext present in
-			// the response with a wick_enc_ token, so the LLM can carry
-			// the value forward without ever seeing it. Sensitive
-			// plaintexts are: post-decrypt config values bertag
-			// secret/encrypt, and post-decrypt input values likewise
-			// bertag.
-			if s.enc != nil && !s.enc.Disabled() {
-				values := collectSensitiveValues(mod, op, configs, input)
-				res.ResponseJSON = s.enc.Mask(res.ResponseJSON, values, p.UserID)
-			}
+			res.ResponseJSON = maskOut(string(bytes))
 		}
 	}
 
