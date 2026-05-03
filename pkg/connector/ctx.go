@@ -44,6 +44,22 @@ type Ctx struct {
 	// Always read it via ReportProgress so connectors don't have to nil-
 	// check on every call.
 	progress ProgressReporter
+	// masker is the encrypted-fields adapter the framework injects so
+	// connectors can mask sensitive values that aren't declared as
+	// `secret` Configs/Input fields (dynamic API responses, DB row data,
+	// etc.) without importing internal/enc directly. nil when wick boots
+	// without an enc service or with WICK_ENC_DISABLE — c.MaskSensitive
+	// then becomes a passthrough.
+	masker Masker
+}
+
+// Masker is the narrow slice of the encrypted-fields service
+// connectors use to mask dynamic sensitive values they pull from
+// upstream APIs. The framework provides an implementation pre-bound
+// to the calling user's per-user key; connectors never see the user
+// UUID directly.
+type Masker interface {
+	Mask(data string, values []string) string
 }
 
 // ProgressReporter receives incremental progress events emitted by a
@@ -62,8 +78,10 @@ type ProgressReporter interface {
 // NewCtx is used by wick when dispatching an MCP tools/call or a panel
 // test. Downstream code does not call this directly. Pass a nil
 // ProgressReporter for non-streaming calls; ReportProgress will be a
-// no-op when the reporter is absent.
-func NewCtx(ctx context.Context, instanceID string, configs, input map[string]string, httpClient *http.Client, progress ProgressReporter) *Ctx {
+// no-op when the reporter is absent. Pass a nil Masker when running
+// without the encrypted-fields layer; c.MaskSensitive becomes a
+// passthrough.
+func NewCtx(ctx context.Context, instanceID string, configs, input map[string]string, httpClient *http.Client, progress ProgressReporter, masker Masker) *Ctx {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -74,6 +92,7 @@ func NewCtx(ctx context.Context, instanceID string, configs, input map[string]st
 		input:      input,
 		instanceID: instanceID,
 		progress:   progress,
+		masker:     masker,
 	}
 }
 
@@ -95,6 +114,23 @@ func (c *Ctx) Context() context.Context { return c.ctx }
 // InstanceID returns the connector_instances.id this call is bound to.
 // Useful for structured logging.
 func (c *Ctx) InstanceID() string { return c.instanceID }
+
+// MaskSensitive replaces every occurrence of each value in `values`
+// inside `data` with a wick_enc_ token, scoped to the calling user's
+// per-user key. Use it for sensitive plaintext that arrives from an
+// upstream API and is NOT declared as a `secret` Configs/Input field
+// — those are masked automatically by the framework.
+//
+// Identical values within one call receive identical tokens (per-call
+// dedup cache), so the LLM does not mistake duplicates for distinct
+// credentials. Returns `data` unchanged when the framework was booted
+// without the encrypted-fields layer or with WICK_ENC_DISABLE set.
+func (c *Ctx) MaskSensitive(data string, values []string) string {
+	if c.masker == nil {
+		return data
+	}
+	return c.masker.Mask(data, values)
+}
 
 // ReportProgress emits a progress event to the active MCP session, if
 // one is listening. Safe to call from any goroutine. When the call was

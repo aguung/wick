@@ -452,7 +452,7 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 
-	cctx := connector.NewCtx(ctx, c.ID, configs, input, s.httpClient, p.Progress)
+	cctx := connector.NewCtx(ctx, c.ID, configs, input, s.httpClient, p.Progress, userMasker(s.enc, p.UserID))
 	value, execErr := op.Execute(cctx)
 	latencyMs := int(time.Since(startedAt).Milliseconds())
 

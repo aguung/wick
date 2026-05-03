@@ -5,6 +5,27 @@ import (
 	"github.com/yogasw/wick/pkg/connector"
 )
 
+// userMasker binds an enc.Service + user UUID into the narrow
+// connector.Masker interface so connectors can call c.MaskSensitive
+// without importing internal/enc or knowing the user UUID. Returns
+// nil (which c.MaskSensitive treats as passthrough) when encryption
+// is unavailable or globally disabled.
+func userMasker(svc *enc.Service, userUUID string) connector.Masker {
+	if svc == nil || svc.Disabled() {
+		return nil
+	}
+	return &maskerAdapter{svc: svc, user: userUUID}
+}
+
+type maskerAdapter struct {
+	svc  *enc.Service
+	user string
+}
+
+func (m *maskerAdapter) Mask(data string, values []string) string {
+	return m.svc.MaskSensitive(data, values, m.user)
+}
+
 // unmaskMap returns a copy of m with every wick_enc_ token replaced by
 // its plaintext. Empty input or service returns the input map verbatim.
 // The whole map is rejected on the first decryption failure — partial
