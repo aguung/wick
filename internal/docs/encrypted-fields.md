@@ -1,6 +1,6 @@
-# Encrypted Fields — Desain
+# Encrypted Fields
 
-Status: proposal / in-design.
+Status: implemented.
 Update terakhir: 2026-05-03.
 
 ---
@@ -23,12 +23,12 @@ tahu isinya. Connector code tidak perlu berubah.**
 ## 2. Prinsip desain
 
 1. **Dua jalur encrypt.** Middleware auto-mask nilai yang ada di `Configs`
-   bertag `encrypt`/`secret` — connector tidak perlu tahu. Untuk data sensitif
+   bertag `secret` — connector tidak perlu tahu. Untuk data sensitif
    dinamis di response yang tidak ada di Configs (email, data DB, response API
    eksternal), connector panggil `enc.MaskSensitive(data, values)` sebelum return.
 2. **Auto encrypt pada output.** Setelah `ExecuteFunc` return, response
    di-marshal ke string lalu `enc.MaskSensitive` replace semua nilai yang
-   match field bertag `encrypt`/`secret` dengan `wick_enc_<ciphertext>`
+   match field bertag `secret` dengan `wick_enc_<ciphertext>`
    sebelum dikirim ke LLM.
 3. **Auto decrypt pada input.** Sebelum `ExecuteFunc` dipanggil, wick scan
    params dari LLM — string dengan prefix `wick_enc_` otomatis di-decrypt ke
@@ -68,44 +68,59 @@ auth yang sudah ada.
 
 ### 3.2 Auto-encrypt field: marking via struct tag
 
-Developer mark field sensitif di Configs atau Input struct:
+Developer mark field sensitif di Configs atau Input struct dengan tag
+`secret`:
 
 ```go
 type MyConfigs struct {
-    Host     string `wick:"host,required"`
-    Username string `wick:"username,required"`
-    Password string `wick:"password,encrypt,required"` // auto-encrypt di output
+    Host     string `wick:"required"`
+    Username string `wick:"required"`
+    Password string `wick:"required;secret"` // auto-encrypt di output
 }
 ```
 
-Tag `encrypt` (baru) atau `secret` (sudah ada) — treated sama untuk tujuan
-ini. Wick baca tag ini saat middleware setup.
+Wick reflects struct tag ini di boot via `entity.StructToConfigs` —
+field bertag `secret` jadi `IsSecret=true` di Config row, dan
+`connectors.Service.Execute` baca flag itu untuk decide field mana yang
+nilainya perlu di-mask di response.
 
 ### 3.3 Output path (encrypt)
 
 ```
 ExecuteFunc return → marshal ke JSON string
         ↓
-Middleware kumpulkan sensitive values dari Configs row aktif
-(hanya field bertag encrypt/secret — nilai yang disimpan di DB)
+Middleware kumpulkan sensitive values dari Configs + Input
+(hanya field bertag secret — post-decrypt plaintext)
         ↓
-enc.MaskSensitive(data string, values []string) string
+enc.MaskSensitive(data, values, userUUID) string
         ↓
 String hasil dikirim ke LLM (sudah ter-mask)
 ```
 
 ```go
-func MaskSensitive(data string, values []string) string {
-    result := data
-    for _, plain := range values {
-        if len(plain) < 8 {
-            continue // skip nilai pendek, mitigasi false-positive
+// internal/enc/enc.go (simplified)
+func (s *Service) MaskSensitive(data string, values []string, userUUID string) string {
+    cache := map[string]string{}
+    out := data
+    for _, v := range values {
+        if v == "" || !strings.Contains(out, v) {
+            continue
         }
-        result = strings.ReplaceAll(result, plain, encrypt(plain))
+        token, ok := cache[v]
+        if !ok {
+            token, _ = s.EncryptValue(v, userUUID)
+            cache[v] = token
+        }
+        out = strings.ReplaceAll(out, v, token)
     }
-    return result
+    return out
 }
 ```
+
+Tidak ada min-length threshold — admin yg tag `secret` bertanggung
+jawab pilih value yg distinct (jangan tag field yg valuenya `"true"`,
+`"1"`, atau ID generic, karena substring match akan replace
+kemunculannya di seluruh response).
 
 Data sensitif dinamis (email, data DB, response API eksternal) tidak ter-cover
 di jalur ini — connector panggil `enc.MaskSensitive` sendiri sebelum return.
@@ -115,9 +130,12 @@ dapat token yang sama, sehingga LLM tidak mengira dua kemunculan credential
 yang sama adalah dua credential berbeda. Cache di-destroy setelah response
 dikirim.
 
-**Package:** `internal/enc/` — dua fungsi utama yang di-export:
-- `MaskSensitive(data string, values []string) string` — encrypt, dipakai middleware + connector
-- `UnmaskSensitive(data string) (string, error)` — decrypt, dipakai middleware input path
+**Package:** `internal/enc/` — fungsi utama yang di-export:
+- `MaskSensitive(data string, values []string, userUUID string) string` — auto-mask, dipakai connectors.Service.Execute + connector
+- `UnmaskSensitive(data, userUUID string) (string, error)` — auto-decrypt input/configs, dipakai connectors.Service.Execute
+- `EncryptValue(plain, userUUID string) (string, error)` — single-value encrypt, dipakai manual UI
+- `DecryptValue(token, userUUID string) (string, error)` — single-value decrypt, dipakai manual UI
+- `IsToken(s string) bool` / `Disabled() bool` — helpers
 
 ### 3.4 Input path (decrypt)
 
@@ -171,34 +189,41 @@ di environment — tidak ada cara disable tanpa eksplisit opt-out.
 
 ## 4. Manual encrypt/decrypt: internal tool (UI)
 
-Bukan lewat LLM — harus login ke Wick UI. Dibangun sebagai modul baru di
-`internal/tools/encfields/` (atau serupa), bukan di MCP surface.
+Bukan lewat LLM — harus login ke Wick UI. Dibangun sebagai tool module
+di `internal/tools/encfields/`, di-register lewat
+`internal/tools/registry.go` dengan default tag `Security`. Mounted di
+`/tools/encfields` (encrypt) dan `/tools/encfields/decrypt`.
+
+Submission JSON-only: form posts via `fetch()` ke route yang sama, handler
+return `{token}` / `{plain}` / `{error}`. Browser tidak reload — back
+button balik ke halaman asal (home grid), bukan ke stale form state.
 
 ### 4.1 Encrypt tool
 
-User bisa search value tertentu dari sumber tertentu dan encrypt manual.
+`GET /tools/encfields` render form, `POST` return JSON.
 
 **Input:**
 - `value` — plaintext yang mau di-encrypt.
 - `source` — dari mana value ini (bebas: label deskriptif, mis. "connector
-  Loki Prod / field token").
+  Loki Prod / field token"). Optional, tidak disimpan — pure label.
 
 **Output:**
-- `wick_enc_<ciphertext>` ditampilkan di UI, bisa di-copy.
-- Disimpan ke log per-user (opsional) dengan `source` sebagai label.
+- `{ "token": "wick_enc_<ciphertext>", "source": "..." }` — JS render token
+  inline + copy-to-clipboard button.
 
 Use case: developer mau pre-generate `wick_enc_` value sebelum connector
 jalan, atau debug apakah enkripsi berjalan benar.
 
 ### 4.2 Decrypt tool
 
-User input `wick_enc_` value, UI tampilkan plaintext — **hanya untuk user yang
-sama yang mengenkripsi** (karena key per-user).
+`GET /tools/encfields/decrypt` render form, `POST` return JSON. Plaintext
+**hanya untuk user yang sama yang mengenkripsi** (karena key per-user).
 
-- Butuh login, sesi aktif.
+- Butuh login, sesi aktif (gate via `RequireToolAccess` middleware).
 - Admin tidak bisa decrypt `wick_enc_` milik user lain (key berbeda — hasil
-  decrypt akan error).
-- Tidak ada API endpoint publik — hanya via web UI form.
+  decrypt akan error 400).
+- Tidak ada API endpoint terpisah — hanya via tool route yg di-gate sama
+  middleware login.
 
 ---
 
@@ -210,16 +235,20 @@ sama yang mengenkripsi** (karena key per-user).
 ```json
 // wick_encrypt response
 {
-  "message": "Encryption must be done via the Wick UI.",
-  "url": "https://<wick-host>/tools/encrypt"
+  "message": "Encryption must be done via the Wick UI. Open the URL, log in, paste the plaintext, and copy the wick_enc_ token back into the conversation.",
+  "url": "https://<wick-host>/tools/encfields"
 }
 
 // wick_decrypt response
 {
-  "message": "Decryption must be done via the Wick UI.",
-  "url": "https://<wick-host>/tools/decrypt"
+  "message": "Decryption must be done via the Wick UI. Per-user keys mean only the user who issued a wick_enc_ token can reveal its plaintext.",
+  "url": "https://<wick-host>/tools/encfields/decrypt"
 }
 ```
+
+URL absolute di-build dari `configs.AppURL()` (live dari DB, hot-
+reloadable lewat admin UI). Kalau `app_url` belum di-set (mis. stdio
+mode), fallback ke relative path.
 
 LLM tidak pernah melihat plaintext atau ciphertext hasil proses. User harus
 buka URL, login, lalu proses manual. Ini intentional — memastikan decryption
@@ -321,9 +350,10 @@ tidak terasa. Perlu diperhatikan:
 
 - **Scan string response**: setelah marshal, `MaskSensitive` scan string
   dengan `strings.ReplaceAll` per sensitive value. Kalau response besar dan
-  banyak sensitive values, overhead O(n×m). Mitigasi: min-length threshold
-  (skip nilai < 8 karakter), encrypt cache (tidak re-encrypt nilai yang sama
-  dalam satu request).
+  banyak sensitive values, overhead O(n×m). Mitigasi: encrypt cache (tidak
+  re-encrypt nilai yang sama dalam satu request) + skip empty values. Tidak
+  ada min-length threshold — admin yg tag `secret` bertanggung jawab pilih
+  value distinct (bukan `"true"`, `"1"`, atau ID generic).
 - **HKDF per request**: sangat murah, tidak jadi bottleneck.
 - **Besar data**: kalau connector return blob besar (mis. binary di-encode
   base64), scan string tetap O(n) karakter. Untuk kasus ini connector
@@ -342,11 +372,10 @@ instance yang tidak butuh fitur ini.
 2. ExecuteFunc return plaintext
    → { "username": "alice", "password": "s3cr3t", "backup_password": "s3cr3t" }
    ↓
-3. MCP middleware, user_uuid = "u-123"
+3. connectors.Service.Execute, user_uuid = "u-123"
    derived_key = HKDF(master_key, salt="u-123", info="wick-enc")
    encrypt cache kosong
-   "s3cr3t" match configs.Password (bertag encrypt), len=6 — di bawah threshold?
-     (anggap threshold 6, lolos)
+   "s3cr3t" match configs.Password (bertag secret) — non-empty, ada di string
    cache miss → encrypt → wick_enc_Zg5xP2mN...
    cache["s3cr3t"] = "wick_enc_Zg5xP2mN..."
    "s3cr3t" muncul lagi di backup_password → cache hit → pakai token yang sama
@@ -371,11 +400,14 @@ Kalau user B coba kirim `wick_enc_Zg5xP2mN...` (milik user A) → decrypt gagal
 
 ## 12. Open questions
 
-### 12.1 Min-length threshold
+### 12.1 Min-length threshold (resolved — dropped)
 
-Threshold 8 karakter dipilih sebagai default untuk mitigasi false-positive pada
-nilai pendek (mis. `"true"`, `"1"`, `"abc"`). Nilai threshold bisa di-tune
-lewat config kalau ada kasus connector yang punya credential < 8 karakter.
+Awalnya design pakai threshold 8 karakter untuk mitigasi false-positive
+substring match pada nilai pendek (`"true"`, `"1"`, `"abc"`).
+Implementasi akhir tidak pakai threshold sama sekali — alasan: admin yg
+tag field `secret` udah explicit, dan threshold itu malah blok use case
+sah (mis. PIN 4-digit yg memang sensitif). Ganti ke disiplin: jangan tag
+field yg valuenya generic.
 
 ### 12.2 Server-side system prompt injection
 
