@@ -58,8 +58,14 @@ type Ctx struct {
 // upstream APIs. The framework provides an implementation pre-bound
 // to the calling user's per-user key; connectors never see the user
 // UUID directly.
+//
+// caseInsensitive selects between exact-match (false, default) and
+// case-folded matching (true) — useful when a connector's keyword
+// list should match "Admin" and "admin" alike. The token returned is
+// derived from the keyword's configured form, so decrypt yields the
+// configured spelling regardless of which case variant was masked.
 type Masker interface {
-	Mask(data string, values []string) string
+	Mask(data string, values []string, caseInsensitive bool) string
 }
 
 // ProgressReporter receives incremental progress events emitted by a
@@ -125,11 +131,11 @@ func (c *Ctx) InstanceID() string { return c.instanceID }
 // dedup cache), so the LLM does not mistake duplicates for distinct
 // credentials. Returns `data` unchanged when the framework was booted
 // without the encrypted-fields layer or with WICK_ENC_DISABLE set.
-func (c *Ctx) MaskSensitive(data string, values []string) string {
+func (c *Ctx) MaskSensitive(data string, values []string, caseInsensitive bool) string {
 	if c.masker == nil {
 		return data
 	}
-	return c.masker.Mask(data, values)
+	return c.masker.Mask(data, values, caseInsensitive)
 }
 
 // ReportProgress emits a progress event to the active MCP session, if

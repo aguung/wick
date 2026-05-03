@@ -232,6 +232,44 @@ func (s *Service) MaskSensitive(data string, values []string, userUUID string) s
 	return out
 }
 
+// MaskSensitiveCI is the case-insensitive variant of MaskSensitive.
+// Every case variant of a keyword in `data` is replaced with a single
+// token derived from the keyword's configured form (so the LLM, when
+// it passes the token back, gets the configured spelling on decrypt).
+// Keywords that differ only in case share one token via a lowercased
+// cache key.
+//
+// Implementation uses regexp with the (?i) flag and quotes the keyword
+// so regex metacharacters in user-supplied values are matched literally.
+func (s *Service) MaskSensitiveCI(data string, values []string, userUUID string) string {
+	if s.disabled || data == "" || len(values) == 0 {
+		return data
+	}
+	cache := make(map[string]string, len(values))
+	out := data
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		token, ok := cache[key]
+		if !ok {
+			t, err := s.EncryptValue(v, userUUID)
+			if err != nil || t == v {
+				continue
+			}
+			cache[key] = t
+			token = t
+		}
+		re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(v))
+		if err != nil {
+			continue
+		}
+		out = re.ReplaceAllString(out, token)
+	}
+	return out
+}
+
 // tokenRegex matches wick_enc_<base64url> within free-form text. The
 // base64url alphabet excludes "+/", uses "-_" instead, and has no
 // padding (RawURLEncoding) — so a greedy [A-Za-z0-9_-]+ run captures

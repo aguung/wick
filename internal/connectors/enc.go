@@ -22,7 +22,10 @@ type maskerAdapter struct {
 	user string
 }
 
-func (m *maskerAdapter) Mask(data string, values []string) string {
+func (m *maskerAdapter) Mask(data string, values []string, caseInsensitive bool) string {
+	if caseInsensitive {
+		return m.svc.MaskSensitiveCI(data, values, m.user)
+	}
 	return m.svc.MaskSensitive(data, values, m.user)
 }
 
