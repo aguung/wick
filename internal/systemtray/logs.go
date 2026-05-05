@@ -4,6 +4,7 @@ package systemtray
 
 import (
 	"io"
+	stdlog "log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +27,9 @@ const (
 //
 // Cache dir per OS:
 //
-//	Windows: %LOCALAPPDATA%\<appName>\wick-YYYY-MM-DD.log
-//	macOS  : ~/Library/Caches/<appName>/wick-YYYY-MM-DD.log
-//	Linux  : ~/.cache/<appName>/wick-YYYY-MM-DD.log
+//	Windows: %LOCALAPPDATA%\<appName>\logs\wick-YYYY-MM-DD.log
+//	macOS  : ~/Library/Caches/<appName>/logs/wick-YYYY-MM-DD.log
+//	Linux  : ~/.cache/<appName>/logs/wick-YYYY-MM-DD.log
 //
 // Server + worker goroutines that share this process write here. MCP
 // serve subprocesses (spawned per request by clients like Claude /
@@ -38,7 +39,7 @@ func setupLogFile(appName string, retentionDays int) (string, func(), error) {
 	if err != nil {
 		return "", func() {}, err
 	}
-	dir = filepath.Join(dir, appName)
+	dir = filepath.Join(dir, appName, "logs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", func() {}, err
 	}
@@ -52,7 +53,9 @@ func setupLogFile(appName string, retentionDays int) (string, func(), error) {
 	if err != nil {
 		return "", func() {}, err
 	}
-	log.Logger = zerolog.New(io.MultiWriter(os.Stderr, f)).With().Timestamp().Logger()
+	mw := io.MultiWriter(os.Stderr, f)
+	log.Logger = zerolog.New(mw).With().Timestamp().Logger()
+	stdlog.SetOutput(mw)
 	return path, func() { f.Close() }, nil
 }
 

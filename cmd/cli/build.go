@@ -97,6 +97,13 @@ output is bin/<app-name>[.exe]; override with --output.`,
 			if githubRepo != "" {
 				ldflags = append(ldflags, fmt.Sprintf("-X github.com/yogasw/wick/app.GitHubRepo=%s", githubRepo))
 			}
+			// Windows GUI subsystem: double-click launches systray with no
+			// console window. cmd-launched processes still get stdout via
+			// AttachConsole(ATTACH_PARENT_PROCESS) wired in app/console_windows.go.
+			// --headless drops this so the binary stays a console app.
+			if !headless && goos == "windows" {
+				ldflags = append(ldflags, "-H=windowsgui")
+			}
 
 			goArgs := []string{"build", "-ldflags", strings.Join(ldflags, " "), "-o", output}
 			if headless {

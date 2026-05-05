@@ -72,6 +72,14 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 	buildTime = builtAt
 	serverPort = config.Load().App.Port
 
+	// Log file first — windowsgui builds have no stderr, so any crash
+	// before this point is invisible. UserCfg.LogRetentionDays defaults
+	// to 0 here; setupLogFile substitutes its own default in that case.
+	if p, cleanup, err := setupLogFile(appName, 0); err == nil {
+		logPath = p
+		defer cleanup()
+	}
+
 	lock, err := acquireSingleInstance()
 	if err != nil {
 		log.Printf("single-instance: %v", err)
@@ -103,11 +111,6 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 				log.Printf("apply staged: %v — continuing with current binary", err)
 			}
 		}
-	}
-
-	if p, cleanup, err := setupLogFile(appName, userCfg.LogRetentionDays); err == nil {
-		logPath = p
-		defer cleanup()
 	}
 
 	systray.Run(onReady, onExit)
