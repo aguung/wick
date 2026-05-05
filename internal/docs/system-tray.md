@@ -40,7 +40,13 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
     - Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
 15. ✅ **SQLite WAL + busy_timeout** — `internal/pkg/postgres/gorm.go` set `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=5000` per SQLite open. Cross-process concurrency aman buat tray + MCP stdio. `SetMaxOpenConns(1)` tetap (intra-process serialise writers). Detail: [SQLite concurrency](#sqlite-concurrency)
 16. ✅ **DB path auto-detect** — `userconfig.ResolveDBPath(appName, customPath)` set `DATABASE_URL` env sebelum `config.Load()`. Resolution order: env > `database_path` config > `<binary_dir>/wick.db` (kalau ada `wick.yml`) > `<UserConfigDir>/<appName>/wick.db`. Dipanggil di `systemtray.Run` (tray) + `serverCmd.RunE` + `workerCmd.RunE` (headless). Detail: [Lokasi DB](#lokasi-db)
-17. ✅ **About submenu** — `About ▶ App / Wick / Commit / Built` (info disabled rows) + `Wick Repository` (github.com/yogasw/wick) + `Wick Documentation` (yogasw.github.io/wick/) — klik buka di default browser via `openInEditor` (cmd/start, open, xdg-open semua handle URL).
+17. ✅ **About submenu** — `About ▶ App / Wick / Commit / Built` (info disabled rows) + `Open logs` + `Wick Repository` (github.com/yogasw/wick) + `Wick Documentation` (yogasw.github.io/wick/). Klik link buka di default browser via `openInEditor` (cmd/start, open, xdg-open semua handle URL). Disabled row `Updates: not configured` muncul di About kalau updater gak ada repo.
+
+    Updater state machine (manual click + auto-update on launch reuse same `runCheck()`):
+    - `Updater.CheckLatest(ctx)` → fetch + compare semver only
+    - `Updater.Download(ctx, info)` → download + verify SHA256 + stage
+    - Tray call dua-duanya berurutan → bisa update title di antara fase ("New version X — downloading…")
+    - `Updater.CheckNow(ctx)` masih ada sebagai convenience caller non-tray
 
 ### ⏳ TODO
 
@@ -417,8 +423,7 @@ Right-click menu, di-generate saat startup dari state sekarang:
 ─────────────────────────────────────
 Start server  /  Stop server  (running on :8080)   ← satu toggle
 Start worker  /  Stop worker  (running)            ← satu toggle
-Open logs                                          ← buka wick.log di editor
-Check for updates                                  ← stateful (lihat di bawah)
+Check for updates                                  ← stateful (lihat di bawah). Hidden kalau updater not configured.
 Restart to apply v1.2.4                            ← hidden sampai download ready
 ─────────────────────────────────────
 MCP ▶
@@ -446,20 +451,34 @@ About ▶
   Wick:   v<wickVersion>                           (disabled)
   Commit: <git short hash>                         (disabled)
   Built:  <RFC3339 build time>                     (disabled)
+  Updates: not configured                          (only when not configured, tooltip = setup hint)
   ─────────────
-  Wick Repository      ← github.com/yogasw/wick (open browser)
-  Wick Documentation   ← yogasw.github.io/wick/ (open browser)
+  Open logs                                        ← buka wick.log di editor default
+  Wick Repository                                  ← github.com/yogasw/wick (open browser)
+  Wick Documentation                               ← yogasw.github.io/wick/ (open browser)
 ─────────────────────────────────────
 Quit
 ```
 
-**`Check for updates` states (stateful title):**
-- `Check for updates` — default, idle
-- `Checking for updates…` — selama CheckNow jalan (item di-disable)
-- `Up to date (vX.Y.Z)` — sudah latest
-- `Update check failed (see logs)` — error generic
-- `Update check failed — PAT expired (see logs)` — 401/403 dari GitHub API
-- Reset ke `Check for updates` pas download berhasil → `Restart to apply vX.Y.Z` muncul di bawahnya
+**`Check for updates` states (stateful title, both manual click & auto-update on launch use same flow):**
+
+```
+Default                      : Check for updates
+Click / auto-trigger         → Checking for updates…              (disabled)
+                                ├─ error                           → Update check failed (see logs)
+                                ├─ error 401/403                   → Update check failed — PAT expired (see logs)
+                                ├─ already latest                  → Up to date (vX.Y.Z)
+                                ├─ already staged (prior session)  → Check for updates  +  Restart to apply vX muncul
+                                └─ new version                     → New version vX.Y.Z — downloading…
+                                                                      ├─ download fail → Download failed (see logs)
+                                                                      └─ ok            → Check for updates  +  Restart to apply vX muncul
+```
+
+Implementation: `Updater.CheckLatest(ctx)` (fetch + compare semver only) lalu `Updater.Download(ctx, info)` (download + verify SHA256 + stage). Tray panggil dua-duanya berurutan supaya bisa update title di tengah ("New version X — downloading…"). Background auto-update di-trigger sekali pas tray launch via `runCheck()` yg sama — UI konsisten.
+
+`Updater.CheckNow(ctx)` masih ada sebagai convenience yg call CheckLatest + Download dalam satu shot — buat caller non-tray (mis. headless updater nanti).
+
+**Kenapa "Open logs" di About:** menu utama tray fokus ke action hari-hari (server/worker/update). Open logs jarang dipakai — kebanyakan buat debug — jadi masuk About bareng version info dan link dokumentasi.
 
 **Server toggle:** spawn goroutine yg jalanin `api.NewServer().Run(ctx, port)`. Cancel context buat stop. Pas crash, goroutine log error + reset ke Stopped (icon balik gray).
 

@@ -121,18 +121,29 @@ func (u *Updater) HasStaged() bool {
 // StagedVersion is the tag (e.g. "v1.2.3") of the pending update.
 func (u *Updater) StagedVersion() string { return u.cfg.StagedUpdateVersion }
 
-// CheckNow synchronously fetches the latest release, compares semver,
-// and downloads + stages if newer. Idempotent: re-running with the
-// same staged version is a no-op. Concurrent calls are coalesced —
-// the second caller gets an "in progress" error.
-func (u *Updater) CheckNow(ctx context.Context) (Result, error) {
+// LatestInfo describes the GitHub release latest tag plus the assets
+// that match this binary's GOOS/GOARCH. Returned by CheckLatest so the
+// caller (tray) can show the version before kicking off the download.
+type LatestInfo struct {
+	Version       string // normalised "vX.Y.Z"
+	AlreadyLatest bool   // true when current >= latest (Download is a no-op)
+	AlreadyStaged bool   // true when this exact version is already staged on disk
+	bin           *ghAsset
+	sum           *ghAsset
+}
+
+// CheckLatest fetches the latest release and compares it to the
+// running version. It does NOT download — call Download with the
+// returned LatestInfo to actually fetch the asset. Concurrent calls
+// are coalesced.
+func (u *Updater) CheckLatest(ctx context.Context) (LatestInfo, error) {
 	if !u.Configured() {
-		return Result{}, errors.New("updater not configured (no github repo)")
+		return LatestInfo{}, errors.New("updater not configured (no github repo)")
 	}
 	u.mu.Lock()
 	if u.checking {
 		u.mu.Unlock()
-		return Result{}, errors.New("check already in progress")
+		return LatestInfo{}, errors.New("check already in progress")
 	}
 	u.checking = true
 	u.mu.Unlock()
@@ -144,47 +155,82 @@ func (u *Updater) CheckNow(ctx context.Context) (Result, error) {
 
 	rel, err := u.fetchLatest(ctx)
 	if err != nil {
-		return Result{}, fmt.Errorf("fetch latest: %w", err)
+		return LatestInfo{}, fmt.Errorf("fetch latest: %w", err)
 	}
 	latest := normalizeVer(rel.TagName)
+	info := LatestInfo{Version: latest}
 	if !semverNewer(latest, u.currentVersion) {
-		return Result{LatestVersion: latest, AlreadyLatest: true}, nil
+		info.AlreadyLatest = true
+		return info, nil
 	}
 	if u.cfg.StagedUpdateVersion == latest && fileExists(u.cfg.StagedUpdatePath) {
-		return Result{LatestVersion: latest}, nil
+		info.AlreadyStaged = true
+		return info, nil
 	}
-
-	bin, sum := u.pickAssets(rel.Assets)
-	if bin == nil {
-		return Result{}, fmt.Errorf("no asset matched %s", u.assetName())
+	info.bin, info.sum = u.pickAssets(rel.Assets)
+	if info.bin == nil {
+		return info, fmt.Errorf("no asset matched %s", u.assetName())
 	}
+	return info, nil
+}
 
-	binData, err := u.downloadAsset(ctx, bin.URL)
+// Download fetches the binary asset described by info, verifies its
+// SHA256 against the sibling .sha256 file, and stages it under the
+// updater's cache dir. Persists the staged path/version into the
+// userconfig so a subsequent Apply or auto-apply on next launch can
+// pick it up. No-op if info indicates AlreadyLatest or AlreadyStaged.
+func (u *Updater) Download(ctx context.Context, info LatestInfo) error {
+	if info.AlreadyLatest || info.AlreadyStaged {
+		return nil
+	}
+	if info.bin == nil {
+		return errors.New("download: no binary asset in LatestInfo")
+	}
+	binData, err := u.downloadAsset(ctx, info.bin.URL)
 	if err != nil {
-		return Result{}, fmt.Errorf("download: %w", err)
+		return fmt.Errorf("download: %w", err)
 	}
-	if sum != nil {
-		sumData, err := u.downloadAsset(ctx, sum.URL)
+	if info.sum != nil {
+		sumData, err := u.downloadAsset(ctx, info.sum.URL)
 		if err != nil {
-			return Result{}, fmt.Errorf("download sha256: %w", err)
+			return fmt.Errorf("download sha256: %w", err)
 		}
 		want := parseSHA256(string(sumData))
 		got := sha256Hex(binData)
 		if want == "" || !strings.EqualFold(want, got) {
-			return Result{}, fmt.Errorf("sha256 mismatch (got %s, want %s)", got, want)
+			return fmt.Errorf("sha256 mismatch (got %s, want %s)", got, want)
 		}
 	}
-
-	stagedPath := filepath.Join(u.cacheDir, fmt.Sprintf("%s-%s%s", u.appName, latest, exeExt()))
+	stagedPath := filepath.Join(u.cacheDir, fmt.Sprintf("%s-%s%s", u.appName, info.Version, exeExt()))
 	if err := os.WriteFile(stagedPath, binData, 0o755); err != nil {
-		return Result{}, fmt.Errorf("write staged: %w", err)
+		return fmt.Errorf("write staged: %w", err)
 	}
 	u.cfg.StagedUpdatePath = stagedPath
-	u.cfg.StagedUpdateVersion = latest
+	u.cfg.StagedUpdateVersion = info.Version
 	if err := u.saveCfg(); err != nil {
-		return Result{}, fmt.Errorf("save staged path: %w", err)
+		return fmt.Errorf("save staged path: %w", err)
 	}
-	return Result{LatestVersion: latest, Downloaded: true}, nil
+	return nil
+}
+
+// CheckNow runs CheckLatest then Download in one shot — convenience
+// for the background auto-update goroutine that doesn't need
+// intermediate UI feedback.
+func (u *Updater) CheckNow(ctx context.Context) (Result, error) {
+	info, err := u.CheckLatest(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	if info.AlreadyLatest {
+		return Result{LatestVersion: info.Version, AlreadyLatest: true}, nil
+	}
+	if info.AlreadyStaged {
+		return Result{LatestVersion: info.Version}, nil
+	}
+	if err := u.Download(ctx, info); err != nil {
+		return Result{LatestVersion: info.Version}, err
+	}
+	return Result{LatestVersion: info.Version, Downloaded: true}, nil
 }
 
 // ApplyStagedAndRestart performs the binary swap and re-execs the new

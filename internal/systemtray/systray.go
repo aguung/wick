@@ -161,10 +161,6 @@ func onReady() {
 
 	mServer := systray.AddMenuItem("Start server", "Toggle HTTP server")
 	mWorker := systray.AddMenuItem("Start worker", "Toggle background job worker")
-	mLogs := systray.AddMenuItem("Open logs", "Open "+logPath)
-	if logPath == "" {
-		mLogs.Disable()
-	}
 
 	// Update controls
 	mCheckUpdate := systray.AddMenuItem("Check for updates", "Fetch latest release from GitHub")
@@ -174,8 +170,9 @@ func onReady() {
 	} else {
 		mRestart.Hide()
 	}
-	if updaterInst == nil || !updaterInst.Configured() {
-		mCheckUpdate.Disable()
+	updaterReady := updaterInst != nil && updaterInst.Configured()
+	if !updaterReady {
+		mCheckUpdate.Hide()
 	}
 	systray.AddSeparator()
 
@@ -236,7 +233,14 @@ func onReady() {
 	mAbout.AddSubMenuItem(fmt.Sprintf("Wick:   %s", fmtVer(wickVersion)), "").Disable()
 	mAbout.AddSubMenuItem(fmt.Sprintf("Commit: %s", fmtBuildField(buildCommit)), "").Disable()
 	mAbout.AddSubMenuItem(fmt.Sprintf("Built:  %s", fmtBuildField(buildTime)), "").Disable()
+	if !updaterReady {
+		mAbout.AddSubMenuItem("Updates: not configured", "Build with --github-repo <owner>/<repo> or use a github.com/owner/repo module path to enable self-update").Disable()
+	}
 	mAbout.AddSubMenuItem("─────────────", "").Disable()
+	mLogs := mAbout.AddSubMenuItem("Open logs", "Open "+logPath)
+	if logPath == "" {
+		mLogs.Disable()
+	}
 	mWickRepo := mAbout.AddSubMenuItem("Wick Repository", "https://github.com/yogasw/wick")
 	mWickDocs := mAbout.AddSubMenuItem("Wick Documentation", "https://yogasw.github.io/wick/")
 	systray.AddSeparator()
@@ -280,22 +284,8 @@ func onReady() {
 	}
 	refreshIcon()
 
-	// Background auto-update check.
-	if updaterInst != nil && updaterInst.Configured() && !updaterInst.HasStaged() && userCfg.AutoUpdate {
-		go func() {
-			res, err := updaterInst.CheckNow(context.Background())
-			if err != nil {
-				log.Printf("auto-update: %v", err)
-				return
-			}
-			if res.Downloaded {
-				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", res.LatestVersion))
-				mRestart.Show()
-			}
-		}()
-	}
-
-	// runCheck runs a manual update check and updates menu items to reflect result.
+	// runCheck performs a manual update check with stepwise UI feedback:
+	// Checking… → New version vX — downloading… → Restart to apply vX (or error).
 	runCheck := func() {
 		if updaterInst == nil {
 			return
@@ -303,10 +293,11 @@ func onReady() {
 		mCheckUpdate.SetTitle("Checking for updates…")
 		mCheckUpdate.Disable()
 		go func() {
-			res, err := updaterInst.CheckNow(context.Background())
-			mCheckUpdate.Enable()
+			ctx := context.Background()
+			info, err := updaterInst.CheckLatest(ctx)
 			if err != nil {
 				log.Printf("check update: %v", err)
+				mCheckUpdate.Enable()
 				if strings.Contains(err.Error(), "auth failed") {
 					mCheckUpdate.SetTitle("Update check failed — PAT expired (see logs)")
 				} else {
@@ -314,14 +305,36 @@ func onReady() {
 				}
 				return
 			}
-			if res.Downloaded {
-				mCheckUpdate.SetTitle("Check for updates")
-				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", res.LatestVersion))
-				mRestart.Show()
-			} else if res.AlreadyLatest {
-				mCheckUpdate.SetTitle(fmt.Sprintf("Up to date (%s)", res.LatestVersion))
+			if info.AlreadyLatest {
+				mCheckUpdate.Enable()
+				mCheckUpdate.SetTitle(fmt.Sprintf("Up to date (%s)", info.Version))
+				return
 			}
+			if info.AlreadyStaged {
+				mCheckUpdate.Enable()
+				mCheckUpdate.SetTitle("Check for updates")
+				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", info.Version))
+				mRestart.Show()
+				return
+			}
+			mCheckUpdate.SetTitle(fmt.Sprintf("New version %s — downloading…", info.Version))
+			if err := updaterInst.Download(ctx, info); err != nil {
+				log.Printf("download update: %v", err)
+				mCheckUpdate.Enable()
+				mCheckUpdate.SetTitle("Download failed (see logs)")
+				return
+			}
+			mCheckUpdate.Enable()
+			mCheckUpdate.SetTitle("Check for updates")
+			mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", info.Version))
+			mRestart.Show()
 		}()
+	}
+
+	// Background auto-update reuses runCheck so the menu shows the
+	// same state machine (Checking… → Up to date / Restart now / error).
+	if updaterInst != nil && updaterInst.Configured() && !updaterInst.HasStaged() && userCfg.AutoUpdate {
+		runCheck()
 	}
 
 	go func() {
