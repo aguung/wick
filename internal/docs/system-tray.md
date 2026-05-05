@@ -2,6 +2,54 @@
 
 App system tray cross-platform untuk manage wick service lokal. Tinggal **di dalam** binary user (subcommand `tray`, default kalau jalan tanpa argumen) — bukan binary terpisah. Gak ada UI browser — semua aksi via menu tray; feedback via label menu yg auto-update + icon tray yg ganti per state (zero toast spam).
 
+## Urutan implementasi
+
+Status snapshot 2026-05-05. Click item untuk jump ke section detail.
+
+### ✅ Done
+
+1. ✅ **Bootstrap** — `internal/systemtray/{systray,icon,lock,logs,helpers}.go`, subcommand `tray` (+ default no-arg) di `app.Run()`. Detail: [Project structure](#project-structure)
+2. ✅ **MCP install/uninstall** — `internal/mcpconfig` shared CLI ↔ tray; auto-detect, per-client status label, bulk action, show example config. Detail: [2. MCP install / uninstall](#2-mcp-install--uninstall)
+3. ✅ **Server / worker toggle** — `api.NewServer().Run(ctx, port)` & `worker.NewServer().Run(ctx)` jalan goroutine in-process; cancel via context. Detail: [Run(ctx) sebagai interface boundary](#runctx-sebagai-interface-boundary)
+4. ✅ **Logs ke UserCacheDir** — `setupLogFile()` redirect zerolog tee ke `<UserCacheDir>/<name>/wick.log`. Detail: [Lokasi log](#lokasi-log)
+5. ✅ **Tray icon stateful** — `wickIcon(serverRunning, workerRunning)` runtime-generate PNG/ICO, bg color + corner badge per state. Detail: [Tray icon (stateful)](#tray-icon-stateful)
+6. ✅ **Single-instance lock** via TCP `127.0.0.1:47829` (`acquireSingleInstance`). Detail: [Catatan implementasi penting](#catatan-implementasi-penting)
+7. ✅ **User config** — `internal/userconfig/config.go`, atomic save (`<path>.tmp` → rename), defaults (`auto_start_server=true`, `auto_start_worker=false`, `auto_update=true`). Detail: [User config](#user-config-machine-wide-1-project--1-file)
+8. ✅ **Preferences submenu** — toggle auto-start server/worker/update + Open config file. Detail: [4. Preferences](#4-preferences)
+9. ✅ **Build vars (partial)** — `app.BuildAppName/AppVersion/WickVersion/Commit/Time` declared di `app/app.go`; `BuildWickVersion/Commit/Time` auto-fill via `debug.ReadBuildInfo()`. Detail: [3. Self-updater](#3-self-updater) (Variabel build-time)
+
+### ⏳ TODO
+
+10. ⏳ **`wick build` subcommand** — saat ini `buildCmd()` cuma `runTask("build")` generic. Plan butuh:
+    - flag `--github-pat`, `--github-repo`, `--output`, `--headless`
+    - inject ldflags: `-X app.BuildAppName={{.NAME}} -X app.BuildAppVersion={{.VERSION}} -X app.GitHubPAT=... -X app.GitHubRepo=...`
+    - cross-compile via `GOOS`/`GOARCH` env
+    - `--headless` → tambah `-tags headless`
+    - Detail: [Build & distribution](#build--distribution)
+11. ⏳ **wick.yml build task ldflags** — sekarang `go build -o bin/app main.go` plain. Update template + root `wick.yml` supaya pakai `-ldflags` reference `{{.NAME}}` / `{{.VERSION}}` (vars udah di-resolve di `runTask`, tinggal dipakai di cmd string). Detail: [Build & distribution](#build--distribution)
+12. ⏳ **Self-updater** — `internal/updater/updater.go` belum ada. Komponen:
+    - tambah `GitHubPAT` + `GitHubRepo` ke build vars `app/app.go`
+    - `Updater.CheckOnStartup(ctx)` — apply staged update kalau ada, lalu (kalau enabled) `go u.checkAndDownload(ctx)`
+    - GitHub API `/releases/latest` + asset download by `runtime.GOOS`/`runtime.GOARCH`
+    - SHA256 verify lawan `.sha256` sibling
+    - stage di `<UserCacheDir>/<app>/updates/`, simpen path+version ke `userconfig.StagedUpdatePath/Version`
+    - apply: Linux/macOS `os.Rename` + `syscall.Exec`; Windows rename current → `.old`, rename staged, restart via `os.StartProcess`
+    - menu tray: `Check for updates`, `Restart now` (visible kalau ada staged)
+    - wire `updater.New(...)` di `systemtray.Run` startup + reuse `userCfg.AutoUpdate` toggle
+    - Detail: [3. Self-updater](#3-self-updater)
+13. ⏳ **Headless build tag** — `//go:build !headless` di `internal/systemtray/systray.go` + stub file `//go:build headless` yg print "tray not available" lalu return. Wire `--headless` → `-tags headless` di builder. Detail: [Build tag headless (optional)](#build-tag-headless-optional)
+14. ⏳ **CI/CD template** — `template/.github/workflows/release.yml` (matrix 6 OS×arch, pakai `wick build`, upload artifact, `gh release create` ke `<app>-releases`). Distribute lewat `wick init`. Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
+15. ⏳ **Project resolution order** — `systemtray.Run(cwd, ...)` saat ini langsung pake `cwd`. Plan butuh: `--project` flag → CWD `wick.db` check → `userCfg.DefaultProject` → fallback CWD. Implement di `app.Run()` sebelum panggil `systemtray.Run`. Detail: [Resolution order saat startup](#resolution-order-saat-startup)
+16. ⏳ **Polish**
+    - port configurable dari menu tray (override `config.Load().App.Port`)
+    - status submenu: last error, runtime details (uptime, request count?)
+    - retention / rotation `wick.log` (out of scope v1 menurut plan; defer)
+    - drop atau aktifkan `default_project`/`recent_projects` switcher
+
+### State terakhir
+
+Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Yang missing semuanya distribution / update-related — binary jalan dari `go build` lokal masih oke, tapi belum bisa di-ship sebagai self-updating release. Next milestone logis: #10 (`wick build` subcommand) → #11 (ldflags) → #12 (updater) → #14 (CI workflow).
+
 ## Stack
 
 - **Go** (latest stable)
@@ -579,17 +627,6 @@ Bg color jadi sinyal primer pas Windows scale ke 16-px tray slot (badge jadi kec
 Buat deploy yg gak mau libs tray (Docker container, headless server), tambah tag `//go:build !headless` di `internal/systemtray/systray.go` + stub `Run(...)` di bawah `//go:build headless` yg print "tray not available in headless build" lalu exit. `wick build --headless` pass `-tags headless`.
 
 Gak wajib v1 — `./bin/app server` udah lets user skip tray.
-
-## Urutan implementasi
-
-1. ✅ **Bootstrap** — package `internal/systemtray/`, subcommand `tray` di-wire di `app.Run()`
-2. ✅ **MCP install** — `internal/mcpconfig` shared sama wick CLI
-3. ✅ **Server / worker toggle** — refactor `Run` nerima context, goroutine in-process di tray
-4. ✅ **Logs ke UserCacheDir** — redirect zerolog pas tray startup
-5. ✅ **Tray icon stateful** — runtime-generated PNG/ICO, bg color + corner badge (server bars / gear / check) per state
-6. ✅ **Single-instance lock** via TCP `127.0.0.1:47829`
-7. **Self-updater** — `internal/updater/`, GitHub API + SHA verify + binary swap. Wire ke startup `app.Run`. Tambah menu `Check for updates` + `Restart now`.
-8. **Polish** — port configurable dari menu tray, retention/rotation `wick.log`, status submenu yg show last error / runtime details.
 
 ## Open questions
 
