@@ -16,19 +16,13 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 6. ✅ **Single-instance lock** via TCP `127.0.0.1:47829` (`acquireSingleInstance`). Detail: [Catatan implementasi penting](#catatan-implementasi-penting)
 7. ✅ **User config** — `internal/userconfig/config.go`, atomic save (`<path>.tmp` → rename), defaults (`auto_start_server=true`, `auto_start_worker=false`, `auto_update=true`). Detail: [User config](#user-config-machine-wide-1-project--1-file)
 8. ✅ **Preferences submenu** — toggle auto-start server/worker/update + Open config file. Detail: [4. Preferences](#4-preferences)
-9. ✅ **Build vars (partial)** — `app.BuildAppName/AppVersion/WickVersion/Commit/Time` declared di `app/app.go`; `BuildWickVersion/Commit/Time` auto-fill via `debug.ReadBuildInfo()`. Detail: [3. Self-updater](#3-self-updater) (Variabel build-time)
+9. ✅ **Build vars** — `app.BuildAppName/AppVersion/WickVersion/Commit/Time/GitHubPAT/GitHubRepo` declared di `app/app.go`; `BuildWickVersion/Commit/Time` auto-fill via `debug.ReadBuildInfo()`. Detail: [3. Self-updater](#3-self-updater) (Variabel build-time)
+10. ✅ **`wick build` subcommand** — `cmd/cli/build.go` real cobra cmd. Flag: `--app-name`, `--app-version`, `--github-pat`, `--github-repo`, `-o/--output`, `--headless`. Resolution per value: flag → env (`WICK_APP_NAME` / `WICK_APP_VERSION` / `GITHUB_PAT` / `GITHUB_REPOSITORY`) → `wick.yml` (name/version doang) → `"app"` / `"dev"` fallback. Inject ldflags `BuildAppName/AppVersion` + optional `GitHubPAT/Repo`. Honor `GOOS`/`GOARCH` env; `--headless` tambah `-tags headless`. Default output `bin/<app-name>[.exe]`. Detail: [Build & distribution](#build--distribution)
+11. ✅ **wick.yml build task** — root + template `wick.yml` last cmd jadi `wick build` (drop hand-rolled `go build -ldflags ...`). Subcommand baca `name:`/`version:` langsung dari `wick.yml`. Detail: [Build & distribution](#build--distribution)
 
 ### ⏳ TODO
 
-10. ⏳ **`wick build` subcommand** — saat ini `buildCmd()` cuma `runTask("build")` generic. Plan butuh:
-    - flag `--github-pat`, `--github-repo`, `--output`, `--headless`
-    - inject ldflags: `-X app.BuildAppName={{.NAME}} -X app.BuildAppVersion={{.VERSION}} -X app.GitHubPAT=... -X app.GitHubRepo=...`
-    - cross-compile via `GOOS`/`GOARCH` env
-    - `--headless` → tambah `-tags headless`
-    - Detail: [Build & distribution](#build--distribution)
-11. ⏳ **wick.yml build task ldflags** — sekarang `go build -o bin/app main.go` plain. Update template + root `wick.yml` supaya pakai `-ldflags` reference `{{.NAME}}` / `{{.VERSION}}` (vars udah di-resolve di `runTask`, tinggal dipakai di cmd string). Detail: [Build & distribution](#build--distribution)
 12. ⏳ **Self-updater** — `internal/updater/updater.go` belum ada. Komponen:
-    - tambah `GitHubPAT` + `GitHubRepo` ke build vars `app/app.go`
     - `Updater.CheckOnStartup(ctx)` — apply staged update kalau ada, lalu (kalau enabled) `go u.checkAndDownload(ctx)`
     - GitHub API `/releases/latest` + asset download by `runtime.GOOS`/`runtime.GOARCH`
     - SHA256 verify lawan `.sha256` sibling
@@ -48,7 +42,7 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 
 ### State terakhir
 
-Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Yang missing semuanya distribution / update-related — binary jalan dari `go build` lokal masih oke, tapi belum bisa di-ship sebagai self-updating release. Next milestone logis: #10 (`wick build` subcommand) → #11 (ldflags) → #12 (updater) → #14 (CI workflow).
+Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. `wick build` udah inject ldflags (name/version/PAT/repo) + cross-compile + headless tag. Yang missing tinggal updater itself + CI workflow — binary udah bisa di-build production-ready, tapi belum bisa self-update. Next milestone logis: #12 (updater) → #14 (CI workflow).
 
 ## Stack
 
@@ -171,20 +165,37 @@ Mode headless (`./bin/app server`, `worker`, `mcp serve`) gak di-redirect — te
 
 ## Build & distribution
 
-Flow sama kayak plan GUI awal:
+**Local dev** — zero flag, baca `wick.yml`:
 
 ```bash
-wick build \
-  --github-pat=$GITHUB_PAT \
-  --github-repo=org/<appName>-releases \
-  --output=<appName>
+wick build
+# → bin/<wick.yml name>[.exe], no PAT, full tray build
 ```
 
-**Tanggung jawab `wick build` (gak berubah):**
-- Default: include tray. Opt-out via `wick build --headless` buat build yg exclude `internal/systemtray`. (Berguna buat container Linux yg gak ada tray libs.)
-- Inject PAT + repo via ldflags (dibaca `internal/updater`)
-- Cross-compile per `GOOS`/`GOARCH`
-- macOS native build doang (cgo)
+**CI / explicit** — flag override yg perlu, sisanya dari env:
+
+```bash
+WICK_APP_NAME=myapp \
+WICK_APP_VERSION=1.0.0 \
+GITHUB_PAT=$PAT \
+GITHUB_REPOSITORY=org/myapp-releases \
+wick build -o myapp-linux-amd64
+```
+
+**Resolution per value:**
+
+| Value | Order |
+|---|---|
+| App name | `--app-name` → `$WICK_APP_NAME` → `wick.yml name:` → `"app"` |
+| App version | `--app-version` → `$WICK_APP_VERSION` → `wick.yml version:` → `"dev"` |
+| GitHub PAT | `--github-pat` → `$GITHUB_PAT` |
+| GitHub repo | `--github-repo` → `$GITHUB_REPOSITORY` (auto-set GitHub Actions) |
+
+**Tanggung jawab `wick build`:**
+- Default: include tray. Opt-out via `--headless` (`-tags headless`) buat container Linux / headless server.
+- Inject ldflags ke `github.com/yogasw/wick/app.{BuildAppName,BuildAppVersion,GitHubPAT,GitHubRepo}` (PAT/Repo skip kalau kosong).
+- Cross-compile per `GOOS`/`GOARCH` env (inherit ke `go build`).
+- macOS native build doang (cgo).
 
 **Strategi repo:**
 - `<appName>` — source code (private)
@@ -246,16 +257,17 @@ jobs:
           NAME=$(awk '/^module /{n=split($2,a,"/"); print a[n]}' go.mod)
           echo "app_name=$NAME" >> $GITHUB_OUTPUT
 
+      # GITHUB_REPOSITORY auto-set sama Actions runner → wick build pick
+      # up otomatis (owner/repo). Override pake var kalau target releases
+      # repo beda dari source repo.
       - name: Build pakai wick
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
+          GITHUB_PAT: ${{ secrets.PAT_DOWNLOAD }}
+          GITHUB_REPOSITORY: ${{ github.repository_owner }}/${{ steps.meta.outputs.app_name }}-releases
           OUTPUT: ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-        run: |
-          wick build \
-            --github-pat=${{ secrets.PAT_DOWNLOAD }} \
-            --github-repo=${{ github.repository_owner }}/${{ steps.meta.outputs.app_name }}-releases \
-            --output=$OUTPUT
+        run: wick build -o $OUTPUT
 
       - run: sha256sum ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > $_.sha256
 

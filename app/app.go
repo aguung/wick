@@ -61,6 +61,12 @@ var (
 	BuildWickVersion = "dev"
 	BuildCommit      = "unknown"
 	BuildTime        = "unknown"
+
+	// GitHubPAT and GitHubRepo are injected by `wick build --github-pat
+	// --github-repo` for the self-updater. Empty when built without
+	// those flags — updater falls back to manual-only mode.
+	GitHubPAT  = ""
+	GitHubRepo = ""
 )
 
 func init() {

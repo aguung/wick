@@ -52,7 +52,7 @@ tasks:
   build:
     cmds:
       - "{{.TAILWIND_BIN}} -i web/src/input.css -o web/public/css/app.css --minify"
-      - go build -o bin/app main.go
+      - wick build
 
   test:
     cmds:
