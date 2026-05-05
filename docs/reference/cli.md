@@ -161,6 +161,31 @@ $ wick version
 v0.1.12
 ```
 
+#### `wick version next`
+
+Bump the **last numeric segment** of `version:` in `./wick.yml` by one, write the file back in place (preserving quotes / trailing comments / formatting), and print the new value to stdout.
+
+```bash
+$ cat wick.yml | grep '^version:'
+version: 0.6.4
+$ wick version next
+0.6.5
+$ cat wick.yml | grep '^version:'
+version: 0.6.5
+```
+
+| Current `version:` | After `wick version next` |
+|---|---|
+| `1` | `2` |
+| `0.1` | `0.2` |
+| `0.6.4` | `0.6.5` |
+| `1.2.3.4` | `1.2.3.5` |
+| `"0.1.0"` | `"0.1.1"` (quotes preserved) |
+
+Errors out if `wick.yml` has no `version:` line with a numeric value, or the last segment is not an integer.
+
+Used by [`release.yml`](./build#auto-bumping-the-version) when `AUTO_VERSION=true` — `prepare` calls it to resolve the next tag, `release` calls it again on a fresh checkout (idempotent — same baseline, same bump) to commit the diff back to the source branch.
+
 ---
 
 ## Task shortcuts (from `wick.yml`)
