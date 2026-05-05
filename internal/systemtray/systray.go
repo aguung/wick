@@ -1,3 +1,5 @@
+//go:build !headless
+
 // Package systemtray runs the OS system tray UI for a wick-powered app:
 // start/stop the local HTTP server and the background job worker (both
 // in-process via cancellable goroutines), and install or uninstall the
@@ -23,6 +25,7 @@ import (
 	"github.com/yogasw/wick/internal/pkg/api"
 	"github.com/yogasw/wick/internal/pkg/config"
 	"github.com/yogasw/wick/internal/pkg/worker"
+	"github.com/yogasw/wick/internal/updater"
 	"github.com/yogasw/wick/internal/userconfig"
 )
 
@@ -40,17 +43,23 @@ var (
 	appName     string
 	appVersion  string
 	wickVersion string
+	buildCommit string
+	buildTime   string
 	logPath     string
 	userCfg     userconfig.Config
 	cfgPath     string
+
+	updaterInst *updater.Updater
 )
 
 // Run starts the system tray and blocks until the user picks Quit.
 // projectDir is the wick project directory (CWD where the binary lives).
 // name is the MCP server name written into client configs (default: dir name).
-// appVer / wickVer are the build-injected versions surfaced as a
-// disabled info row in the tray menu.
-func Run(projectDir, name, appVer, wickVer string) {
+// appVer / wickVer / commit / builtAt are the build-injected versions surfaced
+// in the About submenu.
+// repo ("owner/repo") and pat are injected by `wick build` for the
+// self-updater; empty values disable it.
+func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 	project = projectDir
 	if name == "" {
 		name = filepath.Base(projectDir)
@@ -58,6 +67,8 @@ func Run(projectDir, name, appVer, wickVer string) {
 	appName = name
 	appVersion = appVer
 	wickVersion = wickVer
+	buildCommit = commit
+	buildTime = builtAt
 	serverPort = config.Load().App.Port
 
 	lock, err := acquireSingleInstance()
@@ -73,10 +84,22 @@ func Run(projectDir, name, appVer, wickVer string) {
 	if p, err := userconfig.Path(appName); err == nil {
 		cfgPath = p
 	}
-	// Persist defaults on first launch so "Open config file" always
-	// has a real file to open.
 	if err := userconfig.Save(appName, userCfg); err != nil {
 		log.Printf("save config (initial): %v", err)
+	}
+
+	updater.CleanupOldBinary()
+	upd, err := updater.New(&userCfg, saveUserCfg, appName, appVersion, repo, pat)
+	if err != nil {
+		log.Printf("updater init: %v", err)
+	} else {
+		updaterInst = upd
+		if upd.HasStaged() {
+			log.Printf("applying staged update %s …", upd.StagedVersion())
+			if err := upd.ApplyStagedAndRestart(stopServer, stopWorker); err != nil {
+				log.Printf("apply staged: %v — continuing with current binary", err)
+			}
+		}
 	}
 
 	if p, cleanup, err := setupLogFile(appName); err == nil {
@@ -87,9 +110,6 @@ func Run(projectDir, name, appVer, wickVer string) {
 	systray.Run(onReady, onExit)
 }
 
-// fmtVer normalises a version string for display: prefixes a single
-// "v" for semver-looking values, leaves "dev" / "unknown" / empty
-// alone so the menu doesn't end up reading "vdev" or "vv0.6.1".
 func fmtVer(v string) string {
 	if v == "" {
 		return "?"
@@ -100,10 +120,12 @@ func fmtVer(v string) string {
 	return "v" + strings.TrimPrefix(v, "v")
 }
 
-func saveUserCfg() {
+func saveUserCfg() error {
 	if err := userconfig.Save(appName, userCfg); err != nil {
 		log.Printf("save config: %v", err)
+		return err
 	}
+	return nil
 }
 
 type clientUI struct {
@@ -141,6 +163,18 @@ func onReady() {
 	mLogs := systray.AddMenuItem("Open logs", "Open "+logPath)
 	if logPath == "" {
 		mLogs.Disable()
+	}
+
+	// Update controls
+	mCheckUpdate := systray.AddMenuItem("Check for updates", "Fetch latest release from GitHub")
+	mRestart := systray.AddMenuItem("", "Apply downloaded update and restart")
+	if updaterInst != nil && updaterInst.HasStaged() {
+		mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", updaterInst.StagedVersion()))
+	} else {
+		mRestart.Hide()
+	}
+	if updaterInst == nil || !updaterInst.Configured() {
+		mCheckUpdate.Disable()
 	}
 	systray.AddSeparator()
 
@@ -194,6 +228,16 @@ func onReady() {
 	if cfgPath == "" {
 		mOpenCfg.Disable()
 	}
+
+	// About submenu
+	mAbout := systray.AddMenuItem("About", "")
+	mAbout.AddSubMenuItem(fmt.Sprintf("App:    %s %s", appName, fmtVer(appVersion)), "").Disable()
+	mAbout.AddSubMenuItem(fmt.Sprintf("Wick:   %s", fmtVer(wickVersion)), "").Disable()
+	mAbout.AddSubMenuItem(fmt.Sprintf("Commit: %s", fmtBuildField(buildCommit)), "").Disable()
+	mAbout.AddSubMenuItem(fmt.Sprintf("Built:  %s", fmtBuildField(buildTime)), "").Disable()
+	mAbout.AddSubMenuItem("─────────────", "").Disable()
+	mWickRepo := mAbout.AddSubMenuItem("Wick repo", "Open github.com/yogasw/wick")
+	mWickDocs := mAbout.AddSubMenuItem("Wick docs", "Open wick documentation")
 	systray.AddSeparator()
 
 	mQuit := systray.AddMenuItem("Quit", "Quit "+appName)
@@ -235,6 +279,50 @@ func onReady() {
 	}
 	refreshIcon()
 
+	// Background auto-update check.
+	if updaterInst != nil && updaterInst.Configured() && !updaterInst.HasStaged() && userCfg.AutoUpdate {
+		go func() {
+			res, err := updaterInst.CheckNow(context.Background())
+			if err != nil {
+				log.Printf("auto-update: %v", err)
+				return
+			}
+			if res.Downloaded {
+				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", res.LatestVersion))
+				mRestart.Show()
+			}
+		}()
+	}
+
+	// runCheck runs a manual update check and updates menu items to reflect result.
+	runCheck := func() {
+		if updaterInst == nil {
+			return
+		}
+		mCheckUpdate.SetTitle("Checking for updates…")
+		mCheckUpdate.Disable()
+		go func() {
+			res, err := updaterInst.CheckNow(context.Background())
+			mCheckUpdate.Enable()
+			if err != nil {
+				log.Printf("check update: %v", err)
+				if strings.Contains(err.Error(), "auth failed") {
+					mCheckUpdate.SetTitle("Update check failed — PAT expired (see logs)")
+				} else {
+					mCheckUpdate.SetTitle("Update check failed (see logs)")
+				}
+				return
+			}
+			if res.Downloaded {
+				mCheckUpdate.SetTitle("Check for updates")
+				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", res.LatestVersion))
+				mRestart.Show()
+			} else if res.AlreadyLatest {
+				mCheckUpdate.SetTitle(fmt.Sprintf("Up to date (%s)", res.LatestVersion))
+			}
+		}()
+	}
+
 	go func() {
 		for {
 			select {
@@ -264,6 +352,15 @@ func onReady() {
 						log.Printf("open logs: %v", err)
 					}
 				}
+			case <-mCheckUpdate.ClickedCh:
+				runCheck()
+			case <-mRestart.ClickedCh:
+				if updaterInst == nil {
+					continue
+				}
+				if err := updaterInst.ApplyStagedAndRestart(stopServer, stopWorker); err != nil {
+					log.Printf("apply update: %v", err)
+				}
 			case <-mInstallAll.ClickedCh:
 				for _, ui := range uis {
 					if err := installOne(ui.c); err != nil {
@@ -287,7 +384,7 @@ func onReady() {
 				} else {
 					mAutoSrv.Uncheck()
 				}
-				saveUserCfg()
+				_ = saveUserCfg()
 			case <-mAutoWrk.ClickedCh:
 				userCfg.AutoStartWorker = !userCfg.AutoStartWorker
 				if userCfg.AutoStartWorker {
@@ -295,7 +392,7 @@ func onReady() {
 				} else {
 					mAutoWrk.Uncheck()
 				}
-				saveUserCfg()
+				_ = saveUserCfg()
 			case <-mAutoUpd.ClickedCh:
 				userCfg.AutoUpdate = !userCfg.AutoUpdate
 				if userCfg.AutoUpdate {
@@ -303,7 +400,7 @@ func onReady() {
 				} else {
 					mAutoUpd.Uncheck()
 				}
-				saveUserCfg()
+				_ = saveUserCfg()
 			case <-mOpenCfg.ClickedCh:
 				if cfgPath != "" {
 					if err := openInEditor(cfgPath); err != nil {
@@ -319,6 +416,14 @@ func onReady() {
 				if err := openInEditor(path); err != nil {
 					log.Printf("open example: %v", err)
 				}
+			case <-mWickRepo.ClickedCh:
+				if err := openInEditor("https://github.com/yogasw/wick"); err != nil {
+					log.Printf("open wick repo: %v", err)
+				}
+			case <-mWickDocs.ClickedCh:
+				if err := openInEditor("https://yogasw.github.io/wick/"); err != nil {
+					log.Printf("open wick docs: %v", err)
+				}
 			case <-mQuit.ClickedCh:
 				stopServer()
 				stopWorker()
@@ -332,6 +437,13 @@ func onReady() {
 func onExit() {
 	stopServer()
 	stopWorker()
+}
+
+func fmtBuildField(v string) string {
+	if v == "" || v == "unknown" {
+		return "unknown"
+	}
+	return v
 }
 
 func isServerRunning() bool {

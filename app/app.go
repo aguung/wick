@@ -286,7 +286,7 @@ func Run() {
 			if err != nil {
 				return err
 			}
-			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion)
+			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion, BuildCommit, BuildTime, GitHubRepo, GitHubPAT)
 			return nil
 		},
 	}
@@ -333,7 +333,7 @@ func Run() {
 			if err != nil {
 				return err
 			}
-			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion)
+			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion, BuildCommit, BuildTime, GitHubRepo, GitHubPAT)
 			return nil
 		},
 	}

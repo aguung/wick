@@ -22,17 +22,18 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 
 ### ⏳ TODO
 
-12. ⏳ **Self-updater** — `internal/updater/updater.go` belum ada. Komponen:
-    - `Updater.CheckOnStartup(ctx)` — apply staged update kalau ada, lalu (kalau enabled) `go u.checkAndDownload(ctx)`
+12. ✅ **Self-updater** — `internal/updater/updater.go`. Komponen:
+    - `Updater.CheckNow(ctx)` + tray orchestrate startup apply + background goroutine
     - GitHub API `/releases/latest` + asset download by `runtime.GOOS`/`runtime.GOARCH`
     - SHA256 verify lawan `.sha256` sibling
     - stage di `<UserCacheDir>/<app>/updates/`, simpen path+version ke `userconfig.StagedUpdatePath/Version`
-    - apply: Linux/macOS `os.Rename` + `syscall.Exec`; Windows rename current → `.old`, rename staged, restart via `os.StartProcess`
-    - menu tray: `Check for updates`, `Restart now` (visible kalau ada staged)
+    - apply: Linux/macOS `os.Rename` + `syscall.Exec`; Windows rename current → `.old`, rename staged, restart via `exec.Command`
+    - menu tray: `Check for updates`, `Restart to apply vX` (hidden sampai download ready)
     - wire `updater.New(...)` di `systemtray.Run` startup + reuse `userCfg.AutoUpdate` toggle
+    - `systemtray.Run` terima 2 param baru: `repo, pat string`; `app.Run()` pass `GitHubRepo/GitHubPAT`
     - Detail: [3. Self-updater](#3-self-updater)
-13. ⏳ **Headless build tag** — `//go:build !headless` di `internal/systemtray/systray.go` + stub file `//go:build headless` yg print "tray not available" lalu return. Wire `--headless` → `-tags headless` di builder. Detail: [Build tag headless (optional)](#build-tag-headless-optional)
-14. ⏳ **CI/CD template** — `template/.github/workflows/release.yml` (matrix 6 OS×arch, pakai `wick build`, upload artifact, `gh release create` ke `<app>-releases`). Distribute lewat `wick init`. Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
+13. ✅ **Headless build tag** — `//go:build !headless` di semua 5 file `internal/systemtray/` + stub `systray_headless.go` (`//go:build headless`) print error + exit. `--headless` → `-tags headless` di builder (sudah ada di `cmd/cli/build.go`). Detail: [Build tag headless (optional)](#build-tag-headless-optional)
+14. ✅ **CI/CD template** — `template/.github/workflows/release.yml` (matrix 6 OS×arch, install wick CLI, `wick build` inject `WICK_APP_VERSION=$tag` + `GITHUB_PAT` + `GITHUB_REPOSITORY`, upload artifact + `.sha256`, `gh release create` ke `<app>-releases`). Distribute lewat `wick init`. Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
 15. ⏳ **Project resolution order** — `systemtray.Run(cwd, ...)` saat ini langsung pake `cwd`. Plan butuh: `--project` flag → CWD `wick.db` check → `userCfg.DefaultProject` → fallback CWD. Implement di `app.Run()` sebelum panggil `systemtray.Run`. Detail: [Resolution order saat startup](#resolution-order-saat-startup)
 16. ⏳ **Polish**
     - port configurable dari menu tray (override `config.Load().App.Port`)
@@ -42,7 +43,16 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 
 ### State terakhir
 
-Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. `wick build` udah inject ldflags (name/version/PAT/repo) + cross-compile + headless tag. Yang missing tinggal updater itself + CI workflow — binary udah bisa di-build production-ready, tapi belum bisa self-update. Next milestone logis: #12 (updater) → #14 (CI workflow).
+Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Self-updater (#12) + headless tag (#13) + CI release workflow (#14) done.
+
+Tambahan post-plan:
+- `About` submenu: app version, wick version, commit, build time, link repo + docs
+- `Check for updates` stateful: Checking… → Up to date / error label / Restart to apply vX
+- Error PAT expired muncul di menu item langsung (bukan cuma log)
+- `systemtray.Run` terima `commit, builtAt` tambahan param (total 8 param)
+- CI template: auto-tag.yml (push tag dari wick.yml) + release.yml (build + publish on tag push), support same repo / beda repo via `vars.RELEASES_REPO`
+
+Next milestone logis: #15 (project resolution order).
 
 ## Stack
 
