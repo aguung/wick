@@ -977,6 +977,10 @@ textarea, input, select {
   max-height: 60vh;
 }
 
+.min-h-12 {
+  min-height: 3rem;
+}
+
 .min-h-24 {
   min-height: 6rem;
 }
@@ -1385,6 +1389,10 @@ textarea, input, select {
 
 .border-b {
   border-bottom-width: 1px;
+}
+
+.border-b-2 {
+  border-bottom-width: 2px;
 }
 
 .border-r {
@@ -2446,6 +2454,10 @@ textarea, input, select {
 
 .disabled\:opacity-50:disabled {
   opacity: 0.5;
+}
+
+.disabled\:opacity-60:disabled {
+  opacity: 0.6;
 }
 
 .group[open] .group-open\:rotate-180 {
