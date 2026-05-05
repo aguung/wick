@@ -139,7 +139,7 @@ func dispatchCmdBg(raw any, vars map[string]string) (*os.Process, error) {
 }
 
 func startBackground(cmd string) (*os.Process, error) {
-	parts := strings.Fields(cmd)
+	parts := splitFields(cmd)
 	bin, args := resolveLocalBin(parts[0]), parts[1:]
 	c := exec.Command(bin, args...)
 	c.Stdout = os.Stdout
@@ -301,12 +301,41 @@ func execCmd(cmd string) error {
 		return os.Chmod(strings.TrimSpace(strings.TrimPrefix(cmd, "chmod +x ")), 0o755)
 	}
 
-	parts := strings.Fields(cmd)
+	parts := splitFields(cmd)
 	bin, args := resolveLocalBin(parts[0]), parts[1:]
 	c := exec.Command(bin, args...)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	return c.Run()
+}
+
+// splitFields splits a command line by whitespace while respecting
+// double-quoted segments and stripping the surrounding quotes — so
+// `go build -ldflags "-X foo=bar baz" .` becomes 5 tokens, not 7.
+// Plain strings.Fields would shred quoted arguments containing
+// spaces, breaking the -ldflags case used by `wick build`.
+func splitFields(cmd string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+		case (c == ' ' || c == '\t') && !inQuote:
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // resolveLocalBin converts bin/foo or ./bin/foo to an absolute path so the OS can find it

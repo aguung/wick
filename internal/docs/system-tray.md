@@ -1,12 +1,11 @@
 # Wick Manager — Implementation Plan System Tray
 
-App system tray cross-platform untuk manage wick service lokal. Tinggal **di dalam** binary user (subcommand `tray`, default kalau jalan tanpa argumen) — bukan binary terpisah. Gak ada UI browser — semua aksi via menu tray + toast notification.
+App system tray cross-platform untuk manage wick service lokal. Tinggal **di dalam** binary user (subcommand `tray`, default kalau jalan tanpa argumen) — bukan binary terpisah. Gak ada UI browser — semua aksi via menu tray; feedback via label menu yg auto-update + icon tray yg ganti per state (zero toast spam).
 
 ## Stack
 
 - **Go** (latest stable)
 - **`fyne.io/systray`** — API tray cross-platform minimal; no cgo di Windows/Linux, cgo cuma di macOS (cocoa)
-- **`github.com/gen2brain/beeep`** — desktop notification (Windows toast, macOS NSUserNotification, Linux libnotify/dbus)
 - **`github.com/sergeymakinen/go-ico`** — encode ICO buat tray icon Windows (PNG buat macOS/Linux)
 - **`github.com/rs/zerolog`** — udah dipakai wick; di-redirect ke log file per-OS pas tray jalan
 - **Tray icon**: 32×32 di-generate runtime (kotak ijo + huruf "W" putih)
@@ -345,13 +344,16 @@ Preferences ▶
 Quit
 ```
 
-**Server toggle:** spawn goroutine yg jalanin `api.NewServer().Run(ctx, port)`. Cancel context buat stop. Pas crash, goroutine notify "Server crashed: …" + reset ke Stopped.
+**Server toggle:** spawn goroutine yg jalanin `api.NewServer().Run(ctx, port)`. Cancel context buat stop. Pas crash, goroutine log error + reset ke Stopped (icon balik gray).
 
 **Worker toggle:** pola sama persis pakai `worker.NewServer().Run(ctx)`.
 
 **Auto-start saat launch:** dikontrol sama `auto_start_server` / `auto_start_worker` di user config. Toggle dari menu **Preferences ▶ Auto-start … on launch** — efek pas next launch (gak start/stop runtime langsung). Default: server `true`, worker `false`.
 
-**Notifications:** tiap aksi raise toast lewat `beeep` ("MCP installed: <appName> → Claude Desktop", "Server stopped", "Update v1.2.3 ready — restart to activate"). Error jadi "<x> failed: <message>".
+**Feedback:** zero toast notif — Windows toast cenderung intrusif + nyangkut di Action Center. Visual feedback dari:
+1. Label menu yg auto-update (`Start server` ↔ `Stop server  (running on :8080)`)
+2. Tray icon yg ganti per state — bg color + corner badge (lihat section "Tray icon" di bawah)
+3. Log file di `<UserCacheDir>/<name>/wick.log` buat detail/error
 
 ### 2. MCP install / uninstall
 
@@ -397,7 +399,7 @@ Driven sama `internal/mcpconfig` — package yg sama yg dipakai wick CLI. Logic 
 - `<client> — not installed` — config file ada, entry belum
 - `<client> — not configured yet` — config file belum dibikin
 
-**Bulk action:** `Install all detected` / `Uninstall all` — toast tampil `N installed, M failed`.
+**Bulk action:** `Install all detected` / `Uninstall all` — refresh status label per client habis aksi (✓ installed / not installed).
 
 **Show example config:** tulis snippet hasil generate ke `%TEMP%\<appName>-mcp-config.json` + buka di editor default — buat manual paste atau referensi.
 
@@ -547,9 +549,20 @@ Ini kontrak yg bikin code path sama bisa jalan buat headless deploy (`./bin/app 
 
 Tray udah gak spawn subprocess buat server/worker — udah in-process. Code kill process tree udah gone. Self-update tinggal satu-satunya concern process cross-platform (binary swap di Windows, `syscall.Exec` di Unix).
 
-### Tray icon
+### Tray icon (stateful)
 
-Di-generate runtime di `icon.go`: image RGBA 32×32, background ijo `#1d7d4f`, "W" putih digambar pakai stroke Bresenham tebel. PNG buat macOS/Linux, ICO via `go-ico` buat Windows. Gak ada asset icon di repo.
+Di-generate runtime di `icon.go` — image RGBA 64×64. PNG buat macOS/Linux, ICO via `go-ico` buat Windows. Gak ada asset icon di repo.
+
+Layout: brand "W" (8-px stroke Bresenham, edge-to-edge) di tengah, plus corner badge di bottom-right (white disk + state-specific glyph). Bg color + badge ngasih sinyal at-a-glance:
+
+| Server | Worker | Bg | W color | Badge |
+|---|---|---|---|---|
+| stop | stop | gray `#888780` | dim `#c8c7c1` | (none) |
+| running | stop | blue `#185fa5` | white | white disk + 3 blue bars (server rack) |
+| stop | running | orange `#ef9f27` | white | white disk + orange ring (gear) |
+| running | running | green `#1d7d4f` | white | white disk + green ✓ check |
+
+Bg color jadi sinyal primer pas Windows scale ke 16-px tray slot (badge jadi kecil tapi warna tetep beda). Badge baru jelas di high-DPI / 24-px+ tray. Refresh icon dipanggil tiap habis start/stop server/worker dan habis goroutine server/worker exit.
 
 ### Build tag headless (optional)
 
@@ -563,10 +576,10 @@ Gak wajib v1 — `./bin/app server` udah lets user skip tray.
 2. ✅ **MCP install** — `internal/mcpconfig` shared sama wick CLI
 3. ✅ **Server / worker toggle** — refactor `Run` nerima context, goroutine in-process di tray
 4. ✅ **Logs ke UserCacheDir** — redirect zerolog pas tray startup
-5. ✅ **Notifications** — `beeep` buat tiap aksi
-6. ✅ **Tray icon** — generate runtime PNG/ICO
+5. ✅ **Tray icon stateful** — runtime-generated PNG/ICO, bg color + corner badge (server bars / gear / check) per state
+6. ✅ **Single-instance lock** via TCP `127.0.0.1:47829`
 7. **Self-updater** — `internal/updater/`, GitHub API + SHA verify + binary swap. Wire ke startup `app.Run`. Tambah menu `Check for updates` + `Restart now`.
-8. **Polish** — handle "another instance already running" (port-bind clash dst), crash report di toast, port configurable dari menu tray, retention/rotation `wick.log`.
+8. **Polish** — port configurable dari menu tray, retention/rotation `wick.log`, status submenu yg show last error / runtime details.
 
 ## Open questions
 

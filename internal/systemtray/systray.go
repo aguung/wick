@@ -17,7 +17,6 @@ import (
 	"sync"
 
 	"fyne.io/systray"
-	"github.com/gen2brain/beeep"
 
 	"github.com/yogasw/wick/internal/mcpconfig"
 	"github.com/yogasw/wick/internal/pkg/api"
@@ -36,11 +35,11 @@ var (
 	workerCancel context.CancelFunc
 	workerDone   chan struct{}
 
-	project  string
-	appName  string
-	logPath  string
-	userCfg  userconfig.Config
-	cfgPath  string
+	project string
+	appName string
+	logPath string
+	userCfg userconfig.Config
+	cfgPath string
 )
 
 // Run starts the system tray and blocks until the user picks Quit.
@@ -56,7 +55,6 @@ func Run(projectDir, name string) {
 
 	lock, err := acquireSingleInstance()
 	if err != nil {
-		notify(appName+" already running", "A tray instance is already active — open it from the system tray.")
 		log.Printf("single-instance: %v", err)
 		return
 	}
@@ -69,8 +67,7 @@ func Run(projectDir, name string) {
 		cfgPath = p
 	}
 	// Persist defaults on first launch so "Open config file" always
-	// has a real file to open (instead of Windows complaining about
-	// a missing path).
+	// has a real file to open.
 	if err := userconfig.Save(appName, userCfg); err != nil {
 		log.Printf("save config (initial): %v", err)
 	}
@@ -86,13 +83,6 @@ func Run(projectDir, name string) {
 func saveUserCfg() {
 	if err := userconfig.Save(appName, userCfg); err != nil {
 		log.Printf("save config: %v", err)
-		notify("Save preferences failed", err.Error())
-	}
-}
-
-func notify(title, body string) {
-	if err := beeep.Notify(title, body, ""); err != nil {
-		log.Printf("notify: %v", err)
 	}
 }
 
@@ -113,8 +103,12 @@ func (u *clientUI) refresh() {
 	}
 }
 
+func refreshIcon() {
+	systray.SetIcon(wickIcon(isServerRunning(), isWorkerRunning()))
+}
+
 func onReady() {
-	systray.SetIcon(wickIcon())
+	refreshIcon()
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName + " — " + project)
 
@@ -151,21 +145,19 @@ func onReady() {
 				select {
 				case <-install.ClickedCh:
 					if err := installOne(ui.c); err != nil {
-						notify("MCP install failed", ui.c.Label+": "+err.Error())
+						log.Printf("install %s: %v", ui.c.ID, err)
 					} else {
-						notify("MCP installed", appName+" → "+ui.c.Label)
 						ui.refresh()
 					}
 				case <-uninstall.ClickedCh:
 					if err := mcpconfig.Uninstall(ui.c, appName); err != nil {
-						notify("MCP uninstall failed", ui.c.Label+": "+err.Error())
+						log.Printf("uninstall %s: %v", ui.c.ID, err)
 					} else {
-						notify("MCP uninstalled", appName+" removed from "+ui.c.Label)
 						ui.refresh()
 					}
 				case <-open.ClickedCh:
 					if err := openInEditor(ui.c.Path); err != nil {
-						notify("Open failed", ui.c.Path+": "+err.Error())
+						log.Printf("open %s: %v", ui.c.Path, err)
 					}
 				}
 			}
@@ -203,26 +195,25 @@ func onReady() {
 
 	if userCfg.AutoStartServer {
 		if err := startServer(); err != nil {
-			notify("Server start failed", err.Error())
+			log.Printf("auto-start server: %v", err)
 			setServerLabel(false)
 		} else {
 			setServerLabel(true)
-			notify("Server started", fmt.Sprintf("HTTP server running on :%d", serverPort))
 		}
 	} else {
 		setServerLabel(false)
 	}
 	if userCfg.AutoStartWorker {
 		if err := startWorker(); err != nil {
-			notify("Worker start failed", err.Error())
+			log.Printf("auto-start worker: %v", err)
 			setWorkerLabel(false)
 		} else {
 			setWorkerLabel(true)
-			notify("Worker started", "Background worker running")
 		}
 	} else {
 		setWorkerLabel(false)
 	}
+	refreshIcon()
 
 	go func() {
 		for {
@@ -231,54 +222,44 @@ func onReady() {
 				if isServerRunning() {
 					stopServer()
 					setServerLabel(false)
-					notify("Server stopped", "HTTP server stopped")
 				} else if err := startServer(); err != nil {
-					notify("Server start failed", err.Error())
+					log.Printf("start server: %v", err)
 				} else {
 					setServerLabel(true)
-					notify("Server started", fmt.Sprintf("HTTP server running on :%d", serverPort))
 				}
+				refreshIcon()
 			case <-mWorker.ClickedCh:
 				if isWorkerRunning() {
 					stopWorker()
 					setWorkerLabel(false)
-					notify("Worker stopped", "Background worker stopped")
 				} else if err := startWorker(); err != nil {
-					notify("Worker start failed", err.Error())
+					log.Printf("start worker: %v", err)
 				} else {
 					setWorkerLabel(true)
-					notify("Worker started", "Background worker running")
 				}
+				refreshIcon()
 			case <-mLogs.ClickedCh:
 				if logPath != "" {
 					if err := openInEditor(logPath); err != nil {
-						notify("Open failed", err.Error())
+						log.Printf("open logs: %v", err)
 					}
 				}
 			case <-mInstallAll.ClickedCh:
-				ok, fail := 0, 0
 				for _, ui := range uis {
 					if err := installOne(ui.c); err != nil {
 						log.Printf("install %s: %v", ui.c.ID, err)
-						fail++
 					} else {
-						ok++
 						ui.refresh()
 					}
 				}
-				notify("MCP install all", fmt.Sprintf("%d installed, %d failed", ok, fail))
 			case <-mUninstallAll.ClickedCh:
-				ok, fail := 0, 0
 				for _, ui := range uis {
 					if err := mcpconfig.Uninstall(ui.c, appName); err != nil {
 						log.Printf("uninstall %s: %v", ui.c.ID, err)
-						fail++
 					} else {
-						ok++
 						ui.refresh()
 					}
 				}
-				notify("MCP uninstall all", fmt.Sprintf("%d removed, %d failed", ok, fail))
 			case <-mAutoSrv.ClickedCh:
 				userCfg.AutoStartServer = !userCfg.AutoStartServer
 				if userCfg.AutoStartServer {
@@ -306,17 +287,17 @@ func onReady() {
 			case <-mOpenCfg.ClickedCh:
 				if cfgPath != "" {
 					if err := openInEditor(cfgPath); err != nil {
-						notify("Open failed", err.Error())
+						log.Printf("open config: %v", err)
 					}
 				}
 			case <-mExample.ClickedCh:
 				path, err := writeExampleConfig()
 				if err != nil {
-					notify("Example failed", err.Error())
+					log.Printf("example config: %v", err)
 					continue
 				}
 				if err := openInEditor(path); err != nil {
-					notify("Open failed", err.Error())
+					log.Printf("open example: %v", err)
 				}
 			case <-mQuit.ClickedCh:
 				stopServer()
@@ -361,11 +342,11 @@ func startServer() error {
 		defer close(serverDone)
 		if err := srv.Run(ctx, serverPort); err != nil {
 			log.Printf("server: %v", err)
-			notify("Server crashed", err.Error())
 		}
 		mu.Lock()
 		serverCancel = nil
 		mu.Unlock()
+		refreshIcon()
 	}()
 	return nil
 }
@@ -400,11 +381,11 @@ func startWorker() error {
 		defer close(workerDone)
 		if err := srv.Run(ctx); err != nil {
 			log.Printf("worker: %v", err)
-			notify("Worker crashed", err.Error())
 		}
 		mu.Lock()
 		workerCancel = nil
 		mu.Unlock()
+		refreshIcon()
 	}()
 	return nil
 }
@@ -449,4 +430,3 @@ func writeExampleConfig() (string, error) {
 	}
 	return dst, nil
 }
-
