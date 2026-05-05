@@ -20,22 +20,32 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 10. ✅ **`wick build` subcommand** — `cmd/cli/build.go` real cobra cmd. Flag: `--app-name`, `--app-version`, `--github-pat`, `--github-repo`, `-o/--output`, `--headless`. Resolution per value: flag → env (`WICK_APP_NAME` / `WICK_APP_VERSION` / `GITHUB_PAT` / `GITHUB_REPOSITORY`) → `wick.yml` (name/version doang) → `"app"` / `"dev"` fallback. Inject ldflags `BuildAppName/AppVersion` + optional `GitHubPAT/Repo`. Honor `GOOS`/`GOARCH` env; `--headless` tambah `-tags headless`. Default output `bin/<app-name>[.exe]`. Detail: [Build & distribution](#build--distribution)
 11. ✅ **wick.yml build task** — root + template `wick.yml` last cmd jadi `wick build` (drop hand-rolled `go build -ldflags ...`). Subcommand baca `name:`/`version:` langsung dari `wick.yml`. Detail: [Build & distribution](#build--distribution)
 
-### ⏳ TODO
-
 12. ✅ **Self-updater** — `internal/updater/updater.go`. Komponen:
     - `Updater.CheckNow(ctx)` + tray orchestrate startup apply + background goroutine
     - GitHub API `/releases/latest` + asset download by `runtime.GOOS`/`runtime.GOARCH`
     - SHA256 verify lawan `.sha256` sibling
     - stage di `<UserCacheDir>/<app>/updates/`, simpen path+version ke `userconfig.StagedUpdatePath/Version`
     - apply: Linux/macOS `os.Rename` + `syscall.Exec`; Windows rename current → `.old`, rename staged, restart via `exec.Command`
-    - menu tray: `Check for updates`, `Restart to apply vX` (hidden sampai download ready)
+    - menu tray: `Check for updates` (stateful: Checking… / Up to date / Update check failed — PAT expired / etc.), `Restart to apply vX` (hidden sampai download ready)
+    - error 401/403 dari GitHub API surface ke menu item title — bukan cuma di log
     - wire `updater.New(...)` di `systemtray.Run` startup + reuse `userCfg.AutoUpdate` toggle
-    - `systemtray.Run` terima 2 param baru: `repo, pat string`; `app.Run()` pass `GitHubRepo/GitHubPAT`
+    - `systemtray.Run` terima 4 param tambahan: `commit, builtAt, repo, pat string`; `app.Run()` pass `BuildCommit/BuildTime/GitHubRepo/GitHubPAT`
     - Detail: [3. Self-updater](#3-self-updater)
 13. ✅ **Headless build tag** — `//go:build !headless` di semua 5 file `internal/systemtray/` + stub `systray_headless.go` (`//go:build headless`) print error + exit. `--headless` → `-tags headless` di builder (sudah ada di `cmd/cli/build.go`). Detail: [Build tag headless (optional)](#build-tag-headless-optional)
-14. ✅ **CI/CD template** — `template/.github/workflows/release.yml` (matrix 6 OS×arch, install wick CLI, `wick build` inject `WICK_APP_VERSION=$tag` + `GITHUB_PAT` + `GITHUB_REPOSITORY`, upload artifact + `.sha256`, `gh release create` ke `<app>-releases`). Distribute lewat `wick init`. Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
-15. ⏳ **Project resolution order** — `systemtray.Run(cwd, ...)` saat ini langsung pake `cwd`. Plan butuh: `--project` flag → CWD `wick.db` check → `userCfg.DefaultProject` → fallback CWD. Implement di `app.Run()` sebelum panggil `systemtray.Run`. Detail: [Resolution order saat startup](#resolution-order-saat-startup)
-16. ⏳ **Polish**
+14. ✅ **CI/CD template** — 2 workflow di `template/.github/workflows/`:
+    - `auto-tag.yml` — on push main, baca `version:` dari `wick.yml`, push git tag kalau belum ada
+    - `release.yml` — on push tag `v*.*.*`, matrix build 6 OS×arch, `wick build` + sha256, `gh release create` ke `<app>-releases`
+    - Support same-repo atau separate releases repo via `vars.RELEASES_REPO`
+    - Setup PAT (PAT_DOWNLOAD baked, PAT_BUILD CI-only) di-dokumen lengkap di header release.yml
+    - Detail: [CI/CD (GitHub Actions)](#cicd-github-actions)
+15. ✅ **SQLite WAL + busy_timeout** — `internal/pkg/postgres/gorm.go` set `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=5000` per SQLite open. Cross-process concurrency aman buat tray + MCP stdio. `SetMaxOpenConns(1)` tetap (intra-process serialise writers). Detail: [SQLite concurrency](#sqlite-concurrency)
+16. ✅ **DB path auto-detect** — `userconfig.ResolveDBPath(appName, customPath)` set `DATABASE_URL` env sebelum `config.Load()`. Resolution order: env > `database_path` config > `<binary_dir>/wick.db` (kalau ada `wick.yml`) > `<UserConfigDir>/<appName>/wick.db`. Dipanggil di `systemtray.Run` (tray) + `serverCmd.RunE` + `workerCmd.RunE` (headless). Detail: [Lokasi DB](#lokasi-db)
+17. ✅ **About submenu** — `About ▶ App / Wick / Commit / Built` (info disabled rows) + `Wick Repository` (github.com/yogasw/wick) + `Wick Documentation` (yogasw.github.io/wick/) — klik buka di default browser via `openInEditor` (cmd/start, open, xdg-open semua handle URL).
+
+### ⏳ TODO
+
+18. ⏳ **Project resolution order** — `systemtray.Run(cwd, ...)` saat ini langsung pake `cwd`. Plan butuh: `--project` flag → CWD `wick.db` check → `userCfg.DefaultProject` → fallback CWD. Implement di `app.Run()` sebelum panggil `systemtray.Run`. Detail: [Resolution order saat startup](#resolution-order-saat-startup)
+19. ⏳ **Polish**
     - port configurable dari menu tray (override `config.Load().App.Port`)
     - status submenu: last error, runtime details (uptime, request count?)
     - retention / rotation `wick.log` (out of scope v1 menurut plan; defer)
@@ -43,16 +53,11 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 
 ### State terakhir
 
-Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Self-updater (#12) + headless tag (#13) + CI release workflow (#14) done.
+Tray fungsional production-ready buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Self-updater + CI release workflow + DB path auto-detect + About menu udah terintegrasi end-to-end. Bisa di-distribute via private GitHub releases dengan auto-update tanpa user perlu manual download.
 
-Tambahan post-plan:
-- `About` submenu: app version, wick version, commit, build time, `Wick Repository` (github.com/yogasw/wick) + `Wick Documentation` (yogasw.github.io/wick/) — klik buka browser langsung
-- `Check for updates` stateful: Checking… → Up to date / error label / Restart to apply vX
-- Error PAT expired muncul di menu item langsung (bukan cuma log)
-- `systemtray.Run` terima `commit, builtAt` tambahan param (total 8 param)
-- CI template: auto-tag.yml (push tag dari wick.yml) + release.yml (build + publish on tag push), support same repo / beda repo via `vars.RELEASES_REPO`
+Verified manual: `wick init test4` → `wick build` → copy binary ke folder lain → run → DB otomatis ke `%APPDATA%\test4\` (standalone mode), config terpisah per binary, WAL aktif (file `.shm` + `.wal` muncul). Path stabil pas binary dipindah-pindah.
 
-Next milestone logis: #15 (project resolution order).
+Next milestone logis: #18 (project resolution order).
 
 ## Stack
 
@@ -87,8 +92,11 @@ Wick pakai konsep **project** — directory yg isinya `wick.db` (atau state wick
 - MCP server di-spawn per-project sama client (Claude/Cursor) dgn project path tertentu
 - User bisa punya multi project di mesin sama (dev, staging, client A, client B, dst)
 
-### Resolution order saat startup
+### Resolution order saat startup (PROJECT)
 
+Status: **belum implement** (TODO #18). Saat ini `systemtray.Run` langsung pake CWD.
+
+Plan:
 ```
 1. Flag --project <path>?        ──Yes──> pakai itu
    ↓ No
@@ -100,6 +108,34 @@ Wick pakai konsep **project** — directory yg isinya `wick.db` (atau state wick
 ```
 
 Gak ada first-run picker UI — tray gak bisa prompt. Kalau project salah, user jalan `./bin/app tray` dari CWD yg bener atau set `default_project` di pointer config.
+
+### Lokasi DB (sudah implement)
+
+`userconfig.ResolveDBPath(appName, customPath)` dipanggil sebelum `config.Load()` baik di `systemtray.Run` (tray mode) maupun `serverCmd.RunE` / `workerCmd.RunE` (headless mode). Fungsi set `DATABASE_URL` env supaya `config.Load()` pickup.
+
+Resolution order — first non-empty wins, never overwrite:
+
+```
+1. DATABASE_URL env sudah set explicit       ──Yes──> pakai itu, jangan sentuh
+   ↓ kosong
+2. userCfg.DatabasePath di config.json       ──Yes──> pakai itu (user override manual)
+   ↓ kosong
+3. <binary_dir>/wick.yml exist?              ──Yes──> <binary_dir>/wick.db (project mode)
+   ↓ tidak
+4. Fallback: <UserConfigDir>/<appName>/wick.db (standalone / downloaded mode)
+```
+
+**Use cases:**
+
+| Skenario | DB path |
+|---|---|
+| Dev `wick build` di `test4/` → run `./bin/test4.exe` (binary di `test4/bin/`, wick.yml di `test4/`) | `%APPDATA%\test4\wick.db` (standalone — wick.yml gak di sebelah binary) |
+| Build `go build .` di project root → run `./test4.exe` (wick.yml ada di sebelahnya) | `<projectroot>/wick.db` (project mode) |
+| User download `test4.exe` ke folder mana aja, double-click | `%APPDATA%\test4\wick.db` (standalone, path stabil) |
+| User edit `database_path: "D:\\custom\\my.db"` di config.json | `D:\custom\my.db` (override manual) |
+| CI / docker set `DATABASE_URL=postgres://...` | pakai env, tray gak override |
+
+Path stabil sekali resolved — pindah binary gak ngubah DB location selama mode-nya sama (standalone tetep `%APPDATA%`, project mode follow binary dir).
 
 ### User config (machine-wide, 1 project = 1 file)
 
@@ -143,6 +179,7 @@ Schema (lihat `internal/userconfig.Config`):
   "auto_update": true,
   "default_project": "D:\\code\\work\\wick",
   "recent_projects": ["D:\\code\\work\\wick", "D:\\code\\work\\client-a"],
+  "database_path": "",
   "staged_update_path": "",
   "staged_update_version": ""
 }
@@ -153,11 +190,29 @@ Schema (lihat `internal/userconfig.Config`):
 - `auto_start_worker` (default `false`) — saat tray launch, langsung start background worker
 - `auto_update` (default `true`) — self-updater check + download di background
 - `default_project` / `recent_projects` — pointer project (defer aktivasi sampe ada switcher UI)
+- `database_path` — override SQLite DB location. Kosong = auto-detect (lihat [Lokasi DB](#lokasi-db-sudah-implement))
 - `staged_update_path` / `staged_update_version` — managed self-updater, gak user-facing
 
 Default jalan kalau file belum ada. Toggle dari tray menu nge-overwrite file (atomic write via `<path>.tmp` → rename).
 
 Preferensi per-project (kalau ada — mis. config khusus app yg user setup di admin panel) tetep di wick.db project aktif lewat configs repo wick. Tray sendiri gak nyimpen apa-apa di DB.
+
+## SQLite concurrency
+
+Tray + MCP stdio = 2 process bisa nulis ke `wick.db` yang sama. `internal/pkg/postgres/gorm.go` set 3 hal di SQLite open:
+
+```go
+db.Exec("PRAGMA journal_mode=WAL")    // cross-process reader/writer concurrency
+db.Exec("PRAGMA busy_timeout=5000")   // writer wait 5s instead of SQLITE_BUSY
+sqlDB.SetMaxOpenConns(1)              // serialise writers within single process
+```
+
+**Kenapa ketiganya:**
+- **WAL** — solve cross-process. Tray bisa baca pas MCP nulis (vice versa).
+- **busy_timeout** — solve write contention. Kalau tray + MCP nulis bareng, yg telat tunggu 5 detik bukan langsung error.
+- **MaxOpenConns(1)** — solve intra-process. Go `database/sql` pool bisa buka multiple conn dari satu process; SQLite cuma allow 1 writer per file. Tanpa ini, 2 goroutine nulis lewat 2 conn berbeda → `SQLITE_BUSY` walaupun WAL aktif.
+
+Pattern desktop = serial write (user click → response), bukan high-concurrency loop. Setup ini cukup buat shared `wick.db`. Postgres branch tidak tersentuh — tetep pakai `MaxOpenConns(100)` + `MaxIdleConns(10)`.
 
 ## Lokasi log
 
@@ -216,7 +271,18 @@ wick build -o myapp-linux-amd64
 
 ## CI/CD (GitHub Actions)
 
-Matrix sama kayak sebelumnya, tapi **tanpa** Node/yarn setup atau bake-dist step. Disediain sebagai template di `template/.github/workflows/release.yml`, di-copy lewat `wick init`.
+2 workflow di `template/.github/workflows/` (di-copy ke downstream lewat `wick init`):
+
+1. **`auto-tag.yml`** — on push to main/master:
+   - baca `version:` dari `wick.yml`
+   - cek `git ls-remote --tags origin v<X>` — kalau sudah ada → skip
+   - kalau belum → `git tag` + `git push origin <tag>` → trigger `release.yml`
+2. **`release.yml`** — on push tag `v*.*.*`:
+   - matrix build 6 OS×arch (windows/darwin/linux × amd64/arm64)
+   - install wick CLI: `go install github.com/yogasw/wick@latest`
+   - build: `wick build -o <app>-<os>-<arch>(.exe)` (`wick.yml` baca version langsung)
+   - sha256 sibling
+   - `gh release create` ke `<app>-releases`
 
 ### Build matrix
 
@@ -229,108 +295,52 @@ Matrix sama kayak sebelumnya, tapi **tanpa** Node/yarn setup atau bake-dist step
 | linux | amd64 | `<app>-linux-amd64` |
 | linux | arm64 | `<app>-linux-arm64` |
 
-```yaml
-name: Release
-on:
-  push:
-    tags: ['v*.*.*']
-permissions:
-  contents: read
-jobs:
-  build:
-    name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows, arch: amd64, runner: windows-latest, ext: '.exe' }
-          - { os: windows, arch: arm64, runner: windows-latest, ext: '.exe' }
-          - { os: darwin,  arch: amd64, runner: macos-latest,   ext: ''     }
-          - { os: darwin,  arch: arm64, runner: macos-latest,   ext: ''     }
-          - { os: linux,   arch: amd64, runner: ubuntu-latest,  ext: ''     }
-          - { os: linux,   arch: arm64, runner: ubuntu-latest,  ext: ''     }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-          cache: true
+### Setup repo + PAT (2 skenario)
 
-      # Tray Linux gak butuh deps tambahan (fyne.io/systray pakai dbus pure-Go).
-      # macOS pakai cocoa via cgo — Xcode CLT udah preinstalled di macos-latest.
-      # Windows pakai syscall — gak perlu setup.
+**Skenario A — separate releases repo (recommended buat private app):**
 
-      - name: Resolve app name dari go.mod
-        id: meta
-        run: |
-          NAME=$(awk '/^module /{n=split($2,a,"/"); print a[n]}' go.mod)
-          echo "app_name=$NAME" >> $GITHUB_OUTPUT
+| Setting | Value |
+|---|---|
+| `vars.RELEASES_REPO` (Actions variable) | `org/<app>-releases` |
+| `secrets.PAT_DOWNLOAD` | fine-grained PAT, scope `<app>-releases`, Contents read-only — **baked ke binary** |
+| `secrets.PAT_BUILD` | fine-grained PAT, scope `<app>-releases`, Contents read+write — CI only, NOT embedded |
 
-      # GITHUB_REPOSITORY auto-set sama Actions runner → wick build pick
-      # up otomatis (owner/repo). Override pake var kalau target releases
-      # repo beda dari source repo.
-      - name: Build pakai wick
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          GITHUB_PAT: ${{ secrets.PAT_DOWNLOAD }}
-          GITHUB_REPOSITORY: ${{ github.repository_owner }}/${{ steps.meta.outputs.app_name }}-releases
-          OUTPUT: ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-        run: wick build -o $OUTPUT
+**Skenario B — same repo (source = releases):**
 
-      - run: sha256sum ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > $_.sha256
+| Setting | Value |
+|---|---|
+| `vars.RELEASES_REPO` | (kosong → fallback `github.repository`) |
+| `secrets.PAT_DOWNLOAD` | fine-grained PAT, scope this repo, Contents read-only — baked ke binary |
+| `secrets.PAT_BUILD` | (kosong → fallback `github.token` yg auto-write same repo) |
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-            ${{ steps.meta.outputs.app_name }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
-          retention-days: 7
+Setup lengkap step-by-step ada di header komentar `template/.github/workflows/release.yml` — termasuk URL bikin PAT + path GitHub Settings.
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - id: meta
-        run: |
-          NAME=$(awk '/^module /{n=split($2,a,"/"); print a[n]}' go.mod)
-          echo "app_name=$NAME" >> $GITHUB_OUTPUT
-      - env:
-          GH_TOKEN: ${{ secrets.PAT_BUILD }}
-        run: |
-          gh release create ${{ github.ref_name }} \
-            --repo ${{ github.repository_owner }}/${{ steps.meta.outputs.app_name }}-releases \
-            --title "${{ steps.meta.outputs.app_name }} ${{ github.ref_name }}" \
-            --generate-notes \
-            artifacts/*
+### Trigger flow
+
+```
+bump version: di wick.yml → push main
+    ↓
+auto-tag.yml: tag exist? skip : git tag + push
+    ↓
+release.yml: build matrix 6 → gh release create
+    ↓
+binary baru di <app>-releases
+    ↓
+user yg pake versi lama → auto-updater download → install pas restart
 ```
 
-### GitHub Secrets
+Bisa juga manual: `git tag v1.2.3 && git push origin v1.2.3` langsung trigger `release.yml` tanpa lewat `auto-tag.yml`.
 
-| Secret | Scope | Permissions |
-|---|---|---|
-| `PAT_BUILD` | `<app>-releases` only | `Contents: Read & Write` |
-| `PAT_DOWNLOAD` | `<app>-releases` only | `Contents: Read-only` (di-embed ke binary buat self-update) |
+### Rotasi PAT
 
-**Cara generate fine-grained PAT:**
-1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. Repository access: "Only select repositories" → `<app>-releases`
-3. Permissions: cuma `Contents` sesuai tabel di atas
-4. Expiration: 90 hari (rotate berkala via release baru)
+Manual, ngikut expiry GitHub fine-grained PAT (default 90 hari):
 
-### Trigger workflow
+1. Generate PAT baru di GitHub (scope sama)
+2. Update `secrets.PAT_DOWNLOAD` di source repo
+3. Bump `version:` di `wick.yml` → push → release baru di-build dengan PAT baru di-embed
+4. User auto-update → dapat binary baru → bisa cek update lagi
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-# Workflow auto-trigger → build 6 binary → publish ke <app>-releases
-```
+Auto-rotation gak feasible — GitHub fine-grained PAT gak bisa di-create via API. Cuma kalau gagal tahu lewat error log + menu tray ("Update check failed — PAT expired (see logs)"). Self-healing selama generate baru sebelum lama expire.
 
 ### Verify release
 
@@ -339,7 +349,7 @@ Setelah workflow selesai, cek di repo `<app>-releases` → Releases:
 - 6 file `.sha256` companion
 - Release notes auto-generate dari commit history sejak tag sebelumnya
 
-User yg pake versi lama bakal otomatis kena notif via self-updater.
+User yg pake versi lama bakal kena notif via self-updater (kalau `auto_update=true`) atau bisa klik manual `Check for updates`.
 
 ### Catatan cross-compilation
 
@@ -364,24 +374,34 @@ app/
 
 internal/
 ├── systemtray/
-│   ├── systray.go               # menu tray + glue goroutine
-│   ├── icon.go                  # generator icon 32×32 (PNG/ICO)
-│   ├── logs.go                  # redirect zerolog ke <UserCacheDir>/<name>/wick.log
-│   ├── lock.go                  # single-instance lock via 127.0.0.1:47829
-│   └── helpers.go               # openInEditor, jsonIndent
+│   ├── systray.go               # menu tray + glue goroutine (//go:build !headless)
+│   ├── systray_headless.go      # stub Run() yg print error + exit (//go:build headless)
+│   ├── icon.go                  # generator icon 64×64 PNG/ICO (!headless)
+│   ├── logs.go                  # redirect zerolog ke <UserCacheDir>/<name>/wick.log (!headless)
+│   ├── lock.go                  # single-instance lock via 127.0.0.1:47829 (!headless)
+│   └── helpers.go               # openInEditor, jsonIndent (!headless)
 ├── userconfig/
-│   └── config.go                # Load/Save Config ke <UserConfigDir>/<name>/config.json
-                                  # name = app.BuildAppName (baked saat wick build)
+│   └── config.go                # Load/Save Config + ResolveDBPath
+│                                  # config: <UserConfigDir>/<name>/config.json
+│                                  # name = app.BuildAppName (baked saat wick build)
 ├── mcpconfig/
 │   └── install.go               # AllClients/Detected/Find/Install/Uninstall/
-                                  # InstallMany/UninstallMany/SelfEntry/WickEntry/
-                                  # IsInstalled/Locations
+│                                  # InstallMany/UninstallMany/SelfEntry/WickEntry/
+│                                  # IsInstalled/Locations
 ├── updater/
 │   └── updater.go               # GitHub release check + download + apply
-│                                  # pakai PAT + repo embedded
+│                                  # New, CheckNow, ApplyStagedAndRestart, CleanupOldBinary
+│                                  # pakai PAT + repo embedded via ldflags
 └── pkg/
     ├── api/server.go            # Run(ctx, port) error — context-aware
-    └── worker/server.go         # Run(ctx) error — context-aware
+    ├── worker/server.go         # Run(ctx) error — context-aware
+    └── postgres/gorm.go         # SQLite WAL + busy_timeout + MaxOpenConns(1)
+
+template/
+└── .github/workflows/
+    ├── auto-tag.yml             # push main → tag dari wick.yml version
+    └── release.yml              # push tag → matrix build + gh release create
+                                  # (header komentar = setup PAT step-by-step)
 ```
 
 Gak ada `cmd/gui/`. Gak ada `frontend/`. Tray cuma Go package yg di-wire jadi subcommand.
@@ -398,6 +418,8 @@ Right-click menu, di-generate saat startup dari state sekarang:
 Start server  /  Stop server  (running on :8080)   ← satu toggle
 Start worker  /  Stop worker  (running)            ← satu toggle
 Open logs                                          ← buka wick.log di editor
+Check for updates                                  ← stateful (lihat di bawah)
+Restart to apply v1.2.4                            ← hidden sampai download ready
 ─────────────────────────────────────
 MCP ▶
   Install all detected
@@ -419,9 +441,25 @@ Preferences ▶
   ☑ Auto-update
   ─────────────
   Open config file
+About ▶
+  App:    <name> v<appVersion>                     (disabled)
+  Wick:   v<wickVersion>                           (disabled)
+  Commit: <git short hash>                         (disabled)
+  Built:  <RFC3339 build time>                     (disabled)
+  ─────────────
+  Wick Repository      ← github.com/yogasw/wick (open browser)
+  Wick Documentation   ← yogasw.github.io/wick/ (open browser)
 ─────────────────────────────────────
 Quit
 ```
+
+**`Check for updates` states (stateful title):**
+- `Check for updates` — default, idle
+- `Checking for updates…` — selama CheckNow jalan (item di-disable)
+- `Up to date (vX.Y.Z)` — sudah latest
+- `Update check failed (see logs)` — error generic
+- `Update check failed — PAT expired (see logs)` — 401/403 dari GitHub API
+- Reset ke `Check for updates` pas download berhasil → `Restart to apply vX.Y.Z` muncul di bawahnya
 
 **Server toggle:** spawn goroutine yg jalanin `api.NewServer().Run(ctx, port)`. Cancel context buat stop. Pas crash, goroutine log error + reset ke Stopped (icon balik gray).
 
