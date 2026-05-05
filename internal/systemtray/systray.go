@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -152,7 +153,7 @@ func (u *clientUI) refresh() {
 }
 
 func refreshIcon() {
-	systray.SetIcon(wickIcon(isServerRunning(), isWorkerRunning()))
+	systray.SetIcon(WickIcon(isServerRunning(), isWorkerRunning(), runtime.GOOS == "windows"))
 }
 
 func onReady() {

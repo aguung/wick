@@ -6,9 +6,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/josephspurrier/goversioninfo"
 	"github.com/spf13/cobra"
+
+	"github.com/yogasw/wick/internal/systemtray"
 )
 
 // buildCmd compiles the downstream binary with -ldflags injecting
@@ -105,6 +110,62 @@ output is bin/<app-name>[.exe]; override with --output.`,
 				ldflags = append(ldflags, "-H=windowsgui")
 			}
 
+			// Windows .exe icon: render the same brand W (running state) the
+			// system tray uses, dump it to a temp .ico, and let goversioninfo
+			// turn it into a COFF .syso resource Go's linker auto-includes
+			// for matching GOARCH. Keeps the tray icon and Explorer thumbnail
+			// visually consistent without shipping a separate .ico file.
+			if goos == "windows" {
+				goarch := os.Getenv("GOARCH")
+				if goarch == "" {
+					goarch = runtime.GOARCH
+				}
+				tmp, err := os.CreateTemp("", "wick-icon-*.ico")
+				if err != nil {
+					return fmt.Errorf("icon temp: %w", err)
+				}
+				if _, err := tmp.Write(systemtray.BrandIcon(true)); err != nil {
+					tmp.Close()
+					os.Remove(tmp.Name())
+					return fmt.Errorf("write icon: %w", err)
+				}
+				tmp.Close()
+				defer os.Remove(tmp.Name())
+
+				sysoPath := fmt.Sprintf("rsrc_windows_%s.syso", goarch)
+				maj, min, pat := parseSemver(appVersion)
+				vi := &goversioninfo.VersionInfo{
+					IconPath: tmp.Name(),
+					FixedFileInfo: goversioninfo.FixedFileInfo{
+						FileVersion:    goversioninfo.FileVersion{Major: maj, Minor: min, Patch: pat},
+						ProductVersion: goversioninfo.FileVersion{Major: maj, Minor: min, Patch: pat},
+						FileFlagsMask:  "3f",
+						FileFlags:      "00",
+						FileOS:         "040004",
+						FileType:       "01",
+						FileSubType:    "00",
+					},
+					StringFileInfo: goversioninfo.StringFileInfo{
+						FileDescription:  appName,
+						FileVersion:      appVersion,
+						InternalName:     appName,
+						OriginalFilename: filepath.Base(output),
+						ProductName:      appName,
+						ProductVersion:   appVersion,
+						LegalCopyright:   fmt.Sprintf("Copyright © %d %s", time.Now().Year(), appName),
+					},
+					VarFileInfo: goversioninfo.VarFileInfo{
+						Translation: goversioninfo.Translation{LangID: 0x0409, CharsetID: 0x04B0},
+					},
+				}
+				vi.Build()
+				vi.Walk()
+				if err := vi.WriteSyso(sysoPath, goarch); err != nil {
+					return fmt.Errorf("write syso: %w", err)
+				}
+				defer os.Remove(sysoPath)
+			}
+
 			goArgs := []string{"build", "-ldflags", strings.Join(ldflags, " "), "-o", output}
 			if headless {
 				goArgs = append(goArgs, "-tags", "headless")
@@ -126,6 +187,25 @@ output is bin/<app-name>[.exe]; override with --output.`,
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output binary path (default: bin/<app-name>[.exe])")
 	cmd.Flags().BoolVar(&headless, "headless", false, "Build with -tags headless (excludes systray)")
 	return cmd
+}
+
+// parseSemver pulls the leading major.minor.patch out of a version
+// string. Tolerates a leading "v" and any -suffix / +metadata; missing
+// segments default to 0 ("0.7" → 0,7,0; "v1.2.3-beta" → 1,2,3).
+func parseSemver(v string) (major, minor, patch int) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	get := func(i int) int {
+		if i >= len(parts) {
+			return 0
+		}
+		n, _ := strconv.Atoi(parts[i])
+		return n
+	}
+	return get(0), get(1), get(2)
 }
 
 func firstNonEmpty(vals ...string) string {
