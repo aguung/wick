@@ -11,7 +11,7 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 1. ✅ **Bootstrap** — `internal/systemtray/{systray,icon,lock,logs,helpers}.go`, subcommand `tray` (+ default no-arg) di `app.Run()`. Detail: [Project structure](#project-structure)
 2. ✅ **MCP install/uninstall** — `internal/mcpconfig` shared CLI ↔ tray; auto-detect, per-client status label, bulk action, show example config. Detail: [2. MCP install / uninstall](#2-mcp-install--uninstall)
 3. ✅ **Server / worker toggle** — `api.NewServer().Run(ctx, port)` & `worker.NewServer().Run(ctx)` jalan goroutine in-process; cancel via context. Detail: [Run(ctx) sebagai interface boundary](#runctx-sebagai-interface-boundary)
-4. ✅ **Logs ke UserCacheDir** — `setupLogFile()` redirect zerolog tee ke `<UserCacheDir>/<name>/wick.log`. Detail: [Lokasi log](#lokasi-log)
+4. ✅ **Logs ke UserCacheDir** — `setupLogFile()` redirect zerolog tee ke `<UserCacheDir>/<name>/wick-YYYY-MM-DD.log` (per-day file + auto-retention, lihat #19). Detail: [Lokasi log](#lokasi-log)
 5. ✅ **Tray icon stateful** — `wickIcon(serverRunning, workerRunning)` runtime-generate PNG/ICO, bg color + corner badge per state. Detail: [Tray icon (stateful)](#tray-icon-stateful)
 6. ✅ **Single-instance lock** via TCP `127.0.0.1:47829` (`acquireSingleInstance`). Detail: [Catatan implementasi penting](#catatan-implementasi-penting)
 7. ✅ **User config** — `internal/userconfig/config.go`, atomic save (`<path>.tmp` → rename), defaults (`auto_start_server=true`, `auto_start_worker=false`, `auto_update=true`). Detail: [User config](#user-config-machine-wide-1-project--1-file)
@@ -48,22 +48,28 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
     - Tray call dua-duanya berurutan → bisa update title di antara fase ("New version X — downloading…")
     - `Updater.CheckNow(ctx)` masih ada sebagai convenience caller non-tray
 
-### ⏳ TODO
+18. ✅ **Port resolution + custom default** — default port ganti `8080` → `9425` ("WICK" T9 keypad, jarang collide). `userconfig.ResolvePort(cfg.Port)` set `PORT` env sebelum `config.Load()`. Resolution: env `PORT` > `userCfg.Port` > default `9425`. Pola sama persis DB path.
+19. ✅ **Log rotation per-day + retention** — file ganti dari `wick-YYYY-MM-DD.log` jadi `wick-YYYY-MM-DD.log`. On startup `pruneOldLogs` hapus file > `LogRetentionDays` (default 7) hari. `LogRetentionDays` field di config.json. Cuma server + worker (in-process goroutine di tray binary) yg di-tee ke file — MCP serve subprocess tetap stderr-only.
+20. ✅ **Drop unused config fields** — `default_project` + `recent_projects` di-hapus. Multi-project switcher gak relevan dengan arsitektur final (1 binary = 1 app = 1 DB; multi-project = install binary terpisah, masing-masing dapat config/DB sendiri).
 
-18. ⏳ **Project resolution order** — `systemtray.Run(cwd, ...)` saat ini langsung pake `cwd`. Plan butuh: `--project` flag → CWD `wick.db` check → `userCfg.DefaultProject` → fallback CWD. Implement di `app.Run()` sebelum panggil `systemtray.Run`. Detail: [Resolution order saat startup](#resolution-order-saat-startup)
-19. ⏳ **Polish**
-    - port configurable dari menu tray (override `config.Load().App.Port`)
-    - status submenu: last error, runtime details (uptime, request count?)
-    - retention / rotation `wick.log` (out of scope v1 menurut plan; defer)
-    - drop atau aktifkan `default_project`/`recent_projects` switcher
+### ⏳ Belum diimplement (ringan, defer sampai ada kebutuhan)
+
+- **Port toggle dari menu tray** — saat ini cuma via env / config.json edit. UI toggle minor convenience, skip kalau gak ada keluhan nyata.
+- **Status submenu (uptime, request count, last error)** — observability ringan. Belum ada kebutuhan debug live, defer.
+- **`Updates: not configured` actionable hint** — tooltip sudah explain caranya enable, tapi belum link ke doc / build command runner.
 
 ### State terakhir
 
-Tray fungsional production-ready buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Self-updater + CI release workflow + DB path auto-detect + About menu udah terintegrasi end-to-end. Bisa di-distribute via private GitHub releases dengan auto-update tanpa user perlu manual download.
+Tray fungsional production-ready buat day-to-day. Semua plan utama (#1–20) selesai. Sisa hanya polish ringan yg di-defer sampai ada kebutuhan nyata (port toggle dari menu, status submenu observability, links di About).
 
-Verified manual: `wick init test4` → `wick build` → copy binary ke folder lain → run → DB otomatis ke `%APPDATA%\test4\` (standalone mode), config terpisah per binary, WAL aktif (file `.shm` + `.wal` muncul). Path stabil pas binary dipindah-pindah.
+End-to-end flow yg jalan:
+- `wick init <app>` → scaffold + workflow CI ke-copy
+- `wick build` → binary dengan ldflags inject (name/version/PAT/repo) + cross-compile + headless tag opsional
+- Push ke main + bump `version:` → auto-tag.yml → release.yml → binary di `<app>-releases`
+- User download / auto-update → tray launch → DB auto-detect ke `%APPDATA%`/binary dir, port resolve ke 9425, log per-day di UserCacheDir, MCP install ke detected client
+- Auto-update background goroutine cek release tiap launch (kalau enabled), download → "Restart to apply vX" muncul
 
-Next milestone logis: #18 (project resolution order).
+Verified manual: `wick init test4` → `wick build` → copy binary ke folder lain → run → DB otomatis ke `%APPDATA%\test4\` (standalone mode), config terpisah per binary, WAL aktif (file `.shm` + `.wal` muncul), port `:9425` listen. Path stabil pas binary dipindah-pindah.
 
 ## Stack
 
@@ -183,8 +189,8 @@ Schema (lihat `internal/userconfig.Config`):
   "auto_start_server": true,
   "auto_start_worker": false,
   "auto_update": true,
-  "default_project": "D:\\code\\work\\wick",
-  "recent_projects": ["D:\\code\\work\\wick", "D:\\code\\work\\client-a"],
+  "port": 0,
+  "log_retention_days": 0,
   "database_path": "",
   "staged_update_path": "",
   "staged_update_version": ""
@@ -195,13 +201,28 @@ Schema (lihat `internal/userconfig.Config`):
 - `auto_start_server` (default `true`) — saat tray launch, langsung start HTTP server
 - `auto_start_worker` (default `false`) — saat tray launch, langsung start background worker
 - `auto_update` (default `true`) — self-updater check + download di background
-- `default_project` / `recent_projects` — pointer project (defer aktivasi sampe ada switcher UI)
+- `port` (default `0` = pakai env `PORT` atau built-in `9425`) — override HTTP listen port. Lihat [Lokasi port](#lokasi-port)
+- `log_retention_days` (default `0` = 7 hari) — berapa hari per-day log file disimpan. File lama otomatis dihapus pas tray launch
 - `database_path` — override SQLite DB location. Kosong = auto-detect (lihat [Lokasi DB](#lokasi-db-sudah-implement))
 - `staged_update_path` / `staged_update_version` — managed self-updater, gak user-facing
 
 Default jalan kalau file belum ada. Toggle dari tray menu nge-overwrite file (atomic write via `<path>.tmp` → rename).
 
 Preferensi per-project (kalau ada — mis. config khusus app yg user setup di admin panel) tetep di wick.db project aktif lewat configs repo wick. Tray sendiri gak nyimpen apa-apa di DB.
+
+## Lokasi port
+
+`userconfig.ResolvePort(cfg.Port)` set `PORT` env sebelum `config.Load()`. Resolution:
+
+```
+1. PORT env sudah set explicit       ──Yes──> pakai itu, jangan sentuh
+   ↓ kosong
+2. userCfg.Port > 0 (config.json)    ──Yes──> pakai itu
+   ↓ 0 / kosong
+3. Fallback: 9425 (default di env.go)
+```
+
+Default `9425` = "WICK" di T9 keypad — dipilih supaya gak collide sama tools dev populer (3000 React, 5173 Vite, 5432 Postgres, 8080 Tomcat/Jenkins). Kalau user mau pin port custom, edit `port: 9876` di config.json — gak perlu ubah `.env`.
 
 ## SQLite concurrency
 
@@ -222,13 +243,18 @@ Pattern desktop = serial write (user click → response), bukan high-concurrency
 
 ## Lokasi log
 
-zerolog di-redirect ke log file pas tray start (selain ke stderr). Path-nya ngikut `os.UserCacheDir()`:
+zerolog di-redirect ke log file pas tray start (selain ke stderr). File pakai per-day naming + auto-retention:
+
+- Filename: `wick-YYYY-MM-DD.log` (ganti otomatis tiap kali tray launch di hari baru)
+- Pas startup, file > `LogRetentionDays` hari (default 7) di-hapus
+
+Path-nya ngikut `os.UserCacheDir()`:
 
 | OS | Path |
 |---|---|
-| Windows | `%LOCALAPPDATA%\<appName>\wick.log` |
-| macOS | `~/Library/Caches/<appName>/wick.log` |
-| Linux | `~/.cache/<appName>/wick.log` |
+| Windows | `%LOCALAPPDATA%\<appName>\wick-YYYY-MM-DD.log` |
+| macOS | `~/Library/Caches/<appName>/wick-YYYY-MM-DD.log` |
+| Linux | `~/.cache/<appName>/wick-YYYY-MM-DD.log` |
 
 Menu tray ada **Open logs** — buka file di editor default OS (`cmd /c start`, `open`, atau `xdg-open`). File-nya append antar run — rotation di luar scope v1.
 
@@ -383,7 +409,7 @@ internal/
 │   ├── systray.go               # menu tray + glue goroutine (//go:build !headless)
 │   ├── systray_headless.go      # stub Run() yg print error + exit (//go:build headless)
 │   ├── icon.go                  # generator icon 64×64 PNG/ICO (!headless)
-│   ├── logs.go                  # redirect zerolog ke <UserCacheDir>/<name>/wick.log (!headless)
+│   ├── logs.go                  # redirect zerolog ke <UserCacheDir>/<name>/wick-YYYY-MM-DD.log (!headless)
 │   ├── lock.go                  # single-instance lock via 127.0.0.1:47829 (!headless)
 │   └── helpers.go               # openInEditor, jsonIndent (!headless)
 ├── userconfig/
@@ -421,7 +447,7 @@ Right-click menu, di-generate saat startup dari state sekarang:
 ```
 <name> v<appVersion>  (wick v<wickVersion>)        (disabled, info)
 ─────────────────────────────────────
-Start server  /  Stop server  (running on :8080)   ← satu toggle
+Start server  /  Stop server  (running on :9425)   ← satu toggle
 Start worker  /  Stop worker  (running)            ← satu toggle
 Check for updates                                  ← stateful (lihat di bawah). Hidden kalau updater not configured.
 Restart to apply v1.2.4                            ← hidden sampai download ready
@@ -453,7 +479,7 @@ About ▶
   Built:  <RFC3339 build time>                     (disabled)
   Updates: not configured                          (only when not configured, tooltip = setup hint)
   ─────────────
-  Open logs                                        ← buka wick.log di editor default
+  Open logs                                        ← buka wick-YYYY-MM-DD.log di editor default
   Wick Repository                                  ← github.com/yogasw/wick (open browser)
   Wick Documentation                               ← yogasw.github.io/wick/ (open browser)
 ─────────────────────────────────────
@@ -487,9 +513,9 @@ Implementation: `Updater.CheckLatest(ctx)` (fetch + compare semver only) lalu `U
 **Auto-start saat launch:** dikontrol sama `auto_start_server` / `auto_start_worker` di user config. Toggle dari menu **Preferences ▶ Auto-start … on launch** — efek pas next launch (gak start/stop runtime langsung). Default: server `true`, worker `false`.
 
 **Feedback:** zero toast notif — Windows toast cenderung intrusif + nyangkut di Action Center. Visual feedback dari:
-1. Label menu yg auto-update (`Start server` ↔ `Stop server  (running on :8080)`)
+1. Label menu yg auto-update (`Start server` ↔ `Stop server  (running on :9425)`)
 2. Tray icon yg ganti per state — bg color + corner badge (lihat section "Tray icon" di bawah)
-3. Log file di `<UserCacheDir>/<name>/wick.log` buat detail/error
+3. Log file di `<UserCacheDir>/<name>/wick-YYYY-MM-DD.log` buat detail/error
 
 ### 2. MCP install / uninstall
 

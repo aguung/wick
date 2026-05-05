@@ -297,6 +297,7 @@ func Run() {
 		Short: "Run web server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			userconfig.ResolveDBPath(BuildAppName, "")
+			userconfig.ResolvePort(0)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return api.NewServer().Run(ctx, port)

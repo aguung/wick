@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -34,9 +35,13 @@ type Config struct {
 	// Self-update toggle.
 	AutoUpdate bool `json:"auto_update"`
 
-	// Cross-project pointer.
-	DefaultProject string   `json:"default_project,omitempty"`
-	RecentProjects []string `json:"recent_projects,omitempty"`
+	// Port overrides the HTTP listen port. 0 = use env PORT or default 9425.
+	// Set this in config.json to pin a custom port without touching .env.
+	Port int `json:"port,omitempty"`
+
+	// LogRetentionDays controls how many days of per-day log files are
+	// kept. 0 = use built-in default (7). Set in config.json to override.
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
 
 	// DatabasePath overrides the SQLite DB location. Empty = auto-detect.
 	// Auto-detect: binary dir has wick.yml → <binary_dir>/wick.db,
@@ -145,6 +150,22 @@ func ResolveDBPath(appName, customPath string) {
 	}
 	dbPath := filepath.Join(base, appName, "wick.db")
 	os.Setenv("DATABASE_URL", dbPath)
+}
+
+// ResolvePort sets the PORT env from cfg.Port so config.Load() picks
+// it up wherever it is called next.
+//
+// Resolution order (first non-empty wins, never overwrites a higher priority):
+//  1. PORT env already set (explicit env / CI override) → untouched
+//  2. customPort > 0 (user edited port in config.json)
+//  3. fall through → env.go envDefault picks the built-in default (9425)
+func ResolvePort(customPort int) {
+	if os.Getenv("PORT") != "" {
+		return
+	}
+	if customPort > 0 {
+		os.Setenv("PORT", strconv.Itoa(customPort))
+	}
 }
 
 func binaryName() string {

@@ -89,6 +89,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 	}
 
 	userconfig.ResolveDBPath(appName, userCfg.DatabasePath)
+	userconfig.ResolvePort(userCfg.Port)
 	updater.CleanupOldBinary()
 	upd, err := updater.New(&userCfg, saveUserCfg, appName, appVersion, repo, pat)
 	if err != nil {
@@ -103,7 +104,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 		}
 	}
 
-	if p, cleanup, err := setupLogFile(appName); err == nil {
+	if p, cleanup, err := setupLogFile(appName, userCfg.LogRetentionDays); err == nil {
 		logPath = p
 		defer cleanup()
 	}
