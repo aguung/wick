@@ -80,7 +80,7 @@ Behavior with `auto_update` enabled (default):
 
 1. On launch, if a binary was staged in the previous session, apply it and re-exec — before the tray menu appears.
 2. Otherwise spawn a background check against `<owner>/<repo>/releases/latest`.
-3. If a newer version is found, download the matching `<app>-<os>-<arch>` asset to `<UserCacheDir>/<app>/updates/`, verify SHA256 against the `.sha256` sibling, and stage it.
+3. If a newer version is found, download the matching `<app>-<os>-<arch>` asset to `<UserConfigDir>/<app>/updates/`, verify SHA256 against the `.sha256` sibling, and stage it.
 4. The menu shows `Restart to apply vX.Y.Z` — clicking restarts the binary; quitting and relaunching applies it automatically.
 
 Failures are silent — the menu title surfaces the state (`Up to date (vX.Y.Z)`, `Update check failed (see logs)`, `Update check failed — PAT expired (see logs)`). Detail goes to the log file, not a popup.
@@ -172,9 +172,11 @@ zerolog writes to a per-day file in addition to stderr. Filename rolls over at t
 
 | OS | Path |
 |---|---|
-| Windows | `%LOCALAPPDATA%\<app>\wick-YYYY-MM-DD.log` |
-| macOS | `~/Library/Caches/<app>/wick-YYYY-MM-DD.log` |
-| Linux | `~/.cache/<app>/wick-YYYY-MM-DD.log` |
+| Windows | `%APPDATA%\<app>\logs\wick-YYYY-MM-DD.log` |
+| macOS | `~/Library/Application Support/<app>/logs/wick-YYYY-MM-DD.log` |
+| Linux | `~/.config/<app>/logs/wick-YYYY-MM-DD.log` |
+
+Co-located with `config.json` and `wick.db` under `UserConfigDir` so everything an app owns lives in one tree. `os.Stdout` and `os.Stderr` are also piped through, so `fmt.Print` calls and third-party library writes land in the same file.
 
 `About ▶ Open logs` opens today's file. Headless subcommands (`server`, `worker`, `mcp serve`) write to stderr only — no file redirect.
 

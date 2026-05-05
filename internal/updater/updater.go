@@ -86,9 +86,9 @@ func New(cfg *userconfig.Config, save func() error, appName, currentVersion, rep
 	if owner == "" {
 		owner, repo = parseRepo(moduleRepo())
 	}
-	base, err := os.UserCacheDir()
+	base, err := os.UserConfigDir()
 	if err != nil {
-		return nil, fmt.Errorf("user cache dir: %w", err)
+		return nil, fmt.Errorf("user config dir: %w", err)
 	}
 	cache := filepath.Join(base, appName, "updates")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
