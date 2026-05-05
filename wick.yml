@@ -1,4 +1,5 @@
 name: wick
+version: 0.6.4
 
 vars:
   TAILWIND_OS:

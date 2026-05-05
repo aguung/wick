@@ -14,9 +14,10 @@ import (
 )
 
 type wickConfig struct {
-	Name  string              `yaml:"name"`
-	Vars  map[string]any      `yaml:"vars"`
-	Tasks map[string]wickTask `yaml:"tasks"`
+	Name    string              `yaml:"name"`
+	Version string              `yaml:"version"`
+	Vars    map[string]any      `yaml:"vars"`
+	Tasks   map[string]wickTask `yaml:"tasks"`
 }
 
 type wickTask struct {
@@ -90,6 +91,9 @@ func runTask(name string) error {
 	vars := resolveVars(cfg.Vars)
 	if cfg.Name != "" {
 		vars["NAME"] = cfg.Name
+	}
+	if cfg.Version != "" {
+		vars["VERSION"] = cfg.Version
 	}
 	var bgProcs []*os.Process
 	for _, raw := range task.Cmds {

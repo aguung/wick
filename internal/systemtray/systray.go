@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"fyne.io/systray"
@@ -35,22 +36,28 @@ var (
 	workerCancel context.CancelFunc
 	workerDone   chan struct{}
 
-	project string
-	appName string
-	logPath string
-	userCfg userconfig.Config
-	cfgPath string
+	project     string
+	appName     string
+	appVersion  string
+	wickVersion string
+	logPath     string
+	userCfg     userconfig.Config
+	cfgPath     string
 )
 
 // Run starts the system tray and blocks until the user picks Quit.
 // projectDir is the wick project directory (CWD where the binary lives).
 // name is the MCP server name written into client configs (default: dir name).
-func Run(projectDir, name string) {
+// appVer / wickVer are the build-injected versions surfaced as a
+// disabled info row in the tray menu.
+func Run(projectDir, name, appVer, wickVer string) {
 	project = projectDir
 	if name == "" {
 		name = filepath.Base(projectDir)
 	}
 	appName = name
+	appVersion = appVer
+	wickVersion = wickVer
 	serverPort = config.Load().App.Port
 
 	lock, err := acquireSingleInstance()
@@ -78,6 +85,19 @@ func Run(projectDir, name string) {
 	}
 
 	systray.Run(onReady, onExit)
+}
+
+// fmtVer normalises a version string for display: prefixes a single
+// "v" for semver-looking values, leaves "dev" / "unknown" / empty
+// alone so the menu doesn't end up reading "vdev" or "vv0.6.1".
+func fmtVer(v string) string {
+	if v == "" {
+		return "?"
+	}
+	if v == "dev" || v == "unknown" {
+		return v
+	}
+	return "v" + strings.TrimPrefix(v, "v")
 }
 
 func saveUserCfg() {
@@ -112,8 +132,8 @@ func onReady() {
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName + " — " + project)
 
-	mProject := systray.AddMenuItem("Project: "+filepath.Base(project), project)
-	mProject.Disable()
+	mInfo := systray.AddMenuItem(fmt.Sprintf("%s %s  (wick %s)", appName, fmtVer(appVersion), fmtVer(wickVersion)), project)
+	mInfo.Disable()
 	systray.AddSeparator()
 
 	mServer := systray.AddMenuItem("Start server", "Toggle HTTP server")

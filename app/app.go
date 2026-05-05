@@ -42,17 +42,25 @@ import (
 	"github.com/yogasw/wick/pkg/tool"
 )
 
-// BuildVersion, BuildCommit, BuildTime, and BuildAppName are injected
-// via -ldflags at build time. The wick.yml `build` task ships the
-// `-X .../app.BuildAppName={{.NAME}}` flag so the tray title, MCP
-// server name, and user-config folder all use the project's declared
-// name. init() fills version/commit/time from embedded module info
-// when wick is used as a library dependency.
+// Build* vars are injected via -ldflags at build time:
+//
+//	BuildAppName     downstream app's `name:` from wick.yml
+//	BuildAppVersion  downstream app's `version:` from wick.yml
+//	BuildWickVersion wick framework version (semver of github.com/yogasw/wick)
+//	BuildCommit      git short hash of the build
+//	BuildTime        build timestamp (RFC3339)
+//
+// The wick.yml `build` task injects BuildAppName + BuildAppVersion
+// from the {{.NAME}} / {{.VERSION}} task vars. init() below auto-fills
+// BuildWickVersion / BuildCommit / BuildTime from embedded build info
+// when ldflags didn't override them — so binaries built without ldflags
+// still report a sensible wick version.
 var (
-	BuildVersion = "dev"
-	BuildCommit  = "unknown"
-	BuildTime    = "unknown"
-	BuildAppName = "app"
+	BuildAppName     = "app"
+	BuildAppVersion  = "dev"
+	BuildWickVersion = "dev"
+	BuildCommit      = "unknown"
+	BuildTime        = "unknown"
 )
 
 func init() {
@@ -62,14 +70,14 @@ func init() {
 	}
 
 	// Fill version from embedded module info when not injected via ldflags.
-	if BuildVersion == "dev" {
+	if BuildWickVersion == "dev" {
 		const modPath = "github.com/yogasw/wick"
 		if info.Main.Path == modPath && info.Main.Version != "" && info.Main.Version != "(devel)" {
-			BuildVersion = info.Main.Version
+			BuildWickVersion = info.Main.Version
 		} else {
 			for _, dep := range info.Deps {
 				if dep.Path == modPath && dep.Version != "" {
-					BuildVersion = dep.Version
+					BuildWickVersion = dep.Version
 					break
 				}
 			}
@@ -272,7 +280,7 @@ func Run() {
 			if err != nil {
 				return err
 			}
-			systemtray.Run(cwd, BuildAppName)
+			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion)
 			return nil
 		},
 	}
@@ -306,7 +314,7 @@ func Run() {
 		Use:   "serve",
 		Short: "Run MCP server over stdio (for Claude Desktop, Cursor, etc.)",
 		Run: func(cmd *cobra.Command, args []string) {
-			api.RunMCPStdio(BuildVersion, BuildCommit, BuildTime)
+			api.RunMCPStdio(BuildAppVersion, BuildCommit, BuildTime)
 		},
 	}
 	mcpCmd.AddCommand(mcpServeCmd, mcpInstallCmd(), mcpUninstallCmd())
@@ -319,7 +327,7 @@ func Run() {
 			if err != nil {
 				return err
 			}
-			systemtray.Run(cwd, BuildAppName)
+			systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion)
 			return nil
 		},
 	}

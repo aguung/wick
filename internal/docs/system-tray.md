@@ -51,7 +51,7 @@ Gak ada first-run picker UI — tray gak bisa prompt. Kalau project salah, user 
 
 ### User config (machine-wide, 1 project = 1 file)
 
-File JSON kecil di OS user-config dir, dinamain sesuai `app.BuildAppName` — di-bake saat `wick build` dari field `name:` di `wick.yml`.
+File JSON kecil di OS user-config dir, dinamain sesuai `app.BuildAppName` — di-bake saat `wick build` dari field `name:` di `wick.yml` (sekaligus dgn `version:` → `BuildAppVersion`).
 
 | OS | Path |
 |---|---|
@@ -62,16 +62,25 @@ File JSON kecil di OS user-config dir, dinamain sesuai `app.BuildAppName` — di
 **Build-time injection flow:**
 
 ```
-wick.yml: name: my-app
-    ↓ wick run/build (cmd/cli/run.go inject jadi {{.NAME}} var)
-go build -ldflags "-X github.com/yogasw/wick/app.BuildAppName={{.NAME}}" -o bin/app .
+wick.yml: name: my-app, version: 0.1.0
+    ↓ wick run/build (cmd/cli/run.go inject jadi {{.NAME}} & {{.VERSION}} var)
+go build -ldflags "
+  -X github.com/yogasw/wick/app.BuildAppName={{.NAME}}
+  -X github.com/yogasw/wick/app.BuildAppVersion={{.VERSION}}
+" -o bin/app .
     ↓ binary jalan
-app.BuildAppName == "my-app"  →  systemtray.Run(cwd, "my-app")
+app.BuildAppName    == "my-app"
+app.BuildAppVersion == "0.1.0"
+app.BuildWickVersion == "v0.6.4"  // auto-fill dari debug.ReadBuildInfo()
+    ↓
+systemtray.Run(cwd, BuildAppName, BuildAppVersion, BuildWickVersion)
     ↓
 %APPDATA%\my-app\config.json
+tray menu top: "my-app v0.1.0  (wick v0.6.4)"
+MCP advertise: server version = BuildAppVersion
 ```
 
-Default kalau `wick.yml` gak punya `name:` atau user `go run .` langsung tanpa wick build → fallback ke `"app"` (default `BuildAppName`) atau `filepath.Base(cwd)` (kalau caller pass empty). Project beda → folder beda → preferensi terpisah.
+Default kalau `wick.yml` gak punya `name:` / `version:` atau user `go run .` langsung → fallback `"app"` / `"dev"`. `BuildWickVersion` selalu auto-fill kalau binary di-build via go modules (release tag) atau via wick CLI `mcp serve` build (dari VERSION file).
 
 Schema (lihat `internal/userconfig.Config`):
 
@@ -314,7 +323,7 @@ Gak ada `cmd/gui/`. Gak ada `frontend/`. Tray cuma Go package yg di-wire jadi su
 Right-click menu, di-generate saat startup dari state sekarang:
 
 ```
-Project: <name>                            (disabled, info)
+<name> v<appVersion>  (wick v<wickVersion>)        (disabled, info)
 ─────────────────────────────────────
 Start server  /  Stop server  (running on :8080)   ← satu toggle
 Start worker  /  Stop worker  (running)            ← satu toggle
@@ -506,16 +515,17 @@ func (u *Updater) RestartIfStaged(stops ...context.CancelFunc) error { ... }
 ```go
 // app/app.go
 var (
-    BuildVersion = "dev"
-    BuildCommit  = "unknown"
-    BuildTime    = "unknown"
-    BuildAppName = "app"  // dari wick.yml `name:` field
-    GitHubPAT    = ""
-    GitHubRepo   = ""
+    BuildAppName     = "app"      // dari wick.yml `name:`
+    BuildAppVersion  = "dev"      // dari wick.yml `version:`
+    BuildWickVersion = "dev"      // wick framework semver, auto-fill via debug.ReadBuildInfo()
+    BuildCommit      = "unknown"
+    BuildTime        = "unknown"
+    GitHubPAT        = ""
+    GitHubRepo       = ""
 )
 ```
 
-`wick.yml`'s `build` task pakai `-ldflags "-X github.com/yogasw/wick/app.BuildAppName={{.NAME}}"` — wick CLI inject `NAME` var dari top-level `name:` field di wick.yml. `wick build` populate `GitHubPAT` / `GitHubRepo` dari flag-nya. Code app baca aja — gak ada plaintext secret di source.
+`wick.yml`'s `build` task ldflags inject `BuildAppName` + `BuildAppVersion` dari `{{.NAME}}` / `{{.VERSION}}`. wick CLI `runTask` populate kedua var itu dari top-level `name:` / `version:` field. `BuildWickVersion` auto-fill dari embedded module info (gak perlu ldflag manual). `wick build` juga inject `GitHubPAT` / `GitHubRepo` dari flag self-update — gak ada plaintext secret di source.
 
 ### 4. Preferences
 

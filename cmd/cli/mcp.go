@@ -95,7 +95,7 @@ func buildBinary(bin string) error {
 	args := []string{"build"}
 	var ldf []string
 	if ver, err := readVersionFile(); err == nil {
-		ldf = append(ldf, "-X github.com/yogasw/wick/app.BuildVersion="+ver)
+		ldf = append(ldf, "-X github.com/yogasw/wick/app.BuildWickVersion="+ver)
 	}
 	if commit, err := gitShortHash(); err == nil {
 		ldf = append(ldf, "-X github.com/yogasw/wick/app.BuildCommit="+commit)

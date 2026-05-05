@@ -4,6 +4,10 @@
 # if missing.
 name: app
 
+# App semver. Baked into the binary as app.BuildAppVersion via the
+# build task ldflags. Surfaced in the tray + advertised to MCP clients.
+version: 0.1.0
+
 vars:
   TAILWIND_OS:
     $arch:
@@ -56,7 +60,7 @@ tasks:
     cmds:
       - templ generate ./...
       - "{{.TAILWIND_BIN}} -i web/input.css -o static/output.css --minify"
-      - go build -ldflags "-X github.com/yogasw/wick/app.BuildAppName={{.NAME}}" -o bin/app .
+      - go build -ldflags "-X github.com/yogasw/wick/app.BuildAppName={{.NAME}} -X github.com/yogasw/wick/app.BuildAppVersion={{.VERSION}}" -o bin/app .
 
   test:
     cmds:
