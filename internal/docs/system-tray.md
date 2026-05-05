@@ -46,7 +46,7 @@ Status snapshot 2026-05-05. Click item untuk jump ke section detail.
 Tray fungsional buat day-to-day: launch → auto-start server → MCP install ke client → toggle server/worker. Self-updater (#12) + headless tag (#13) + CI release workflow (#14) done.
 
 Tambahan post-plan:
-- `About` submenu: app version, wick version, commit, build time, link repo + docs
+- `About` submenu: app version, wick version, commit, build time, `Wick Repository` (github.com/yogasw/wick) + `Wick Documentation` (yogasw.github.io/wick/) — klik buka browser langsung
 - `Check for updates` stateful: Checking… → Up to date / error label / Restart to apply vX
 - Error PAT expired muncul di menu item langsung (bukan cuma log)
 - `systemtray.Run` terima `commit, builtAt` tambahan param (total 8 param)

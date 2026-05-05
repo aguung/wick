@@ -38,6 +38,12 @@ type Config struct {
 	DefaultProject string   `json:"default_project,omitempty"`
 	RecentProjects []string `json:"recent_projects,omitempty"`
 
+	// DatabasePath overrides the SQLite DB location. Empty = auto-detect.
+	// Auto-detect: binary dir has wick.yml → <binary_dir>/wick.db,
+	// otherwise %APPDATA%/<appName>/wick.db (Windows) or equivalent.
+	// Set this manually in config.json if you need a custom location.
+	DatabasePath string `json:"database_path,omitempty"`
+
 	// Update state — managed by the updater, not user-facing.
 	StagedUpdatePath    string `json:"staged_update_path,omitempty"`
 	StagedUpdateVersion string `json:"staged_update_version,omitempty"`

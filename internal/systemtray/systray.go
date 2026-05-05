@@ -88,6 +88,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 		log.Printf("save config (initial): %v", err)
 	}
 
+	resolveDBPath(appName, userCfg.DatabasePath)
 	updater.CleanupOldBinary()
 	upd, err := updater.New(&userCfg, saveUserCfg, appName, appVersion, repo, pat)
 	if err != nil {
@@ -236,8 +237,8 @@ func onReady() {
 	mAbout.AddSubMenuItem(fmt.Sprintf("Commit: %s", fmtBuildField(buildCommit)), "").Disable()
 	mAbout.AddSubMenuItem(fmt.Sprintf("Built:  %s", fmtBuildField(buildTime)), "").Disable()
 	mAbout.AddSubMenuItem("─────────────", "").Disable()
-	mWickRepo := mAbout.AddSubMenuItem("Wick repo", "Open github.com/yogasw/wick")
-	mWickDocs := mAbout.AddSubMenuItem("Wick docs", "Open wick documentation")
+	mWickRepo := mAbout.AddSubMenuItem("Wick Repository", "https://github.com/yogasw/wick")
+	mWickDocs := mAbout.AddSubMenuItem("Wick Documentation", "https://yogasw.github.io/wick/")
 	systray.AddSeparator()
 
 	mQuit := systray.AddMenuItem("Quit", "Quit "+appName)
