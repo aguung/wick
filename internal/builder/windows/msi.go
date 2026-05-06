@@ -132,6 +132,16 @@ func buildWXS(p wxsParams) string {
       <ComponentRef Id="AppShortcut"/>
       <ComponentRef Id="DesktopShortcut"/>
     </Feature>
+    <Property Id="LaunchAppCmd" Value="cmd.exe"/>
+    <CustomAction Id="LaunchApp"
+                  Property="LaunchAppCmd"
+                  ExeCommand='/c start "" "[INSTALLDIR]%[7]s"'
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait"/>
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApp" After="InstallFinalize">NOT Installed AND NOT REMOVE</Custom>
+    </InstallExecuteSequence>
   </Product>
 </Wix>
 `,
