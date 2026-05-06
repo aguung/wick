@@ -85,7 +85,7 @@ concurrency:
 # ┌─ Optional: limit which OS/arch get built ─────────────────────────────┐
 # │                                                                        │
 # │  Settings → Secrets and variables → Actions → Variables               │
-# │    RELEASE_BUILD_TARGETS = comma-separated <os>/<arch> to build       │
+# │    BUILD_TARGETS = comma-separated <os>/<arch> to build       │
 # │                                                                        │
 # │  Examples:                                                            │
 # │    (unset)                          → build everything (default)      │
@@ -256,7 +256,7 @@ jobs:
         id: matrix
         shell: bash
         env:
-          TARGETS: ${{ vars.RELEASE_BUILD_TARGETS }}
+          TARGETS: ${{ vars.BUILD_TARGETS }}
         run: |
           ALL='[
             {"os":"windows","arch":"amd64","runner":"windows-latest"},
