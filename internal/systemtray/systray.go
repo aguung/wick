@@ -173,6 +173,15 @@ func onReady() {
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName + " — " + project)
 
+	// One-shot launch toast so user sees the app actually started in the
+	// tray (icon alone is easy to miss). Fires per process start, not on
+	// menu clicks — re-open after Quit shows it again.
+	go func() {
+		if err := notify(appName+" running", "Running in the system tray."); err != nil {
+			log.Warn().Err(err).Msg("launch notify")
+		}
+	}()
+
 	mInfo := systray.AddMenuItem(fmt.Sprintf("%s %s  (wick %s)", appName, fmtVer(appVersion), fmtVer(wickVersion)), project)
 	mInfo.Disable()
 	systray.AddSeparator()
