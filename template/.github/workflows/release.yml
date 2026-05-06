@@ -3,8 +3,16 @@ name: Release
 # Single-flow release pipeline:
 #   push to main/master
 #     → prepare job: read version from wick.yml, skip if tag already exists
-#     → build job: matrix build 6 OS×arch, fail-fast off
+#     → build job: matrix build 6 OS×arch installer artifacts, fail-fast off
 #     → release job: gh release + push tag IFF at least one build succeeded
+#
+# Build runs `wick build --installer`, so the released artifact per OS is
+# the platform-native installer:
+#   windows → <app>-windows-<arch>.msi (per-user; no UAC; self-update works
+#             in place because %LocalAppData%\Programs is user-writable)
+#   darwin  → <app>-darwin-<arch>.dmg (with Applications symlink for the
+#             standard drag-to-install layout)
+#   linux   → <app>-linux-<arch>.deb  (already a proper installer)
 #
 # Tag is only pushed at the end, after the release succeeds — so a failed
 # pipeline leaves no tag behind, and a re-run starts clean.
@@ -287,10 +295,14 @@ jobs:
         shell: bash
         env:
           TARGETS: ${{ vars.BUILD_TARGETS }}
+        # Windows targets cross-compile from ubuntu so we can `apt install
+        # wixl` (msitools) to produce the .msi installer in one step. The
+        # downstream binary is pure-syscall on windows (no cgo) so the
+        # cross-build is byte-identical to a native windows-latest build.
         run: |
           ALL='[
-            {"os":"windows","arch":"amd64","runner":"windows-latest"},
-            {"os":"windows","arch":"arm64","runner":"windows-latest"},
+            {"os":"windows","arch":"amd64","runner":"ubuntu-latest"},
+            {"os":"windows","arch":"arm64","runner":"ubuntu-latest"},
             {"os":"darwin","arch":"amd64","runner":"macos-latest","cgo":"1"},
             {"os":"darwin","arch":"arm64","runner":"macos-latest"},
             {"os":"linux","arch":"amd64","runner":"ubuntu-latest"},
@@ -330,16 +342,19 @@ jobs:
       - name: Resolve app name and asset path
         id: meta
         shell: bash
-        # `wick build` produces the platform-native distributable in bin/:
-        #   windows → <app>-windows-<arch>.exe
-        #   darwin  → <app>-darwin-<arch>.dmg (alongside the raw binary + .app bundle)
-        #   linux   → <app>-linux-<arch>.deb  (alongside the raw binary)
-        # Only the bundle is uploaded as the release asset.
+        # `wick build --installer` produces the installer artifact in bin/:
+        #   windows → <app>-windows-<arch>.msi (per-user; no UAC; self-update
+        #             works in place on the installed .exe)
+        #   darwin  → <app>-darwin-<arch>.dmg (with Applications symlink so
+        #             Finder shows the standard drag-to-install layout)
+        #   linux   → <app>-linux-<arch>.deb  (already a proper installer)
+        # Only the installer is uploaded as the release asset; the raw .exe
+        # / .app bundle stay in bin/ for local debugging.
         run: |
           NAME=$(grep '^name:' wick.yml | awk '{print $2}' | tr -d '"'"'"' ')
           [ -z "$NAME" ] && NAME=$(awk '/^module /{n=split($2,a,"/"); print a[n]}' go.mod)
           case "${{ matrix.os }}" in
-            windows) EXT="exe" ;;
+            windows) EXT="msi" ;;
             darwin)  EXT="dmg" ;;
             linux)   EXT="deb" ;;
           esac
@@ -356,6 +371,14 @@ jobs:
 
       - name: Setup (download tailwind, install templ, go mod tidy)
         run: wick setup
+
+      # wixl (msitools) is the cross-platform .msi builder wick uses to wrap
+      # the windows .exe into an installer when --installer is passed. Only
+      # needed on the runners that produce a windows target (cross-built
+      # from ubuntu in the matrix above). Other runners skip this step.
+      - name: Install wixl (msitools)
+        if: matrix.os == 'windows'
+        run: sudo apt-get update && sudo apt-get install -y wixl
 
       - name: Build
         env:
@@ -380,7 +403,11 @@ jobs:
           # the tag we're about to publish. Critical when RELEASE_AUTO_VERSION=true
           # since wick.yml isn't bumped per release.
           WICK_APP_VERSION: ${{ needs.prepare.outputs.app_version }}
-        run: wick build
+        # --installer wraps the windows .exe into a per-user .msi (needs
+        # wixl, installed above) and stages the darwin .dmg with an
+        # Applications symlink for the standard drag-to-install layout.
+        # Linux .deb is already a proper installer either way.
+        run: wick build --installer
 
       - name: Checksum
         shell: bash
