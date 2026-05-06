@@ -29,6 +29,22 @@ type logSet struct {
 	Dir    string
 }
 
+// bestEffortWriter writes to primary; on success also attempts secondary
+// (ignoring secondary errors). Ensures file always receives the write even
+// when stderr is unavailable (windowsgui builds have no console).
+type bestEffortWriter struct {
+	primary   io.Writer
+	secondary io.Writer
+}
+
+func (w *bestEffortWriter) Write(p []byte) (int, error) {
+	n, err := w.primary.Write(p)
+	if err == nil {
+		w.secondary.Write(p) //nolint:errcheck
+	}
+	return n, err
+}
+
 // setupLogFiles creates three dated log files under
 // <UserConfigDir>/<appName>/logs/:
 //
@@ -90,7 +106,7 @@ func setupLogFiles(appName string, retentionDays int) (logSet, func(), error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			io.Copy(io.MultiWriter(origOut, fApp), rOut)
+			io.Copy(&bestEffortWriter{primary: fApp, secondary: origOut}, rOut)
 		}()
 	}
 	// Pipe os.Stderr for windowsgui builds that have no real console.
@@ -100,13 +116,13 @@ func setupLogFiles(appName string, retentionDays int) (logSet, func(), error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			io.Copy(io.MultiWriter(origErr, fApp), rErr)
+			io.Copy(&bestEffortWriter{primary: fApp, secondary: origErr}, rErr)
 		}()
 	}
 
-	mwApp := io.MultiWriter(origErr, fApp)
-	mwSrv := io.MultiWriter(origErr, fSrv)
-	mwWrk := io.MultiWriter(origErr, fWrk)
+	mwApp := &bestEffortWriter{primary: fApp, secondary: origErr}
+	mwSrv := &bestEffortWriter{primary: fSrv, secondary: origErr}
+	mwWrk := &bestEffortWriter{primary: fWrk, secondary: origErr}
 
 	ls := logSet{
 		App:    zerolog.New(mwApp).With().Timestamp().Logger(),

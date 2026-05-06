@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 
 	"fyne.io/systray"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/yogasw/wick/internal/autostart"
 	"github.com/yogasw/wick/internal/mcpconfig"
@@ -85,6 +85,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 		serverLogger = ls.Server
 		workerLogger = ls.Worker
 		defer cleanup()
+		log.Info().Str("app", appName).Str("version", appVer).Str("wick", wickVer).Msg("tray starting")
 	}
 
 	// Per-app PID-file lock under UserConfigDir. A live match for the
@@ -95,7 +96,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 	if release, err := acquireSingleInstance(); err == nil {
 		defer release()
 	} else {
-		log.Printf("single-instance: %v", err)
+		log.Error().Err(err).Msg("single-instance")
 		return
 	}
 
@@ -106,7 +107,7 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 		cfgPath = p
 	}
 	if err := userconfig.Save(appName, userCfg); err != nil {
-		log.Printf("save config (initial): %v", err)
+		log.Error().Err(err).Msg("save config (initial)")
 	}
 
 	userconfig.ResolveDBPath(appName, userCfg.DatabasePath)
@@ -114,13 +115,13 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 	updater.CleanupOldBinary()
 	upd, err := updater.New(&userCfg, saveUserCfg, appName, appVersion, repo, pat)
 	if err != nil {
-		log.Printf("updater init: %v", err)
+		log.Error().Err(err).Msg("updater init")
 	} else {
 		updaterInst = upd
 		if upd.HasStaged() {
-			log.Printf("applying staged update %s …", upd.StagedVersion())
+			log.Info().Str("version", upd.StagedVersion()).Msg("applying staged update")
 			if err := upd.ApplyStagedAndRestart(stopServer, stopWorker); err != nil {
-				log.Printf("apply staged: %v — continuing with current binary", err)
+				log.Error().Err(err).Msg("apply staged — continuing with current binary")
 			}
 		}
 	}
@@ -140,7 +141,7 @@ func fmtVer(v string) string {
 
 func saveUserCfg() error {
 	if err := userconfig.Save(appName, userCfg); err != nil {
-		log.Printf("save config: %v", err)
+		log.Error().Err(err).Msg("save config")
 		return err
 	}
 	return nil
@@ -214,19 +215,21 @@ func onReady() {
 				select {
 				case <-install.ClickedCh:
 					if err := installOne(ui.c); err != nil {
-						log.Printf("install %s: %v", ui.c.ID, err)
+						log.Error().Str("client", ui.c.ID).Err(err).Msg("mcp install")
 					} else {
+						log.Info().Str("client", ui.c.ID).Str("path", ui.c.Path).Msg("mcp installed")
 						ui.refresh()
 					}
 				case <-uninstall.ClickedCh:
 					if err := mcpconfig.Uninstall(ui.c, appName); err != nil {
-						log.Printf("uninstall %s: %v", ui.c.ID, err)
+						log.Error().Str("client", ui.c.ID).Err(err).Msg("mcp uninstall")
 					} else {
+						log.Info().Str("client", ui.c.ID).Str("path", ui.c.Path).Msg("mcp uninstalled")
 						ui.refresh()
 					}
 				case <-open.ClickedCh:
 					if err := openInEditor(ui.c.Path); err != nil {
-						log.Printf("open %s: %v", ui.c.Path, err)
+						log.Error().Str("path", ui.c.Path).Err(err).Msg("open config")
 					}
 				}
 			}
@@ -239,7 +242,7 @@ func onReady() {
 	// (re-Enable refreshes the path; user toggling won't notice the diff).
 	if userCfg.AutoStartApp {
 		if err := autostart.Enable(appName); err != nil {
-			log.Printf("autostart enable: %v", err)
+			log.Error().Err(err).Msg("autostart enable")
 		}
 	}
 	mPrefs.AddSubMenuItem("── Launch ──", "").Disable()
@@ -295,7 +298,7 @@ func onReady() {
 
 	if userCfg.AutoStartServer {
 		if err := startServer(); err != nil {
-			log.Printf("auto-start server: %v", err)
+			log.Error().Err(err).Msg("auto-start server")
 			setServerLabel(false, err.Error())
 		} else {
 			setServerLabel(true, "")
@@ -305,7 +308,7 @@ func onReady() {
 	}
 	if userCfg.AutoStartWorker {
 		if err := startWorker(); err != nil {
-			log.Printf("auto-start worker: %v", err)
+			log.Error().Err(err).Msg("auto-start worker")
 			setWorkerLabel(false)
 		} else {
 			setWorkerLabel(true)
@@ -324,10 +327,11 @@ func onReady() {
 		mCheckUpdate.SetTitle("Checking for updates…")
 		mCheckUpdate.Disable()
 		go func() {
+			log.Info().Msg("update: checking latest")
 			ctx := context.Background()
 			info, err := updaterInst.CheckLatest(ctx)
 			if err != nil {
-				log.Printf("check update: %v", err)
+				log.Error().Err(err).Msg("update check")
 				mCheckUpdate.Enable()
 				if strings.Contains(err.Error(), "auth failed") {
 					mCheckUpdate.SetTitle("Update check failed — PAT expired (see logs)")
@@ -337,24 +341,28 @@ func onReady() {
 				return
 			}
 			if info.AlreadyLatest {
+				log.Info().Str("version", info.Version).Msg("update: already latest")
 				mCheckUpdate.Enable()
 				mCheckUpdate.SetTitle(fmt.Sprintf("Up to date (%s)", info.Version))
 				return
 			}
 			if info.AlreadyStaged {
+				log.Info().Str("version", info.Version).Msg("update: already staged")
 				mCheckUpdate.Enable()
 				mCheckUpdate.SetTitle("Check for updates")
 				mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", info.Version))
 				mRestart.Show()
 				return
 			}
+			log.Info().Str("version", info.Version).Msg("update: downloading")
 			mCheckUpdate.SetTitle(fmt.Sprintf("New version %s — downloading…", info.Version))
 			if err := updaterInst.Download(ctx, info); err != nil {
-				log.Printf("download update: %v", err)
+				log.Error().Str("version", info.Version).Err(err).Msg("update download")
 				mCheckUpdate.Enable()
 				mCheckUpdate.SetTitle("Download failed (see logs)")
 				return
 			}
+			log.Info().Str("version", info.Version).Msg("update: downloaded, restart to apply")
 			mCheckUpdate.Enable()
 			mCheckUpdate.SetTitle("Check for updates")
 			mRestart.SetTitle(fmt.Sprintf("Restart to apply %s", info.Version))
@@ -376,7 +384,7 @@ func onReady() {
 					stopServer()
 					setServerLabel(false, "")
 				} else if err := startServer(); err != nil {
-					log.Printf("start server: %v", err)
+					log.Error().Err(err).Msg("start server")
 					setServerLabel(false, err.Error())
 				} else {
 					setServerLabel(true, "")
@@ -387,7 +395,7 @@ func onReady() {
 					stopWorker()
 					setWorkerLabel(false)
 				} else if err := startWorker(); err != nil {
-					log.Printf("start worker: %v", err)
+					log.Error().Err(err).Msg("start worker")
 				} else {
 					setWorkerLabel(true)
 				}
@@ -395,7 +403,7 @@ func onReady() {
 			case <-mLogs.ClickedCh:
 				if logDir != "" {
 					if err := openInEditor(logDir); err != nil {
-						log.Printf("open logs: %v", err)
+						log.Error().Err(err).Msg("open logs")
 					}
 				}
 			case <-mCheckUpdate.ClickedCh:
@@ -405,21 +413,23 @@ func onReady() {
 					continue
 				}
 				if err := updaterInst.ApplyStagedAndRestart(stopServer, stopWorker); err != nil {
-					log.Printf("apply update: %v", err)
+					log.Error().Err(err).Msg("apply update")
 				}
 			case <-mInstallAll.ClickedCh:
 				for _, ui := range uis {
 					if err := installOne(ui.c); err != nil {
-						log.Printf("install %s: %v", ui.c.ID, err)
+						log.Error().Str("client", ui.c.ID).Err(err).Msg("mcp install")
 					} else {
+						log.Info().Str("client", ui.c.ID).Str("path", ui.c.Path).Msg("mcp installed")
 						ui.refresh()
 					}
 				}
 			case <-mUninstallAll.ClickedCh:
 				for _, ui := range uis {
 					if err := mcpconfig.Uninstall(ui.c, appName); err != nil {
-						log.Printf("uninstall %s: %v", ui.c.ID, err)
+						log.Error().Str("client", ui.c.ID).Err(err).Msg("mcp uninstall")
 					} else {
+						log.Info().Str("client", ui.c.ID).Str("path", ui.c.Path).Msg("mcp uninstalled")
 						ui.refresh()
 					}
 				}
@@ -427,14 +437,14 @@ func onReady() {
 				userCfg.AutoStartApp = !userCfg.AutoStartApp
 				if userCfg.AutoStartApp {
 					if err := autostart.Enable(appName); err != nil {
-						log.Printf("autostart enable: %v", err)
+						log.Error().Err(err).Msg("autostart enable")
 						userCfg.AutoStartApp = false
 					} else {
 						mAutoApp.Check()
 					}
 				} else {
 					if err := autostart.Disable(appName); err != nil {
-						log.Printf("autostart disable: %v", err)
+						log.Error().Err(err).Msg("autostart disable")
 					}
 					mAutoApp.Uncheck()
 				}
@@ -466,25 +476,25 @@ func onReady() {
 			case <-mOpenCfg.ClickedCh:
 				if cfgPath != "" {
 					if err := openInEditor(cfgPath); err != nil {
-						log.Printf("open config: %v", err)
+						log.Error().Err(err).Msg("open config")
 					}
 				}
 			case <-mExample.ClickedCh:
 				path, err := writeExampleConfig()
 				if err != nil {
-					log.Printf("example config: %v", err)
+					log.Error().Err(err).Msg("example config")
 					continue
 				}
 				if err := openInEditor(path); err != nil {
-					log.Printf("open example: %v", err)
+					log.Error().Err(err).Msg("open example config")
 				}
 			case <-mWickRepo.ClickedCh:
 				if err := openInEditor("https://github.com/yogasw/wick"); err != nil {
-					log.Printf("open wick repo: %v", err)
+					log.Error().Err(err).Msg("open wick repo")
 				}
 			case <-mWickDocs.ClickedCh:
 				if err := openInEditor("https://yogasw.github.io/wick/"); err != nil {
-					log.Printf("open wick docs: %v", err)
+					log.Error().Err(err).Msg("open wick docs")
 				}
 			case <-mQuit.ClickedCh:
 				stopServer()
@@ -549,7 +559,7 @@ func startServer() error {
 	go func() {
 		defer close(serverDone)
 		if err := srv.Run(ctx, serverPort); err != nil {
-			log.Printf("server: %v", err)
+			log.Error().Err(err).Msg("server")
 		}
 		mu.Lock()
 		serverCancel = nil
@@ -589,7 +599,7 @@ func startWorker() error {
 	go func() {
 		defer close(workerDone)
 		if err := srv.Run(ctx); err != nil {
-			log.Printf("worker: %v", err)
+			log.Error().Err(err).Msg("worker")
 		}
 		mu.Lock()
 		workerCancel = nil
