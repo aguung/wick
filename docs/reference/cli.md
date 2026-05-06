@@ -78,13 +78,16 @@ The skill folder contents are always replaced — local edits inside `./.claude/
 
 ### `wick build`
 
-Compile the project to a single binary with version metadata baked in via Go ldflags. Reads `name:` and `version:` from `wick.yml` by default; flags / env vars override.
+Compile the project to a Go binary with version metadata baked in via Go ldflags, then wrap it into the platform-native distributable (`.exe` / `.dmg` / `.deb`). Reads `name:` and `version:` from `wick.yml` by default; flags / env vars override.
 
 ```bash
-wick build                                 # → bin/<wick.yml name>[.exe]
-wick build -o myapp-linux-amd64            # custom output path
+wick build                                 # → bin/<name>-<goos>-<goarch>[.exe] + native bundle
+wick build --target linux/arm64            # cross-compile via shorthand
+wick build --goos linux --goarch arm64     # cross-compile via explicit flags
+wick build --all                           # build every target the host can produce
+wick build -o custom/path                  # rename the raw binary (bundle name unaffected)
 wick build --headless                      # drop tray UI (-tags headless)
-GOOS=linux GOARCH=arm64 wick build         # cross-compile
+GOOS=linux GOARCH=arm64 wick build         # cross-compile via env (CI flow)
 ```
 
 Common flags:
@@ -95,7 +98,11 @@ Common flags:
 | `--app-version` | `WICK_APP_VERSION` | Override `version:` from `wick.yml` |
 | `--github-pat` | `GITHUB_PAT` | Bake PAT for self-updater |
 | `--github-repo` | `GITHUB_REPOSITORY` | Bake `owner/repo` for self-updater |
-| `-o`, `--output` | — | Output path (default `bin/<app-name>[.exe]`) |
+| `-o`, `--output` | — | Raw binary path (default `bin/<name>-<goos>-<goarch>[.exe]`); bundle is written next to it |
+| `-t`, `--target` | — | Target shorthand `<os>/<arch>` (e.g. `linux/arm64`); mutex with `--goos`/`--goarch` |
+| `--goos` | `GOOS` | Target GOOS; mutex with `--target` |
+| `--goarch` | `GOARCH` | Target GOARCH; mutex with `--target` |
+| `--all` | — | Best-effort build all OS/arch; auto-skip darwin on non-mac host |
 | `--headless` | — | Add `-tags headless` (no tray) |
 
 Full reference incl. CI workflow templates and PAT setup: [`wick build` reference](./build).
@@ -135,7 +142,7 @@ $ wick upgrade
 current: v0.1.13
 latest:  v0.4.2
 upgrade v0.1.13 -> v0.2.0? [y/N]: y
-> go get github.com/yogasw/wick@v0.7.1
+> go get github.com/yogasw/wick@v0.8.0
 > go mod tidy
 > <dev task from wick.yml>
 ```
@@ -146,7 +153,7 @@ Steps:
 2. Fetch the latest version from `https://proxy.golang.org/github.com/yogasw/wick/@latest`.
 3. If already on latest, exit without prompting.
 4. Otherwise prompt `[y/N]`; only `y`/`yes` proceeds.
-5. Run `go get github.com/yogasw/wick@v0.7.1`, then `go mod tidy`, then the `dev` task from [`wick.yml`](./wick-yml).
+5. Run `go get github.com/yogasw/wick@v0.8.0`, then `go mod tidy`, then the `dev` task from [`wick.yml`](./wick-yml).
 
 Run from a project directory (one that has a `go.mod` requiring `github.com/yogasw/wick`).
 
