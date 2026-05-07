@@ -335,7 +335,7 @@ wick_manager_system_prefs_set
 ## Keputusan final (jawaban semua pertanyaan)
 
 1. Nama connector: **`wickmanager`** (path `internal/connectors/wickmanager/`, key `wickmanager`).
-2. Tambah **`Singleton bool` di `connector.Meta`** — cuma flag bool, bukan `MaxInstances`. Reusable buat connector lain ke depannya yg mau disable duplikat.
+2. Tambah **`Fixed bool` di `connector.Meta`** — cuma flag bool, bukan `MaxInstances int`. Reusable buat connector lain ke depannya yg mau disable duplikat. `Fixed=true` artinya jumlah instance fixed (cuma 1, di-seed sama wick).
 3. Service injection: **Opsi C** — connector beneran di `internal/connectors/wickmanager/`, register lewat helper di `app/app.go` yg capture service lewat closure.
 4. Op `system_*` cuma jalan kalau process di-launch via tray. `wick server` / `wick worker` / headless: error "unavailable in this run mode" walau admin. Implementasi: `processctl.IsManaged() bool`.
 5. **`jobs_get_run` boleh dipanggil non-admin selama dia punya akses ke parent job-nya.** Konsisten sama `jobs_run_now` — yg boleh trigger, boleh baca hasil.
@@ -390,7 +390,7 @@ Path: `internal/connectors/wickmanager/`
 
 ```
 wickmanager/
-    connector.go      — Meta (Singleton:true), Configs, struct Input per-op, Operations, handler op
+    connector.go      — Meta (Fixed:true), Configs, struct Input per-op, Operations, handler op
     service.go        — validasi murni + wiring panggilan service
     repo.go           — panggil DB / configs.Service / manager.Service langsung (di-inject via Ctx)
     audit.go          — helper logging zerolog buat tiap op (output ke mcp.log)
@@ -409,7 +409,7 @@ MCP layer (`internal/mcp/handler.go`) tambah:
 
 LLM ngak perlu manggil `wick_get` buat tau ops wickmanager — semua udah expand di `tools/list`. Connector lain tetep pakai meta-tool pattern existing (`wick_list/get/execute`).
 
-### Singleton flag (perubahan public API)
+### Fixed flag (perubahan public API)
 
 Tambah ke `pkg/connector/connector.go`:
 
@@ -419,18 +419,22 @@ type Meta struct {
     Name        string
     Description string
     Icon        string
-    // Singleton, kalau true, connector ini cuma boleh punya satu instance.
-    // Bootstrap auto-seed satu, dan admin UI hide tombol "Add new instance".
+    // Fixed, kalau true, jumlah instance connector ini fixed (cuma 1).
+    // Wick auto-seed satu row pas first boot, dan admin UI hide tombol
+    // "Add new instance". Bootstrap nolak insert kedua dgn ErrFixedInstanceViolation.
+    //
     // Useful buat connector yg ngomong ke single in-process resource (e.g.
     // wickmanager) atau external service yg cuma satu konfigurasi.
-    Singleton bool
+    //
+    // Default false = boleh banyak instance (behavior connector existing).
+    Fixed bool
 }
 ```
 
 Side-effect:
-- `internal/connectors/service.go` Bootstrap: kalau `Singleton`, panggil `EnsureInstance(key, label)` (auto-seed satu row kalau belum ada).
-- `internal/connectors/repo.go` Create: tolak insert kedua dgn error `ErrSingletonViolation` kalau `Singleton`.
-- `internal/manager/connectors.go` UI: hide tombol "Add" buat row connector dgn `Singleton`.
+- `internal/connectors/service.go` Bootstrap: kalau `Fixed`, panggil `EnsureInstance(key, label)` (auto-seed satu row kalau belum ada).
+- `internal/connectors/repo.go` Create: tolak insert kedua dgn error `ErrFixedInstanceViolation` kalau `Fixed`.
+- `internal/manager/connectors.go` UI: hide tombol "Add" buat row connector dgn `Fixed`.
 
 ### Configs
 
@@ -608,20 +612,20 @@ Catatan: audit ini **di luar** `connector_runs` (yg tetep ngerekam run via pipel
 
 ```
 internal/connectors/wickmanager/
-    connector.go                           — BARU (Meta singleton, Operations builder)
+    connector.go                           — BARU (Meta Fixed:true, Operations builder)
     service.go                             — BARU (validasi murni)
     repo.go                                — BARU (forward ke service wick)
     audit.go                               — BARU (helper logging)
     access.go                              — BARU (requireAdmin / requireJobAccess / requireTray)
 internal/connectors/registry.go            — register built-in wickmanager
-internal/connectors/service.go             — Bootstrap auto-seed Singleton instance
-internal/connectors/repo.go                — Create reject duplikat kalau Singleton
-internal/manager/connectors.go             — UI hide tombol "Add" buat Singleton
+internal/connectors/service.go             — Bootstrap auto-seed Fixed instance
+internal/connectors/repo.go                — Create reject duplikat kalau Fixed
+internal/manager/connectors.go             — UI hide tombol "Add" buat Fixed
 internal/processctl/                       — package BARU; pemilik lifecycle + IsManaged()
 internal/systemtray/systray.go             — refactor konsumsi processctl, set IsManaged=true
 internal/systemtray/logs.go                — tambah field MCP di logSet, buka mcp.log
 internal/userconfig/config.go              — tambah WorkerAutoStopMinutes
-pkg/connector/connector.go                 — tambah field Singleton di Meta
+pkg/connector/connector.go                 — tambah field Fixed di Meta
 app/app.go                                 — wiring RegisterWickManagerConnector (Opsi C)
 ```
 
@@ -635,14 +639,14 @@ Tidak ada — semua udah dijawab. Siap eksekusi mulai dari Fase 0.
 
 ## Pem-fase-an
 
-**Fase 0 — Singleton flag (prereq)** (½ hari)
-- Tambah `Meta.Singleton` di `pkg/connector/connector.go`.
-- Bootstrap auto-seed Singleton, Create reject duplikat.
-- UI manager hide tombol "Add" buat Singleton.
+**Fase 0 — Fixed flag (prereq)** (½ hari)
+- Tambah `Meta.Fixed` di `pkg/connector/connector.go`.
+- Bootstrap auto-seed kalau Fixed, Create reject duplikat kalau Fixed.
+- UI manager hide tombol "Add" buat Fixed connector.
 - Test: pakai connector dummy, pastiin row kedua di-tolak.
 
 **Fase 1 — skeleton + op read-only** (1–2 hari)
-- Bikin skeleton `internal/connectors/wickmanager/` (Singleton:true).
+- Bikin skeleton `internal/connectors/wickmanager/` (Fixed:true).
 - Implement `apps_list_configs`, `jobs_list`, `jobs_get`, `tools_list`, `tools_get`, `connectors_list`, `connectors_get`.
 - Mask helper buat row `entity.Config` secret.
 - Helper `access.go` (requireAdmin / tag-visible filter).
