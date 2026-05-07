@@ -20,12 +20,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/systray"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/yogasw/wick/internal/autostart"
+	"github.com/yogasw/wick/internal/initcreds"
 	"github.com/yogasw/wick/internal/mcpconfig"
 	"github.com/yogasw/wick/internal/pkg/api"
 	"github.com/yogasw/wick/internal/pkg/config"
@@ -40,6 +42,15 @@ var (
 	serverCancel context.CancelFunc
 	serverDone   chan struct{}
 	serverPort   int
+
+	// Top-of-menu credential entry. Single clickable item that opens
+	// INITIAL_CREDENTIALS.txt so the operator can copy the password —
+	// printing it on a disabled menu row works too but blocks copy on
+	// every platform's tray UI. Set in onReady, refreshed from anywhere
+	// (server start, tray open) via refreshCredBanner so it reflects
+	// the live file state without threading refs through callers.
+	credOpenItem *systray.MenuItem
+	credSepItem  *systray.MenuItem
 
 	workerCancel context.CancelFunc
 	workerDone   chan struct{}
@@ -72,6 +83,16 @@ func Run(projectDir, name, appVer, wickVer, commit, builtAt, repo, pat string) {
 		name = filepath.Base(projectDir)
 	}
 	appName = name
+	// Server reads APP_NAME to resolve per-app paths (logs,
+	// INITIAL_CREDENTIALS) under ~/.<appName>/ and to seed the display
+	// name on first boot. Tray and CLI both go through the same env so
+	// the two surfaces always agree.
+	os.Setenv("APP_NAME", appName)
+	// WICK_TRAY=1 signals "single-user local install" to the server —
+	// loosens password-length floor on /profile/setup so admin/admin1
+	// is acceptable for a laptop tray. CLI `wick server` runs (no tray)
+	// keep the strict 8-char floor.
+	os.Setenv("WICK_TRAY", "1")
 	appVersion = appVer
 	wickVersion = wickVer
 	buildCommit = commit
@@ -168,6 +189,89 @@ func refreshIcon() {
 	systray.SetIcon(WickIcon(isServerRunning(), isWorkerRunning(), runtime.GOOS == "windows"))
 }
 
+// refreshCredBanner syncs the three top-of-menu items (email, password,
+// trailing separator) with the on-disk INITIAL_CREDENTIALS.txt. File
+// missing or unreadable → hide the whole banner. Called on first
+// render, on every TrayOpenedCh tick, and after server start (server
+// is what writes the file on first boot).
+//
+// Server start is async: api.Server.Run boots in a goroutine and the
+// file lands a tick later when configs.Bootstrap completes. Calling
+// this synchronously right after startServer() would race that write,
+// so post-start callers spawn the polled variant instead.
+// refreshCredBanner toggles the "Open default password" entry based on
+// the credentials file. Visibility also requires the server to be up —
+// the entry lives inside the server-controls group, so hiding it when
+// the server is down keeps the menu compact. The trailing separator is
+// driven by setServerLabel, not here.
+func refreshCredBanner() {
+	if credOpenItem == nil {
+		return
+	}
+	_, ok := initcreds.Read(appName)
+	if !ok || !isServerRunning() {
+		credOpenItem.Hide()
+		return
+	}
+	credOpenItem.Show()
+}
+
+// credAutoOpened guards the once-per-session auto-open. Without it
+// every server start would re-launch Notepad, which is annoying for
+// the operator who restarts the server while debugging.
+var credAutoOpened bool
+
+// refreshCredBannerSoon polls the credentials file for ~5s after server
+// boot, applying the banner the moment the file appears. Stops early
+// when the banner is already up. The first time the file shows up in a
+// session it also opens the file in the default editor so a brand-new
+// install leads the operator straight to the password to copy.
+// Single-shot — caller fires one and forgets, no overlapping polls.
+func refreshCredBannerSoon() {
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, ok := initcreds.Read(appName); ok {
+				refreshCredBanner()
+				autoOpenCredsOnce()
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		refreshCredBanner()
+	}()
+}
+
+func autoOpenCredsOnce() {
+	if credAutoOpened {
+		return
+	}
+	credAutoOpened = true
+	path, err := initcreds.Path(appName)
+	if err != nil {
+		return
+	}
+	if err := openInEditor(path); err != nil {
+		log.Warn().Err(err).Msg("auto-open initial credentials")
+	}
+}
+
+// refreshInitCredsItem hides the About → "Open initial credentials"
+// entry when the file no longer exists. Mirrors applyCredItems for the
+// secondary entry point so both surfaces stay in sync.
+func refreshInitCredsItem(item *systray.MenuItem) {
+	path, err := initcreds.Path(appName)
+	if err != nil || path == "" {
+		item.Hide()
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		item.Hide()
+		return
+	}
+	item.Show()
+}
+
 func onReady() {
 	refreshIcon()
 	systray.SetTitle(appName)
@@ -186,7 +290,17 @@ func onReady() {
 	mInfo.Disable()
 	systray.AddSeparator()
 
+	// Server controls. When the server is up the related actions
+	// (Open URL, Open default password) cluster underneath, separated
+	// from the worker row below — keeps the "doing things with the
+	// server" group visually distinct once the menu grows.
 	mServer := systray.AddMenuItem("Start server", "Toggle HTTP server")
+	mOpenURL := systray.AddMenuItem("Open server URL", "Open the server in your browser")
+	mOpenURL.Hide()
+	credOpenItem = systray.AddMenuItem("Open default password", "Open INITIAL_CREDENTIALS.txt to copy the auto-generated admin password")
+	credSepItem = systray.AddMenuItem("─────────────", "")
+	credSepItem.Disable()
+	credSepItem.Hide()
 	mWorker := systray.AddMenuItem("Start worker", "Toggle background job worker")
 
 	// Update controls
@@ -281,6 +395,15 @@ func onReady() {
 	if logDir == "" {
 		mLogs.Disable()
 	}
+	// Visible only while INITIAL_CREDENTIALS.txt exists — first-login
+	// setup deletes the file, which hides the menu entry on next refresh.
+	credPath, _ := initcreds.Path(appName)
+	mInitCreds := mAbout.AddSubMenuItem("Open initial credentials", "Show the auto-generated admin password")
+	if credPath == "" {
+		mInitCreds.Hide()
+	} else if _, err := os.Stat(credPath); err != nil {
+		mInitCreds.Hide()
+	}
 	mWickRepo := mAbout.AddSubMenuItem("Wick Repository", "https://github.com/yogasw/wick")
 	mWickDocs := mAbout.AddSubMenuItem("Wick Documentation", "https://yogasw.github.io/wick/")
 	systray.AddSeparator()
@@ -291,11 +414,18 @@ func onReady() {
 		switch {
 		case running:
 			mServer.SetTitle(fmt.Sprintf("Stop server  (running on :%d)", serverPort))
+			mOpenURL.Show()
+			credSepItem.Show()
 		case errMsg != "":
 			mServer.SetTitle("Start server  (failed: " + errMsg + ")")
+			mOpenURL.Hide()
+			credSepItem.Hide()
 		default:
 			mServer.SetTitle("Start server")
+			mOpenURL.Hide()
+			credSepItem.Hide()
 		}
+		refreshCredBanner()
 	}
 	setWorkerLabel := func(running bool) {
 		if running {
@@ -311,6 +441,7 @@ func onReady() {
 			setServerLabel(false, err.Error())
 		} else {
 			setServerLabel(true, "")
+			refreshCredBannerSoon()
 		}
 	} else {
 		setServerLabel(false, "")
@@ -385,10 +516,22 @@ func onReady() {
 		runCheck()
 	}
 
+	// Refresh state every time the user opens the tray. Catches the
+	// case where /profile/setup deleted INITIAL_CREDENTIALS.txt while
+	// the tray was already running — without this, the email/password
+	// banner would linger until the next process restart.
+	go func() {
+		for range systray.TrayOpenedCh {
+			refreshCredBanner()
+			refreshInitCredsItem(mInitCreds)
+		}
+	}()
+
 	go func() {
 		for {
 			select {
 			case <-mServer.ClickedCh:
+				log.Info().Bool("running", isServerRunning()).Msg("menu: server toggle")
 				if isServerRunning() {
 					stopServer()
 					setServerLabel(false, "")
@@ -397,9 +540,35 @@ func onReady() {
 					setServerLabel(false, err.Error())
 				} else {
 					setServerLabel(true, "")
+					// Server writes INITIAL_CREDENTIALS on first boot
+					// — poll for the file so the email + password rows
+					// appear without waiting for the user to re-open
+					// the tray.
+					refreshCredBannerSoon()
 				}
 				refreshIcon()
+			case <-mOpenURL.ClickedCh:
+				log.Info().Bool("running", isServerRunning()).Int("port", serverPort).Msg("menu: open server url")
+				if isServerRunning() {
+					url := fmt.Sprintf("http://localhost:%d", serverPort)
+					if err := openInEditor(url); err != nil {
+						log.Error().Str("url", url).Err(err).Msg("open server url")
+					} else {
+						log.Info().Str("url", url).Msg("open server url: launched")
+					}
+				}
+			case <-credOpenItem.ClickedCh:
+				path, err := initcreds.Path(appName)
+				log.Info().Str("path", path).Err(err).Msg("menu: open default password")
+				if err == nil {
+					if err := openInEditor(path); err != nil {
+						log.Error().Str("path", path).Err(err).Msg("open initial credentials")
+					} else {
+						log.Info().Str("path", path).Msg("open initial credentials: launched")
+					}
+				}
 			case <-mWorker.ClickedCh:
+				log.Info().Bool("running", isWorkerRunning()).Msg("menu: worker toggle")
 				if isWorkerRunning() {
 					stopWorker()
 					setWorkerLabel(false)
@@ -410,9 +579,21 @@ func onReady() {
 				}
 				refreshIcon()
 			case <-mLogs.ClickedCh:
+				log.Info().Str("logDir", logDir).Msg("menu: open logs")
 				if logDir != "" {
 					if err := openInEditor(logDir); err != nil {
-						log.Error().Err(err).Msg("open logs")
+						log.Error().Str("logDir", logDir).Err(err).Msg("open logs")
+					} else {
+						log.Info().Str("logDir", logDir).Msg("open logs: launched")
+					}
+				}
+			case <-mInitCreds.ClickedCh:
+				log.Info().Str("path", credPath).Msg("menu: open initial credentials (about)")
+				if credPath != "" {
+					if err := openInEditor(credPath); err != nil {
+						log.Error().Str("path", credPath).Err(err).Msg("open initial credentials")
+					} else {
+						log.Info().Str("path", credPath).Msg("open initial credentials: launched")
 					}
 				}
 			case <-mCheckUpdate.ClickedCh:

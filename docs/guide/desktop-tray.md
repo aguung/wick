@@ -14,6 +14,9 @@ The tray is one binary, not a separate executable. The same `./bin/<app>` runs a
 <app> v<version>  (wick v<wickVersion>)
 ─────────────────────────────────────
 Start server  /  Stop server  (running on :9425)
+Open server URL                       (visible while server is up)
+Open default password                 (visible while INITIAL_CREDENTIALS.txt exists)
+─────────────                         (separator only when server is up)
 Start worker  /  Stop worker  (running)
 Check for updates
 Restart to apply v1.2.4              (hidden until a download is staged)
@@ -40,6 +43,7 @@ Preferences ▶
 About ▶
   App / Wick / Commit / Built
   Open logs
+  Open initial credentials            (hidden after first-login setup)
   Wick Repository
   Wick Documentation
 ─────────────────────────────────────
@@ -47,6 +51,22 @@ Quit
 ```
 
 The tray icon background color signals state at a glance: gray (idle), blue (server running), orange (worker running), green (both running). A corner badge adds a glyph for higher-DPI tray slots.
+
+## Initial admin credentials
+
+On first boot wick generates a 5-word passphrase for the seed admin user (when `APP_ADMIN_PASSWORD` is unset / left as the historical `"admin"`) and writes it to `~/.<app>/INITIAL_CREDENTIALS.txt` (mode `0600`). The tray surfaces it three ways:
+
+- **Tray menu — Open default password** appears beneath `Start/Stop server` while the file exists. Clicking opens it in the default text editor for copy-paste.
+- **Toast on first boot** points at the menu so the operator notices.
+- **About → Open initial credentials** is the same file, kept around as a fallback.
+
+The first time the operator logs in, wick force-redirects to `/profile/setup` (email + password rotation). Once that's done, `admin_password_changed` flips, the file is deleted, and all three surfaces disappear on the next tray refresh.
+
+Headless / CLI runs (`wick server`) print the credentials to stdout instead — useful for `docker logs` or `journalctl`.
+
+## Open server URL
+
+Visible only when the server is running. Opens `http://localhost:<port>` in the user's default browser. The handler reads `serverPort` live, so port changes between starts are picked up without re-rendering the menu.
 
 ## Server / worker toggles
 
@@ -211,5 +231,5 @@ The tray acquires a per-app PID-file lock at `~/.<app>/instance.pid` and verifie
 ## See also
 
 - [`wick build` reference](/reference/build) — flags, CI templates, PAT scopes for the self-updater
-- [Environment Variables](/reference/env-vars) — `PORT`, `WICK_APP_NAME`, `RELEASE_GITHUB_PAT`, etc.
+- [Environment Variables](/reference/env-vars) — `PORT`, `APP_NAME`, `RELEASE_GITHUB_PAT`, etc.
 - [CLI Reference](/reference/cli) — full subcommand list including `<app> tray`, `<app> mcp serve / install / uninstall`
