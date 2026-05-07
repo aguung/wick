@@ -94,8 +94,8 @@ Common flags:
 
 | Flag | Env fallback | Effect |
 |---|---|---|
-| `--app-name` | `WICK_APP_NAME` | Override `name:` from `wick.yml` |
-| `--app-version` | `WICK_APP_VERSION` | Override `version:` from `wick.yml` |
+| `--app-name` | `APP_NAME` | Override `name:` from `wick.yml` |
+| `--app-version` | `APP_VERSION` | Override `version:` from `wick.yml` |
 | `--release-github-pat` | `RELEASE_GITHUB_PAT` | Bake releases PAT for self-updater |
 | `--release-github-repo` | `RELEASE_GITHUB_REPOSITORY` | Bake releases repo `owner/repo` for self-updater |
 | `-o`, `--output` | — | Raw binary path (default `bin/<name>-<goos>-<goarch>[.exe]`); bundle is written next to it |
