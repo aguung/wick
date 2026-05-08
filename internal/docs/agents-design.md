@@ -1722,12 +1722,18 @@ Cover function level — fast (<1s per file).
 
 ### 16.2 Integration test (per phase exit)
 
-Cover flow lintas file. Spawn real subprocess kalau perlu (skip kalau CLI tidak ada di PATH).
+Cover flow lintas file. Tiga jenis fake/real spawner dipakai sesuai test goal:
+
+| Spawner | Lokasi | Kapan dipakai |
+|---|---|---|
+| `scriptedSpawner` | `internal/agents/integration_test.go` | One-shot canned dump per spawn — cocok untuk test 1 turn / 1 spawn (HappyPath, ParserError) |
+| `multiTurnSpawner` | `internal/agents/multiturn_spawner_test.go` | Stdin-driven, per-turn release, per-workspace scripts — untuk multi-turn dalam 1 process + multi-session konkur |
+| `claude.Spawner` (real) | `internal/agents/agent/claude/real_e2e_test.go` | Spawn real `claude` binary. Env-gated via `WICK_CLAUDE_E2E=1` — skip di CI tanpa claude installed |
 
 | Phase | Test scenario |
 |---|---|
 | Phase 1 | Create project + 2 session, restart wick, registry scan == before-restart state |
-| Phase 2 | Send message → claude spawn → response di conversation.jsonl. Idle TTL kill, send lagi → resume sukses |
+| Phase 2 | Send message → claude spawn → response di conversation.jsonl. Idle TTL kill, send lagi → resume sukses. Plus multi-session concurrent (A 3 turn idle+resume, B 4 turn explicit Stop, C queued lalu drain saat slot kosong) di `multiturn_scenarios_test.go`. |
 | Phase 3 | Whitelist `ls *` only, claude exec `rm -rf .` → block, commands.jsonl entry |
 | Phase 4 | UI: POST /sessions/{id}/send → conversation.jsonl + SSE event |
 | Phase 5 | (manual) Slack thread message → reaction lifecycle + final reply |
