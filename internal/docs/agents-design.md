@@ -72,8 +72,8 @@ Update tabel ini saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | Phase | Status | Catatan |
 |---|---|---|
 | Phase 1 — Foundation | `[x]` | `internal/agents/` storage + config + preset + project + session + registry + manager. 28 unit tests hijau. |
-| Phase 2 — Subprocess + Pool | `[x]` | claude only. event/state/store/agent/pool subpackages + integration test via fake spawner. Real-claude smoke test landed in commit `928867f` (env-gated `WICK_CLAUDE_E2E=1`) — verified long-lived multi-turn against claude 2.1.132. 68 tests across 19 pkgs (incl. agent/claude, transport split). |
-| Phase 3 — Command Gate | `[x]` | claude PreToolUse hook + `wick-gate` binary + glob matcher + shell-metachar guard + scope prefix. Integration test builds the binary and invokes it as a subprocess with real stdin/env (no mocks). 91 tests / 21 pkgs total. Real-claude e2e via pool flow encountered Windows-specific routing issue (intermittent), deferred to phase 6 polish. |
+| Phase 2 — Subprocess + Pool | `[x]` | claude only. event/state/store/agent/pool subpackages + integration test via fake spawner. Real-claude smoke test landed in commit `928867f` (env-gated `WICK_CLAUDE_E2E=1`) — verified long-lived multi-turn against claude 2.1.132. Pool exit-order hardening in commit `73dddfc`: `onAgentExit` now runs `markStatus(idle)` **before** `releaseSlot`, Pool gains `sync.WaitGroup` to drain trailing exit + queue goroutines, `spawn`/`tryGrantQueue` short-circuit on `closed`. Killed flaky `TestPipeline_ResumeAfterIdleKill` + `TestQueueWhenPoolFull` on Windows (concurrent `os.Rename` to `meta.json`). 68 tests across 19 pkgs (incl. agent/claude, transport split). |
+| Phase 3 — Command Gate | `[x]` | claude PreToolUse hook + `wick-gate` binary + glob matcher + shell-metachar guard + scope prefix. Integration test builds the binary and invokes it as a subprocess with real stdin/env (no mocks). 91 tests / 21 pkgs total. Real-claude pool e2e green after the phase-2 pool fix; verified against claude 2.1.132 on Windows. |
 | Phase 4 — UI Manager Tool (MVP) | `[ ]` | — |
 | Phase 5 — Slack Transport | `[ ]` | — |
 | Phase 6 — Polish | `[ ]` | — |
@@ -133,7 +133,7 @@ Tujuan: shell command yang tidak whitelisted di-block oleh CLI hook.
 - [x] **3.3** Inject hook config + WICK_GATE_SPEC env via `pool.GateConfig` + `gateAwareSpawner` wrapper → `internal/agents/pool/factory.go`
 - [x] **3.4** Append ke `commands.jsonl` saat hook keputusan allow/block → `internal/agents/gate/log.go` (used by both wick-gate binary + tests)
 - [x] **3.5** Fail-safe: stdin read timeout (3s) → block → `cmd/wick-gate/main.go`
-- [x] **3.6** Tests: matcher table-driven (allow/block/scope/metachar), wick-gate binary subprocess integration (allow / block-unlisted / metachar-on-allowed / malformed-stdin / missing-spec-env / hanging-stdin-timeout) → `internal/agents/gate/{rule,log,claude_hook,integration}_test.go` + `cmd/wick-gate/main_test.go`. **Note**: Real-claude e2e via pool flow had a Windows-specific routing issue (claude CLI invoked correctly + hook config valid + wick-gate works in standalone subprocess test, but pool's piped stdout never produced events in this combination); deferred for separate investigation. Standalone subprocess integration test fully verifies the binary + matcher + log path.
+- [x] **3.6** Tests: matcher table-driven (allow/block/scope/metachar), wick-gate binary subprocess integration (allow / block-unlisted / metachar-on-allowed / malformed-stdin / missing-spec-env / hanging-stdin-timeout) → `internal/agents/gate/{rule,log,claude_hook,integration}_test.go` + `cmd/wick-gate/main_test.go`. Real-claude pool e2e (`TestRealClaudeMultiTurn`, env-gated `WICK_CLAUDE_E2E=1`) green once the phase-2 pool exit-order race was fixed (see Phase 2 row + §5.1 step 12).
 
 **Exit criteria**: claude exec command yang tidak whitelisted → di-block, command_log entry ada.
 
@@ -958,8 +958,9 @@ Halaman dashboard menampilkan:
 9. Subprocess stdout di-baca per chunk → stream ke Slack + SSE dashboard. Append ke `conversation.jsonl`/`raw.jsonl`
 10. Command Gate intercept setiap shell exec sebelum dieksekusi → log ke `commands.jsonl`
 11. Idle timer reset setiap ada aktivitas
-12. Kalau idle > TTL → subprocess.Kill(), status = idle (update agents.json + meta.json), slot dibebaskan
-    → queue di-proses (session berikutnya di-spawn)
+12. Kalau idle > TTL → subprocess.Kill() → `markStatus(idle)` (write meta.json) → `releaseSlot` (Active--)
+    → `tryGrantQueue` (session berikutnya di-spawn). Order penting: status update **sebelum** slot dibebaskan
+    supaya pengamat `Active==0` selalu lihat on-disk state yang konsisten (cegah race os.Rename di Windows).
 ```
 
 ### 5.1.1 Message Buffer saat Queue
