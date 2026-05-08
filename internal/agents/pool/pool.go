@@ -1,0 +1,313 @@
+package pool
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/config"
+	"github.com/yogasw/wick/internal/agents/event"
+	"github.com/yogasw/wick/internal/agents/session"
+	"github.com/yogasw/wick/internal/agents/state"
+	"github.com/yogasw/wick/internal/agents/store"
+)
+
+// Pool is the global slot manager. It tracks how many agent
+// subprocesses are alive across all sessions, FIFO-queues sessions
+// that arrive while full, and grants slots when one frees up.
+//
+// Pool deliberately knows nothing about CLI specifics — it asks an
+// AgentFactory to build an *agent.Agent for a given session+agent
+// name. Tests inject a factory that returns agents wired to the
+// fakeSpawner; production wires ClaudeSpawner.
+type Pool struct {
+	cfg PoolConfig
+
+	mu      sync.Mutex
+	active  map[string]*runEntry // key = sessionKey(sessionID, agentName)
+	queue   []queueEntry
+	buffers map[string]*Buffer // per-session buffer, lazily created
+	closed  bool
+}
+
+// PoolConfig knobs.
+type PoolConfig struct {
+	MaxConcurrent int
+	IdleTimeout   time.Duration
+	Layout        config.Layout
+	Factory       AgentFactory
+}
+
+// AgentFactory builds an agent ready to Start. The pool wires the
+// OnExit hook itself (so it can free the slot); the factory should
+// not.
+type AgentFactory interface {
+	Build(opt FactoryOptions) (*agent.Agent, *state.Machine, *store.Store, error)
+}
+
+// FactoryOptions is what the pool hands to the factory. ResumeID is
+// pulled from the session's agents.json by the pool.
+type FactoryOptions struct {
+	SessionID   string
+	AgentName   string
+	Workspace   string
+	ResumeID    string
+	IdleTimeout time.Duration
+	OnEvent     func(event.AgentEvent)
+}
+
+// queueEntry is one request waiting for a slot.
+type queueEntry struct {
+	sessionID string
+	agentName string
+	enqueued  time.Time
+}
+
+// runEntry tracks an active agent in the pool.
+type runEntry struct {
+	agent    *agent.Agent
+	state    *state.Machine
+	store    *store.Store
+	buffer   *Buffer
+	sessID   string
+	agentNm  string
+}
+
+// New returns an empty pool.
+func New(cfg PoolConfig) *Pool {
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = 2
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = 120 * time.Second
+	}
+	return &Pool{
+		cfg:     cfg,
+		active:  map[string]*runEntry{},
+		buffers: map[string]*Buffer{},
+	}
+}
+
+// Send routes a user message into the right session. If a slot is
+// free the agent is spawned and the message sent immediately; else
+// the message is appended to the session's buffer and the request is
+// queued. The on-disk session meta status is updated to reflect
+// running/queued so UI listings stay correct.
+func (p *Pool) Send(ctx context.Context, sessionID, agentName, source, role, text string) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return errors.New("pool closed")
+	}
+	key := sessionKey(sessionID, agentName)
+	entry, alive := p.active[key]
+	p.mu.Unlock()
+
+	if alive {
+		// Active agent — append to conversation log + send straight.
+		if entry.store != nil {
+			_ = entry.store.AppendUserTurn(role, source, text)
+		}
+		return entry.agent.Send(text)
+	}
+
+	// Not active. Buffer the message and either spawn (slot free) or
+	// queue (pool full).
+	buf, err := p.bufferFor(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := buf.Append(text); err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	if len(p.active) < p.cfg.MaxConcurrent {
+		p.mu.Unlock()
+		return p.spawn(ctx, sessionID, agentName, source)
+	}
+	// Full — queue the request and update session status.
+	p.queue = append(p.queue, queueEntry{sessionID, agentName, time.Now()})
+	p.mu.Unlock()
+	return p.markStatus(sessionID, session.StatusQueued)
+}
+
+// spawn allocates a slot, builds an agent via the factory, drains the
+// buffer into one combined input, and starts it. Caller must NOT hold
+// p.mu (we acquire and release it ourselves so the spawn can take
+// time without blocking other Send calls).
+func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) error {
+	sess, err := session.Load(p.cfg.Layout, sessionID)
+	if err != nil {
+		return err
+	}
+	resumeID := ""
+	for _, a := range sess.Agents {
+		if a.Name == agentName {
+			resumeID = a.CLISessionID
+			break
+		}
+	}
+
+	a, st, sto, err := p.cfg.Factory.Build(FactoryOptions{
+		SessionID:   sessionID,
+		AgentName:   agentName,
+		Workspace:   p.cfg.Layout.SessionWorkspace(sessionID),
+		ResumeID:    resumeID,
+		IdleTimeout: p.cfg.IdleTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	// Wire OnExit so the pool reclaims the slot.
+	key := sessionKey(sessionID, agentName)
+	entry := &runEntry{
+		agent:   a,
+		state:   st,
+		store:   sto,
+		sessID:  sessionID,
+		agentNm: agentName,
+	}
+	p.mu.Lock()
+	if buf, ok := p.buffers[sessionID]; ok {
+		entry.buffer = buf
+	}
+	p.active[key] = entry
+	p.mu.Unlock()
+
+	// Drain the buffer into one combined input — design §5.1.1.
+	combined, err := entry.buffer.Drain()
+	if err != nil {
+		return err
+	}
+
+	if err := p.markStatus(sessionID, session.StatusRunning); err != nil {
+		return err
+	}
+	if err := a.Start(ctx); err != nil {
+		p.releaseSlot(key)
+		return err
+	}
+	if combined != "" {
+		if entry.store != nil {
+			_ = entry.store.AppendUserTurn("user", source, combined)
+		}
+		if err := a.Send(combined); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// onAgentExit is the hook the factory wires for us. The pool releases
+// the slot, marks the session idle, and tries to grant the slot to
+// the next queued session.
+func (p *Pool) onAgentExit(sessionID, agentName string) {
+	key := sessionKey(sessionID, agentName)
+	p.releaseSlot(key)
+	_ = p.markStatus(sessionID, session.StatusIdle)
+	p.tryGrantQueue()
+}
+
+func (p *Pool) releaseSlot(key string) {
+	p.mu.Lock()
+	delete(p.active, key)
+	p.mu.Unlock()
+}
+
+// tryGrantQueue pops the head of the queue and spawns it if a slot is
+// free. Runs every time a slot is released.
+func (p *Pool) tryGrantQueue() {
+	p.mu.Lock()
+	if len(p.queue) == 0 || len(p.active) >= p.cfg.MaxConcurrent {
+		p.mu.Unlock()
+		return
+	}
+	q := p.queue[0]
+	p.queue = p.queue[1:]
+	p.mu.Unlock()
+	// Background spawn — don't block whoever fired the exit hook.
+	go func() {
+		_ = p.spawn(context.Background(), q.sessionID, q.agentName, "queue")
+	}()
+}
+
+// bufferFor returns or lazy-creates the per-session Buffer.
+func (p *Pool) bufferFor(sessionID string) (*Buffer, error) {
+	p.mu.Lock()
+	if b, ok := p.buffers[sessionID]; ok {
+		p.mu.Unlock()
+		return b, nil
+	}
+	p.mu.Unlock()
+	buf, err := NewBuffer(p.cfg.Layout, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	if existing, ok := p.buffers[sessionID]; ok {
+		// Race: another caller created one. Use theirs.
+		p.mu.Unlock()
+		return existing, nil
+	}
+	p.buffers[sessionID] = buf
+	p.mu.Unlock()
+	return buf, nil
+}
+
+// markStatus updates session meta.Status + LastActive.
+func (p *Pool) markStatus(sessionID string, status session.Status) error {
+	sess, err := session.Load(p.cfg.Layout, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Meta.Status == status {
+		return nil
+	}
+	sess.Meta.Status = status
+	sess.Meta.LastActive = time.Now().UTC()
+	return session.SaveMeta(p.cfg.Layout, sessionID, sess.Meta)
+}
+
+// Stop tears down all active agents. Used on graceful shutdown.
+func (p *Pool) Stop() {
+	p.mu.Lock()
+	p.closed = true
+	entries := make([]*runEntry, 0, len(p.active))
+	for _, e := range p.active {
+		entries = append(entries, e)
+	}
+	p.mu.Unlock()
+	for _, e := range entries {
+		_ = e.agent.Stop()
+	}
+}
+
+// Active returns the number of running agents.
+func (p *Pool) Active() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.active)
+}
+
+// QueueLen returns the number of queued requests.
+func (p *Pool) QueueLen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.queue)
+}
+
+// HandleExit is the public hook the factory wires into agent.OnExit.
+// It defers to the unexported onAgentExit but accepts the reason so
+// future code can branch (e.g. don't grant queue if the previous exit
+// was an error).
+func (p *Pool) HandleExit(sessionID, agentName string, _ agent.ExitReason) {
+	p.onAgentExit(sessionID, agentName)
+}
+
+// sessionKey is the canonical map key for an active agent.
+func sessionKey(sessionID, agentName string) string {
+	return sessionID + "::" + agentName
+}

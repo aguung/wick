@@ -42,7 +42,7 @@ Update tabel ini saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | Phase | Status | Catatan |
 |---|---|---|
 | Phase 1 — Foundation | `[x]` | `internal/agents/` storage + config + preset + project + session + registry + manager. 28 unit tests hijau. |
-| Phase 2 — Subprocess + Pool | `[ ]` | — |
+| Phase 2 — Subprocess + Pool | `[x]` | claude only. event/state/store/agent/pool subpackages + integration test via fake spawner (real claude smoke test pending manual). 65 tests across 12 pkgs. |
 | Phase 3 — Command Gate | `[ ]` | — |
 | Phase 4 — UI Manager Tool (MVP) | `[ ]` | — |
 | Phase 5 — Slack Transport | `[ ]` | — |
@@ -82,15 +82,15 @@ Tujuan: bisa buat/hapus project + session dari kode (test). Belum ada subprocess
 
 Tujuan: bisa spawn claude subprocess, kirim input, capture output, idle TTL kill.
 
-- [ ] **2.1** Internal `AgentEvent` struct + `EventParser` interface → `internal/agents/events.go`
-- [ ] **2.2** `ClaudeParser` — parse stream-json → AgentEvent, extract `session_id` → `internal/agents/events.go`
-- [ ] **2.3** `Agent` struct + lifecycle: spawn, stdin write, kill, idle timer → `internal/agents/agent.go`
-- [ ] **2.4** State machine per agent (idle/thinking/running_tool/responding) → `internal/agents/state.go`
-- [ ] **2.5** Pipeline event → `conversation.jsonl` + `agents.json` (cli_session_id capture) → `internal/agents/store.go`
-- [ ] **2.6** Agent Pool: max_concurrent slot mgmt + FIFO queue → `internal/agents/pool.go`
-- [ ] **2.7** Resume flow: spawn dengan `--resume <cli_session_id>` kalau ada → `internal/agents/agent.go`
-- [ ] **2.8** Message buffer saat queued — append, drain saat slot dapat → `internal/agents/session.go`
-- [ ] **2.9** Integration test: spawn claude in `t.TempDir()` workspace, send "hello", expect response → `internal/agents/integration_test.go`
+- [x] **2.1** Internal `AgentEvent` struct + `EventParser` interface → `internal/agents/event/types.go` + `parser.go`
+- [x] **2.2** `ClaudeParser` — parse stream-json → AgentEvent, extract `session_id` → `internal/agents/event/claude.go`
+- [x] **2.3** `Agent` struct + lifecycle: spawn, stdin write, kill, idle timer → `internal/agents/agent/agent.go` + `claude_spawn.go`
+- [x] **2.4** State machine per agent (idle/thinking/running_tool/responding) → `internal/agents/state/state.go`
+- [x] **2.5** Pipeline event → `conversation.jsonl` + `agents.json` (cli_session_id capture) → `internal/agents/store/store.go`
+- [x] **2.6** Agent Pool: max_concurrent slot mgmt + FIFO queue → `internal/agents/pool/pool.go` + `factory.go`
+- [x] **2.7** Resume flow: spawn dengan `--resume <cli_session_id>` kalau ada → `internal/agents/agent/agent.go` (ResumeID forwarded to spawner, captured from SessionStart events)
+- [x] **2.8** Message buffer saat queued — append, drain saat slot dapat → `internal/agents/pool/buffer.go` (persists to `meta.PendingInput`)
+- [x] **2.9** Integration test via fake spawner (claude binary not required) → `internal/agents/integration_test.go`. Real-binary smoke test still pending manual run.
 
 **Exit criteria**: Go test trigger session message → claude jalan di worktree → output di-tulis ke jsonl → idle TTL kill → revive resume sukses.
 
