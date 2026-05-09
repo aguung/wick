@@ -486,6 +486,11 @@ func NewServer() *Server {
 	// 302 them into /auth/login which they can't follow.
 	r.Handle("POST /mcp", mcpAuth.Wrap(mcpHandler))
 
+	// Slack HTTP Event API webhook — public, no session auth.
+	// Integrity is enforced inside the handler via HMAC-SHA256 signing secret.
+	// Active only when mode=http and SigningSecret is set; otherwise returns 503.
+	r.Handle("POST /integrations/slack/events", slackChannel.HTTPHandler())
+
 	// OAuth 2.1 surface — .well-known metadata + /oauth/{register,
 	// authorize, token} (public) + /profile/connections (auth-gated
 	// inside, per-user grant dashboard).

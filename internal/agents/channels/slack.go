@@ -2,8 +2,15 @@ package channels
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -113,6 +120,10 @@ func (s *SlackChannel) Name() string { return "slack" }
 // IsConfigured returns true when the config has the minimum required fields
 // to start. Server.go uses this to skip the channel gracefully rather than
 // treating a missing token as a fatal boot error.
+//
+// Required fields by mode:
+//   - socket: BotToken + AppToken
+//   - http:   BotToken + SigningSecret
 func (s *SlackChannel) IsConfigured() bool {
 	s.cfgMu.Lock()
 	cfg := s.cfg
@@ -120,11 +131,10 @@ func (s *SlackChannel) IsConfigured() bool {
 	if cfg.BotToken == "" {
 		return false
 	}
-	if cfg.Mode != "http" && cfg.AppToken == "" {
-		// Socket mode (default) requires an app-level token.
-		return false
+	if cfg.Mode == "http" {
+		return cfg.SigningSecret != ""
 	}
-	return true
+	return cfg.AppToken != ""
 }
 
 // Start begins listening for Slack events. It blocks until ctx is cancelled
@@ -141,12 +151,6 @@ func (s *SlackChannel) Start(ctx context.Context) error {
 	if cfg.BotToken == "" {
 		return fmt.Errorf("slack: bot token is required")
 	}
-	if cfg.Mode == "http" {
-		return fmt.Errorf("slack: HTTP Event API mode is not yet implemented; use mode=socket")
-	}
-	if cfg.AppToken == "" {
-		return fmt.Errorf("slack: app token (xapp-...) is required for socket mode")
-	}
 
 	// Create a per-run child context so Reload() can cancel just this
 	// connection without cancelling the entire server context.
@@ -160,6 +164,22 @@ func (s *SlackChannel) Start(ctx context.Context) error {
 		s.runWg.Done()
 		runCancel()
 	}()
+
+	// HTTP mode: events arrive via HTTPHandler; Start just holds the context
+	// open so Reload() has a goroutine to cancel and wait on.
+	if cfg.Mode == "http" {
+		if cfg.SigningSecret == "" {
+			return fmt.Errorf("slack: signing secret is required for http mode")
+		}
+		log.Info().Str("channel", "slack").Str("mode", "http").
+			Msg("started — receiving events on POST /integrations/slack/events")
+		<-runCtx.Done()
+		return nil
+	}
+
+	if cfg.AppToken == "" {
+		return fmt.Errorf("slack: app token (xapp-...) is required for socket mode")
+	}
 
 	log.Info().Str("channel", "slack").Str("mode", "socket").Msg("starting")
 
@@ -250,6 +270,97 @@ func (s *SlackChannel) handleEventsAPI(ctx context.Context, outer slackevents.Ev
 			s.handleMessage(ctx, ev)
 		}
 	}
+}
+
+// HTTPHandler returns an http.Handler for the Slack Events API webhook endpoint.
+// Mount it on the public mux at POST /integrations/slack/events — Slack must be
+// able to reach the URL without authentication; the signing secret provides
+// integrity verification.
+//
+// Behaviour:
+//   - Verifies the HMAC-SHA256 signature on every request.
+//   - Responds to the url_verification challenge synchronously.
+//   - All other events are dispatched asynchronously so the HTTP response
+//     returns well within Slack's 3-second deadline.
+func (s *SlackChannel) HTTPHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+
+		s.cfgMu.Lock()
+		signingSecret := s.cfg.SigningSecret
+		s.cfgMu.Unlock()
+
+		if signingSecret == "" {
+			http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		if err := verifySlackSignature(r.Header, body, signingSecret); err != nil {
+			log.Warn().Str("channel", "slack").Err(err).Msg("webhook: signature invalid")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		apiEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
+		if err != nil {
+			http.Error(w, "parse error", http.StatusBadRequest)
+			return
+		}
+
+		// URL verification: Slack sends this once when you first configure the
+		// webhook URL. Respond synchronously with the challenge value.
+		if apiEvent.Type == slackevents.URLVerification {
+			var cr struct {
+				Challenge string `json:"challenge"`
+			}
+			if err := json.Unmarshal(body, &cr); err != nil {
+				http.Error(w, "parse error", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": cr.Challenge})
+			return
+		}
+
+		// Respond 200 immediately — Slack retries if it doesn't get a timely
+		// response, and agent startup can take longer than 3 s.
+		w.WriteHeader(http.StatusOK)
+		go s.handleEventsAPI(context.Background(), apiEvent)
+	})
+}
+
+// verifySlackSignature validates the HMAC-SHA256 signature Slack attaches to
+// every webhook delivery. Returns a non-nil error when a required header is
+// absent, the timestamp is stale (> 5 min, replay-attack prevention), or the
+// computed digest does not match the provided signature.
+func verifySlackSignature(h http.Header, body []byte, signingSecret string) error {
+	timestamp := h.Get("X-Slack-Request-Timestamp")
+	if timestamp == "" {
+		return fmt.Errorf("missing X-Slack-Request-Timestamp header")
+	}
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid timestamp: %w", err)
+	}
+	if math.Abs(float64(time.Now().Unix()-ts)) > 300 {
+		return fmt.Errorf("timestamp too old")
+	}
+	sig := h.Get("X-Slack-Signature")
+	if sig == "" {
+		return fmt.Errorf("missing X-Slack-Signature header")
+	}
+	mac := hmac.New(sha256.New, []byte(signingSecret))
+	mac.Write([]byte("v0:" + timestamp + ":"))
+	mac.Write(body)
+	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(expected), []byte(sig)) {
+		return fmt.Errorf("signature mismatch")
+	}
+	return nil
 }
 
 // snapshot returns a consistent copy of the connection-independent config
