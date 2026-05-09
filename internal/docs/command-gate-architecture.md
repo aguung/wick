@@ -72,6 +72,16 @@ Stage 7 — Dev Tooling                                                 ✅ done
 [x] S7.4 .env.example: WICK_GATE_BIN dokumented (opsional override)
 [x] S7.5 ResolveGateBinary tambah sibling-of-exe step (auto-discover bin/)
 [x] S7.6 Doc updated dgn flow normal + cara debug via test/logs
+
+Stage 8 — Observability + Status (post-7 follow-ups)                  ✅ done
+[x] S8.1 commands.jsonl audit trail multi-stage: received → socket_dial →
+         socket_sent → socket_recv → terminal (allowed/blocked). Setiap
+         entry tagged dgn RequestID supaya 1 invocation traceable
+[x] S8.2 Entry struct extend: Stage, Tool, Decision, RequestID, MatchKey
+[x] S8.3 Providers page: GateStatusCard (enabled/disabled + binary path +
+         resolution source label + behavior note)
+[x] S8.4 Session detail: GateDisabledBanner di top kalau gate gak resolved
+[x] S8.5 ResolveGateBinaryWithSource() — return source label utk UI debug
 ```
 
 | Stage | Hot files |
