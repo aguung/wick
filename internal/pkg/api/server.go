@@ -24,6 +24,7 @@ import (
 	"github.com/yogasw/wick/internal/entity"
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
+	agentchannels "github.com/yogasw/wick/internal/agents/channels"
 	"github.com/yogasw/wick/internal/agents/provider"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentevent "github.com/yogasw/wick/internal/agents/event"
@@ -238,6 +239,27 @@ func NewServer() *Server {
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
 
+	// ── Agents: Slack channel (optional — only starts when configured) ──
+	slackCfg := agentconfig.SlackConfig{
+		Mode:          configsSvc.GetOwned("agents", "mode"),
+		BotToken:      configsSvc.GetOwned("agents", "bot_token"),
+		AppToken:      configsSvc.GetOwned("agents", "app_token"),
+		SigningSecret: configsSvc.GetOwned("agents", "signing_secret"),
+		AccessMode:    configsSvc.GetOwned("agents", "access_mode"),
+		AllowedUsers:  configsSvc.GetOwned("agents", "allowed_users"),
+		AllowedGroups: configsSvc.GetOwned("agents", "allowed_groups"),
+	}
+	slackChannel := agentchannels.NewSlack(
+		slackCfg,
+		agentsPool.Send,
+		configsSvc.GetOwned("agents", "public_url"),
+	)
+	if slackChannel.IsConfigured() {
+		log.Info().Msg("agents: slack channel configured, will start with server")
+	} else {
+		log.Info().Msg("agents: slack channel not configured, skipping (set BotToken + AppToken in Settings → Agents)")
+	}
+
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
 	// Register the code-side definitions for dispatch and auto-seed
 	// one DB row per Key on first boot. The MCP server below is the
@@ -451,14 +473,15 @@ func NewServer() *Server {
 	// Home
 	r.Handle("/", http.HandlerFunc(homeHandler.Index))
 
-	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool}
+	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, slackChannel: slackChannel}
 }
 
 type Server struct {
-	router      *http.ServeMux
-	configsSvc  *configs.Service
-	authMidd    *login.Middleware
-	agentsPool  *agentpool.Pool
+	router       *http.ServeMux
+	configsSvc   *configs.Service
+	authMidd     *login.Middleware
+	agentsPool   *agentpool.Pool
+	slackChannel *agentchannels.SlackChannel
 }
 
 // appNameHandler injects the configurable app name into every request
@@ -531,6 +554,15 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	}
 	logger := zerolog.Ctx(ctx)
 	addr := fmt.Sprintf(":%d", port)
+
+	// Start Slack channel listener if configured. Runs for the server lifetime.
+	if s.slackChannel != nil && s.slackChannel.IsConfigured() {
+		go func() {
+			if err := s.slackChannel.Start(ctx); err != nil {
+				log.Ctx(ctx).Error().Err(err).Msg("agents: slack channel stopped")
+			}
+		}()
+	}
 
 	h := chainMiddleware(
 		s.authMidd.Session(s.router),
