@@ -44,3 +44,6 @@ docs/.vitepress/cache/
 docs/yarn.lock
 bin/
 graphify-out
+
+# templ generated files
+*_templ.go
