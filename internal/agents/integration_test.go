@@ -243,6 +243,8 @@ func (p *scriptedProc) Stdout() io.Reader     { return p.stdoutR }
 func (p *scriptedProc) Stdin() io.WriteCloser { return &scriptedStdin{p: p} }
 func (p *scriptedProc) Wait() error           { <-p.done; return nil }
 func (p *scriptedProc) Pid() int              { return p.pid }
+func (p *scriptedProc) Binary() string        { return "" }
+func (p *scriptedProc) Argv() []string        { return nil }
 func (p *scriptedProc) Kill() error {
 	p.once.Do(func() {
 		_ = p.stdoutR.Close()

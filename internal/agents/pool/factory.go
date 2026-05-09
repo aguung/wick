@@ -122,7 +122,7 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		})
 	}
 
-	onStarted := func(pid int, firstMsg string) {
+	onStarted := func(meta SpawnStartMeta) {
 		if f.SpawnLogger == nil || spawnLogPath == "" {
 			return
 		}
@@ -133,8 +133,10 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 			ProviderName:     pName,
 			SessionID:        opt.SessionID,
 			AgentName:        opt.AgentName,
-			PID:              pid,
-			FirstUserMessage: provider.TruncateFirstMessage(firstMsg),
+			PID:              meta.PID,
+			Binary:           meta.Binary,
+			Args:             meta.Argv,
+			FirstUserMessage: provider.TruncateFirstMessage(meta.FirstUserMessage),
 		})
 	}
 

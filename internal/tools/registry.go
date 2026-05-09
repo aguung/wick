@@ -21,6 +21,7 @@ import (
 	pkgentity "github.com/yogasw/wick/pkg/entity"
 
 	converttext "github.com/yogasw/wick/internal/tools/convert-text"
+	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
 	"github.com/yogasw/wick/internal/tools/encfields"
 	"github.com/yogasw/wick/internal/tools/external"
@@ -106,6 +107,7 @@ func RegisterBuiltins() {
 			DefaultVisibility: entity.VisibilityPrivate,
 			DefaultTags:       []tool.DefaultTag{tags.AI},
 		},
+		Configs:  agentconfig.SeedGeneralConfig(),
 		Register: agentstool.Register,
 	})
 	for _, e := range external.All() {

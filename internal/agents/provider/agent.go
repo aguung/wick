@@ -212,6 +212,28 @@ func (a *Agent) PID() int {
 	return a.proc.Pid()
 }
 
+// Binary returns the resolved binary path of the running subprocess.
+// Empty when not running or when the spawner is a test fake.
+func (a *Agent) Binary() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil {
+		return ""
+	}
+	return a.proc.Binary()
+}
+
+// Argv returns the argument vector of the running subprocess. Empty
+// when not running or when the spawner is a test fake.
+func (a *Agent) Argv() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil {
+		return nil
+	}
+	return a.proc.Argv()
+}
+
 // run is the reader goroutine. Reads lines from stdout, parses each,
 // applies to state + store, fires the OnEvent hook, resets the idle
 // timer, and detects subprocess exit. Stops when stdout returns EOF or

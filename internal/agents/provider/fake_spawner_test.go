@@ -72,6 +72,8 @@ type fakeProcess struct {
 func (p *fakeProcess) Stdout() io.Reader     { return p.stdoutR }
 func (p *fakeProcess) Stdin() io.WriteCloser { return &fakeStdin{p: p} }
 func (p *fakeProcess) Pid() int              { return p.pid }
+func (p *fakeProcess) Binary() string        { return "" }
+func (p *fakeProcess) Argv() []string        { return nil }
 
 // Wait blocks until Kill or until stdout writer closes. Mimics how
 // real exec.Cmd.Wait blocks on subprocess exit.

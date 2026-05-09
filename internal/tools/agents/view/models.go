@@ -10,7 +10,9 @@ import (
 
 // OverviewVM holds data for the Overview page. SessionIDs is the
 // active-only subset (spawning/working/idle) — Killed sessions live
-// in /sessions, not on the Overview.
+// in /sessions, not on the Overview. Queued is the per-session FIFO
+// snapshot — operators can kill a queue entry that's been waiting
+// too long.
 type OverviewVM struct {
 	Base          string
 	Active        int
@@ -20,6 +22,15 @@ type OverviewVM struct {
 	Sessions      map[string]session.Session
 	Lifecycle     map[string]SessionLifecycleVM
 	IdleTimeoutMs int64
+	Queued        []QueuedEntryVM
+}
+
+// QueuedEntryVM is one row in the queue panel. WaitingMs drives a
+// "waiting Ns" label so operators see how stale the entry is.
+type QueuedEntryVM struct {
+	SessionID string
+	AgentName string
+	WaitingMs int64
 }
 
 // SessionsListVM holds data for the Sessions list page. Lifecycle is
@@ -33,10 +44,20 @@ type SessionsListVM struct {
 	Workspaces    map[string]workspace.Workspace
 	WorkspaceList []string
 	PresetList    []string
+	Providers     []ProviderChoiceVM
 	Lifecycle     map[string]SessionLifecycleVM
 	IdleTimeoutMs int64
 	Page          int
 	HasNext       bool
+}
+
+// ProviderChoiceVM is one healthy provider row — what the New Session
+// picker offers. Disabled / unprobed / version-failed providers
+// never reach the UI.
+type ProviderChoiceVM struct {
+	Type    string
+	Name    string
+	Version string
 }
 
 // SessionLifecycleVM is the per-row lifecycle snapshot the sessions
@@ -111,11 +132,14 @@ type PresetDetailVM struct {
 }
 
 // ProvidersVM holds data for the Providers page — runtime instance
-// statuses, recent spawn log files, and live pool capacity.
+// statuses, recent spawn log files, and live pool capacity. Spawns
+// is the current page slice; Page/HasNext drive the pager.
 type ProvidersVM struct {
 	Base          string
 	Statuses      []provider.Status
 	Spawns        []provider.SpawnLogFile
+	Page          int
+	HasNext       bool
 	PoolActive    int
 	PoolQueueLen  int
 	PoolMax       int

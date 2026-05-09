@@ -42,7 +42,7 @@ templ PresetsPage(vm PresetsVM) {
 				</div>
 			</div>
 			<!-- Presets list -->
-			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
+			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-visible">
 				if len(vm.Names) == 0 {
 					<div class="px-5 py-12 text-center text-sm text-black-700 dark:text-black-600">No presets yet.</div>
 				} else {

@@ -181,6 +181,20 @@ func (p *process) Pid() int {
 	}
 	return p.cmd.Process.Pid
 }
+func (p *process) Binary() string {
+	if p.cmd == nil {
+		return ""
+	}
+	return p.cmd.Path
+}
+func (p *process) Argv() []string {
+	if p.cmd == nil || len(p.cmd.Args) <= 1 {
+		return nil
+	}
+	out := make([]string, len(p.cmd.Args)-1)
+	copy(out, p.cmd.Args[1:])
+	return out
+}
 
 func (p *process) Kill() error {
 	if p.cmd.Process == nil {

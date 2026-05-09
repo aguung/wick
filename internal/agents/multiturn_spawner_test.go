@@ -196,6 +196,8 @@ func (p *multiTurnProc) Stdin() io.WriteCloser { return &multiTurnStdin{p: p} }
 func (p *multiTurnProc) Wait() error           { <-p.done; return nil }
 func (p *multiTurnProc) Kill() error           { p.cleanup(); return nil }
 func (p *multiTurnProc) Pid() int              { return p.pid }
+func (p *multiTurnProc) Binary() string        { return "" }
+func (p *multiTurnProc) Argv() []string        { return nil }
 
 // recordedStdin returns the envelopes the agent wrote so tests can
 // assert format / content.

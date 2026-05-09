@@ -96,7 +96,18 @@ type BuildResult struct {
 	Agent     *provider.Agent
 	State     *state.Machine
 	Store     *store.Store
-	OnStarted func(pid int, firstUserMessage string)
+	OnStarted func(meta SpawnStartMeta)
+}
+
+// SpawnStartMeta is the post-Start snapshot the pool feeds back to
+// the factory so the spawn log gets a complete `start` record. PID,
+// argv, and binary path are only knowable after Spawner.Spawn
+// returns; FirstUserMessage comes from the buffer drain.
+type SpawnStartMeta struct {
+	PID              int
+	Binary           string
+	Argv             []string
+	FirstUserMessage string
 }
 
 // FactoryOptions is what the pool hands to the factory. ResumeID is
@@ -290,7 +301,12 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 	// Spawn metadata (pid + first user message) is only knowable here:
 	// pid arrives from a.Start, first message from the buffer drain.
 	if br.OnStarted != nil {
-		br.OnStarted(a.PID(), combined)
+		br.OnStarted(SpawnStartMeta{
+			PID:              a.PID(),
+			Binary:           a.Binary(),
+			Argv:             a.Argv(),
+			FirstUserMessage: combined,
+		})
 	}
 	if p.cfg.OnLifecycle != nil {
 		p.cfg.OnLifecycle(LifecycleEvent{
@@ -569,6 +585,26 @@ func (p *Pool) Kill(sessionID, agentName string) error {
 		return nil
 	}
 	return entry.agent.Stop()
+}
+
+// Dequeue drops every queued request matching sessionID+agentName.
+// Returns the number of removed entries — operators use this to
+// cancel a session that has been waiting too long without ever
+// getting a slot. Active spawns are NOT touched; use Kill for that.
+func (p *Pool) Dequeue(sessionID, agentName string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := p.queue[:0]
+	removed := 0
+	for _, q := range p.queue {
+		if q.sessionID == sessionID && q.agentName == agentName {
+			removed++
+			continue
+		}
+		out = append(out, q)
+	}
+	p.queue = out
+	return removed
 }
 
 // HandleExit is the public hook the factory wires into agent.OnExit.

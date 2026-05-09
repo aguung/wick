@@ -96,9 +96,9 @@ func (s *SpawnLogger) Append(path string, ev SpawnEvent) error {
 
 // SpawnLogFile is a parsed metadata view of one spawn log filename —
 // used by the Providers page to filter by `ls` alone. PID +
-// FirstUserMessage + ExitReason are populated by List from the file's
-// first/last events (one read per file, cheap because spawn logs are
-// short).
+// FirstUserMessage + ExitReason + Binary + Argv are populated by List
+// from the file's first/last events (one read per file, cheap because
+// spawn logs are short).
 type SpawnLogFile struct {
 	Path             string
 	ProviderType     string
@@ -107,6 +107,8 @@ type SpawnLogFile struct {
 	StartedAt        time.Time
 	PID              int
 	FirstUserMessage string
+	Binary           string
+	Argv             []string
 	// ExitReason is "" while the spawn is still alive (no exit event
 	// recorded yet), else "clean" / "idle" / "stopped" / "error".
 	ExitReason string
@@ -210,6 +212,12 @@ func (s *SpawnLogger) enrichFromEvents(f *SpawnLogFile) {
 			}
 			if ev.FirstUserMessage != "" {
 				f.FirstUserMessage = ev.FirstUserMessage
+			}
+			if ev.Binary != "" {
+				f.Binary = ev.Binary
+			}
+			if len(ev.Args) > 0 {
+				f.Argv = ev.Args
 			}
 		case "exit":
 			f.ExitReason = ev.ExitReason

@@ -9,6 +9,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -229,9 +230,17 @@ func NewServer() *Server {
 			agentsBcast.Publish(sid, name, agentevent.AgentEvent{Type: agentevent.Done})
 		},
 	}
+	maxConc := 2
+	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "max_concurrent")); err == nil && n > 0 {
+		maxConc = n
+	}
+	idleSec := 120
+	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "idle_timeout_sec")); err == nil && n > 0 {
+		idleSec = n
+	}
 	agentsPool = agentpool.New(agentpool.PoolConfig{
-		MaxConcurrent:    2,
-		IdleTimeout:      120 * time.Second,
+		MaxConcurrent:    maxConc,
+		IdleTimeout:      time.Duration(idleSec) * time.Second,
 		Layout:           agentsLayout,
 		Factory:          agentsFactory,
 		DefaultWorkspace: agentsWorkspaceCfg.DefaultWorkspace,

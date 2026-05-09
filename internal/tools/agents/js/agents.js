@@ -203,6 +203,101 @@
       });
     });
 
+    // ── Inline confirm popover ────────────────────────────────────────
+    // confirmAt(anchor, msg, opts) opens a small Tailwind popover next
+    // to anchor and resolves true on Confirm, false on Cancel /
+    // outside-click / Esc. Replaces window.confirm so confirms blend
+    // with the rest of the design system instead of using the OS
+    // dialog. Only one popover exists at a time — opening a second
+    // closes the first.
+    var openConfirmPopover = null;
+    function confirmAt(anchor, message, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        if (openConfirmPopover) openConfirmPopover.dismiss(false);
+        var pop = document.createElement("div");
+        pop.className =
+          "fixed z-50 w-56 rounded-lg border border-white-300 dark:border-navy-600 " +
+          "bg-white-100 dark:bg-navy-700 shadow-lg p-3 space-y-2 text-sm";
+        pop.setAttribute("role", "dialog");
+        pop.setAttribute("data-row-action", "");
+        pop.innerHTML =
+          '<p class="text-xs text-black-800 dark:text-black-600">' + escapeHtml(message) + "</p>" +
+          '<div class="flex justify-end gap-2">' +
+            '<button type="button" data-cancel ' +
+              'class="rounded-md border border-white-400 dark:border-navy-600 px-2.5 py-1 text-xs ' +
+              'text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">' +
+              (opts.cancelLabel || "Cancel") + "</button>" +
+            '<button type="button" data-confirm autofocus ' +
+              'class="rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white-100 ' +
+              'hover:bg-red-600 active:bg-red-700 transition-colors">' +
+              (opts.confirmLabel || "Confirm") + "</button>" +
+          "</div>";
+        document.body.appendChild(pop);
+        positionPopover(pop, anchor);
+
+        var settled = false;
+        function dismiss(ok) {
+          if (settled) return;
+          settled = true;
+          pop.remove();
+          document.removeEventListener("click", onOutside, true);
+          document.removeEventListener("keydown", onKey);
+          window.removeEventListener("resize", onResize);
+          window.removeEventListener("scroll", onResize, true);
+          openConfirmPopover = null;
+          resolve(ok);
+        }
+        function onOutside(e) {
+          if (pop.contains(e.target) || e.target === anchor) return;
+          dismiss(false);
+        }
+        function onKey(e) {
+          if (e.key === "Escape") dismiss(false);
+          if (e.key === "Enter") dismiss(true);
+        }
+        function onResize() { positionPopover(pop, anchor); }
+
+        pop.querySelector("[data-confirm]").addEventListener("click", function () { dismiss(true); });
+        pop.querySelector("[data-cancel]").addEventListener("click", function () { dismiss(false); });
+        // Defer outside listener so the click that opened us doesn't
+        // immediately close us.
+        setTimeout(function () {
+          document.addEventListener("click", onOutside, true);
+        }, 0);
+        document.addEventListener("keydown", onKey);
+        window.addEventListener("resize", onResize);
+        window.addEventListener("scroll", onResize, true);
+        pop.querySelector("[data-confirm]").focus();
+
+        openConfirmPopover = { dismiss: dismiss };
+      });
+    }
+
+    function positionPopover(pop, anchor) {
+      var r = anchor.getBoundingClientRect();
+      var pr = pop.getBoundingClientRect();
+      // Prefer below + right-aligned to anchor; flip up if below would
+      // overflow viewport.
+      var top = r.bottom + 6;
+      if (top + pr.height > window.innerHeight - 8) {
+        top = Math.max(8, r.top - pr.height - 6);
+      }
+      var left = r.right - pr.width;
+      if (left < 8) left = 8;
+      if (left + pr.width > window.innerWidth - 8) {
+        left = window.innerWidth - pr.width - 8;
+      }
+      pop.style.top = top + "px";
+      pop.style.left = left + "px";
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
     // ── Composer (send message) ───────────────────────────────────────
     var sendForm = document.querySelector("[data-send-form]");
     if (sendForm && sessionID && base) {
@@ -256,61 +351,85 @@
       });
     }
 
+    // ── Dequeue (kill from queue) ────────────────────────────────────
+    document.querySelectorAll("[data-dequeue-session]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var id = btn.dataset.dequeueSession;
+        confirmAt(btn, "Drop this queued session?", { confirmLabel: "Drop" }).then(function (ok) {
+          if (!ok) return;
+          var b = base || document.querySelector("[data-base]")?.dataset.base || "/tools/agents";
+          fetch(b + "/sessions/" + encodeURIComponent(id) + "/dequeue", { method: "POST" })
+            .then(function () { location.reload(); })
+            .catch(function (err) { console.error("dequeue failed:", err); });
+        });
+      });
+    });
+
     // ── Kill agent ────────────────────────────────────────────────────
     document.querySelectorAll("[data-kill]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var id = btn.dataset.kill;
-        if (!confirm("Kill the running agent in this session?")) return;
-        fetch(base + "/sessions/" + encodeURIComponent(id) + "/kill", {
-          method: "POST",
-        })
-          .then(function () { location.reload(); })
-          .catch(function (err) { console.error("kill failed:", err); });
+        confirmAt(btn, "Kill the running agent?", { confirmLabel: "Kill" }).then(function (ok) {
+          if (!ok) return;
+          fetch(base + "/sessions/" + encodeURIComponent(id) + "/kill", { method: "POST" })
+            .then(function () { location.reload(); })
+            .catch(function (err) { console.error("kill failed:", err); });
+        });
       });
     });
 
     // ── Delete session ─────────────────────────────────────────────────
     document.querySelectorAll("[data-delete-session]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
         var id = btn.dataset.deleteSession;
-        if (!confirm("Delete this session? This cannot be undone.")) return;
-        var b = base || document.querySelector("[data-base]")?.dataset.base;
-        if (!b) return;
-        fetch(b + "/sessions/" + encodeURIComponent(id), { method: "DELETE" })
-          .then(function () {
-            if (window.location.pathname.includes("/sessions/" + id)) {
-              window.location.href = b + "/sessions";
-            } else {
-              location.reload();
-            }
-          })
-          .catch(function (err) { console.error("delete session failed:", err); });
+        confirmAt(btn, "Delete this session? This cannot be undone.", { confirmLabel: "Delete" }).then(function (ok) {
+          if (!ok) return;
+          var b = base || document.querySelector("[data-base]")?.dataset.base;
+          if (!b) return;
+          fetch(b + "/sessions/" + encodeURIComponent(id), { method: "DELETE" })
+            .then(function () {
+              if (window.location.pathname.includes("/sessions/" + id)) {
+                window.location.href = b + "/sessions";
+              } else {
+                location.reload();
+              }
+            })
+            .catch(function (err) { console.error("delete session failed:", err); });
+        });
       });
     });
 
     // ── Delete workspace ──────────────────────────────────────────────
     document.querySelectorAll("[data-delete-workspace]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
         var name = btn.dataset.deleteWorkspace;
-        if (!confirm("Delete workspace \"" + name + "\"? This cannot be undone.")) return;
-        var b = resolveBase();
-        if (!b) return;
-        fetch(b + "/workspaces/" + encodeURIComponent(name), { method: "DELETE" })
-          .then(function () { location.reload(); })
-          .catch(function (err) { console.error("delete workspace failed:", err); });
+        confirmAt(btn, 'Delete workspace "' + name + '"? This cannot be undone.', { confirmLabel: "Delete" }).then(function (ok) {
+          if (!ok) return;
+          var b = resolveBase();
+          if (!b) return;
+          fetch(b + "/workspaces/" + encodeURIComponent(name), { method: "DELETE" })
+            .then(function () { location.reload(); })
+            .catch(function (err) { console.error("delete workspace failed:", err); });
+        });
       });
     });
 
     // ── Delete preset ─────────────────────────────────────────────────
     document.querySelectorAll("[data-delete-preset]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
         var name = btn.dataset.deletePreset;
-        if (!confirm("Delete preset \"" + name + "\"?")) return;
-        var b = resolveBase();
-        if (!b) return;
-        fetch(b + "/presets/" + encodeURIComponent(name), { method: "DELETE" })
-          .then(function () { location.reload(); })
-          .catch(function (err) { console.error("delete preset failed:", err); });
+        confirmAt(btn, 'Delete preset "' + name + '"?', { confirmLabel: "Delete" }).then(function (ok) {
+          if (!ok) return;
+          var b = resolveBase();
+          if (!b) return;
+          fetch(b + "/presets/" + encodeURIComponent(name), { method: "DELETE" })
+            .then(function () { location.reload(); })
+            .catch(function (err) { console.error("delete preset failed:", err); });
+        });
       });
     });
 

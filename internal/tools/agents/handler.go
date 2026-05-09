@@ -63,6 +63,7 @@ func Register(r tool.Router) {
 	r.GET("/sessions/{id}", sessionDetail)
 	r.POST("/sessions/{id}/send", sendMessage)
 	r.POST("/sessions/{id}/kill", killAgent)
+	r.POST("/sessions/{id}/dequeue", dequeueAgent)
 	r.DELETE("/sessions/{id}", deleteSession)
 
 	r.GET("/workspaces", workspacesPage)
@@ -118,6 +119,16 @@ func overviewPage(c *tool.Ctx) {
 			activeIDs = append(activeIDs, e.SessionID)
 		}
 	}
+	queue := globalPool.QueueSnapshot()
+	now := time.Now()
+	queued := make([]view.QueuedEntryVM, len(queue))
+	for i, q := range queue {
+		queued[i] = view.QueuedEntryVM{
+			SessionID: q.SessionID,
+			AgentName: q.AgentName,
+			WaitingMs: now.Sub(q.Enqueued).Milliseconds(),
+		}
+	}
 	c.HTML(view.Overview(view.OverviewVM{
 		Base:          c.Base(),
 		Active:        globalPool.Active(),
@@ -127,6 +138,7 @@ func overviewPage(c *tool.Ctx) {
 		Sessions:      globalMgr.Registry().Sessions(),
 		Lifecycle:     lc,
 		IdleTimeoutMs: globalPool.IdleTimeout().Milliseconds(),
+		Queued:        queued,
 	}))
 }
 
@@ -168,6 +180,7 @@ func sessionsPage(c *tool.Ctx) {
 		Workspaces:    globalMgr.Registry().Workspaces(),
 		WorkspaceList: globalMgr.Registry().WorkspaceNames(),
 		PresetList:    globalMgr.Registry().PresetNames(),
+		Providers:     providerChoices(c.Context()),
 		Lifecycle:     lc,
 		IdleTimeoutMs: globalPool.IdleTimeout().Milliseconds(),
 		Page:          page,
@@ -301,6 +314,33 @@ func sendMessage(c *tool.Ctx) {
 		return
 	}
 	c.JSON(http.StatusOK, map[string]string{"status": "queued"})
+}
+
+func dequeueAgent(c *tool.Ctx) {
+	if notReady(c) {
+		return
+	}
+	id := c.PathValue("id")
+	sess, ok := globalMgr.Registry().Session(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	agentName := sess.Meta.ActiveAgent
+	if agentName == "" && len(sess.Agents) > 0 {
+		agentName = sess.Agents[0].Name
+	}
+	removed := globalPool.Dequeue(id, agentName)
+	_ = session.SaveMeta(globalLayout, id, session.Meta{
+		Workspace:   sess.Meta.Workspace,
+		Origin:      sess.Meta.Origin,
+		ChannelID:   sess.Meta.ChannelID,
+		ActiveAgent: sess.Meta.ActiveAgent,
+		Status:      session.StatusIdle,
+		CreatedAt:   sess.Meta.CreatedAt,
+		LastActive:  time.Now().UTC(),
+	})
+	c.JSON(http.StatusOK, map[string]any{"status": "dequeued", "removed": removed})
 }
 
 func killAgent(c *tool.Ctx) {
