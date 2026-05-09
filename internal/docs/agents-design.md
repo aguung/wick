@@ -139,7 +139,7 @@ Update checkbox saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | **R1 — Backend rename + worktree rip** | `[x]` | New `workspace/` pkg (pure folder, no git), `layout.go` swapped (`WorkspacesDir`/`WorkspaceDir`/`WorkspaceManagedPath`, no `SessionWorkspace`), `session.Meta.Project` → `Meta.Workspace`, `addWorktree`/`removeWorktree`/`worktreeBranch` deleted, `internal/agents/project/` package deleted. Pool gained `resolveCwd` + `DefaultWorkspace` field; fallback chain = session.Workspace → cfg.DefaultWorkspace → `sessions/<id>/cwd/`. Closes original spawn bug (chdir on missing dir). |
 | **R2 — Registry/Manager rename** | `[x]` | Registry: `projects` map → `workspaces`, `Project()/Projects()/ProjectNames()` → `Workspace*`. Manager: `CreateProject/DeleteProject/SwitchProject` → `CreateWorkspace/DeleteWorkspace/SwitchWorkspace`. `removeSessionWorktree` helper deleted. |
 | **R3 — HTTP/UI** | `[x]` | `/workspaces` endpoint cluster (GET/POST/DELETE), `view/projects.templ` → `workspaces.templ` (Repo URL → Custom Path), nav tab "Projects" → "Workspaces", `data-delete-project` → `data-delete-workspace`. Templ regenerated. Browser smoke test pending. |
-| **R4 — Tools config: default_workspace** | `[ ]` | Pool sudah punya `DefaultWorkspace` field (R1); belum di-wire ke tools-config struct. Add field with `wick:"..."` tag + bootstrap inject. |
+| **R4 — Tools config: default_workspace** | `[x]` | `slack_workspace` config key di-wire ke `configsSvc.GetOwned("agents", "slack_workspace")`. Workspace auto-select saat hanya 1 workspace: config-page decorator save otomatis + `sendFn` fallback saat message-send time (tanpa perlu buka page). Selesai di PR #209. |
 | **R5 — Doc rewrite §0/§3/§4/§5/§6** | `[ ]` | Setelah code stable. Rewrite mencerminkan model baru, hapus §0.2 ini (atau pindah ke changelog) saat semua section main udah konsisten. |
 
 **R1-R3 verification (2026-05-09):** `go test ./internal/agents/... ./internal/tools/agents/...` = 82 tests passed across 22 packages. `go build` clean for all wick packages (template/ skipped, unrelated).
@@ -168,7 +168,7 @@ Update tabel ini saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | Phase 4 — UI Manager Tool (MVP) | `[x]` | `internal/tools/agents/` — handler + service + stream (Broadcaster) + view/ subpackage (layout/overview/sessions/projects/presets) + js/agents.js. SSE via GET /stream, send via POST /sessions/{id}/send, kill/delete actions. `tags.AI` group tag added. Agents link in nav UserMenu + profile layout tab. Pool.Kill() added. Bootstrap wired in server.go with graceful shutdown. 86 tests green. |
 | Phase 4.5 — Refactor: Project → Workspace | `[~]` | Konsep Project (1 repo auto-clone, session = git worktree) diganti Workspace (folder shared, session pinjam pakai cwd, no worktree, no auto-clone). Detail decisions + impact map + phase tracker R0–R5 di **§0.2**. Trigger: bug spawn `chdir sessions/<id>/workspace: file not found` + use case shared folder berisi banyak repo. R0–R3 selesai 2026-05-09 (82 tests hijau). R4 (default_workspace tools-config) + R5 (doc rewrite §0/§3/§4/§5/§6) tersisa. |
 | Phase 4.6 — Providers Registry & Diagnostics | `[~]` | Rename "backend" → "provider" sepanjang stack (session/workspace/userconfig/pool/UI). Pkg `internal/agents/agent/` dimerge ke `internal/agents/provider/` jadi 1 paket per-CLI: Agent driver + Spawner + Type/Instance config (multi-instance per type, mis. `claude/work` + `claude/personal` beda PAT) + SpawnLogger. Boot wires `provider.NewSpawnLogger(layout.BaseDir)` ke `pool.ClaudeFactory.SpawnLogger`; tiap spawn dump 1 jsonl ke `<base>/providers/spawns/<type>__<name>__<session>__<unix-ms>.jsonl` (start + exit events). UI: nav baru `/tools/agents/providers` (status card per instance dgn LookPath + `--version`, edit binary path / extra args / env, add custom instance), spawn detail page; Overview tampil Active/Max + Running/Queue snapshot. **Selesai 2026-05-09**: 82 tests hijau across 22 pkg, `go build` clean. **Sisa**: real-claude smoke test, doc rewrite §4/§6/§9 mencerminkan pkg baru. |
-| Phase 5 — Slack Transport | `[ ]` | — |
+| Phase 5 — Slack Transport | `[x]` | Socket Mode + HTTP Event API, per-thread session binding, reaction lifecycle (⏳⚙️✅🚫❌), chunked reply (3800-char limit), rate-limit backoff, meta-commands (`/dashboard /reset /status /log /agent`), access control (everyone/users/groups), hot-reload watchSlackConfig (30s poll). Pkg `internal/agents/channels/`. Selesai di PR #209. |
 | Phase 6 — Polish | `[ ]` | — |
 
 ### Dependency graph
@@ -281,14 +281,30 @@ Tujuan: user bisa lihat path + versi tiap AI CLI provider (claude/codex/gemini),
 
 Tujuan: trigger agent dari Slack thread. Reaction lifecycle + final message + meta-command.
 
-- [ ] **5.1** Slack Socket Mode listener (default), HTTP Event API (alternatif) → `internal/agents/slack.go`
-- [ ] **5.2** Access control matcher (everyone/users/groups) → `internal/agents/slack.go`
-- [ ] **5.3** Reaction lifecycle: ⏳→⚙️→✅/🚫/❌ → `internal/agents/slack.go`
-- [ ] **5.4** Final response message + chunking >4000 char → `internal/agents/slack.go`
-- [ ] **5.5** Meta-command parser: ganti agent / pakai project / reset / status / dashboard / link / log → `internal/agents/metacmd.go`
-- [ ] **5.6** `dashboard` command: build URL dari `PublicURL` + thread_ts → `internal/agents/metacmd.go`
-- [ ] **5.7** Slack rate limit handling (exponential backoff) → `internal/agents/slack.go`
-- [ ] **5.8** Manual test: kirim pesan di Slack → reaction berubah, final reply muncul → manual
+**Decisions (PR #209, 2026-05-09)**:
+
+| # | Putusan | Alasan |
+|---|---|---|
+| S1 | Pkg baru `internal/agents/channels/` (bukan `internal/agents/slack.go` seperti rencana semula) | Supaya extensible untuk channel lain (HTTP webhook, Teams, dll) tanpa campur aduk di 1 file. `channel.go` define interface `Channel`, `slack.go` implement. |
+| S2 | Socket Mode sebagai mode default, HTTP Event API sebagai alternatif (`mode=socket\|webhook`) | Socket Mode lebih mudah setup (no public URL), HTTP Event API buat environment yang sudah punya public URL. |
+| S3 | Per-thread session binding via `thread_ts` sebagai session key | 1 Slack thread = 1 session, konsisten dengan design awal. New thread_ts = new session auto-created. |
+| S4 | Chunked reply 3800-char limit (bukan 4000) | Buffer safety dari hard limit Slack 4000. Tiap chunk di-post sebagai reply di thread. |
+| S5 | Hot-reload `watchSlackConfig` 30s poll, hash cover `AccessMode/AllowedUsers/AllowedGroups` | Config change (access control / token rotation) tanpa restart server. Hash trigger reload hanya saat ada diff. |
+| S6 | Workspace auto-select: jika hanya 1 workspace, langsung pakai tanpa user pilih | UX: user tidak perlu set `slack_workspace` config kalau hanya punya 1 workspace. |
+| S7 | `pool.PoolConfig.OnSessionCreated` hook untuk register session ke manager saat channel auto-create | Dashboard langsung lihat session baru dari Slack tanpa reload. |
+
+- [x] **5.1** Slack Socket Mode listener (default) + HTTP Event API (alternatif, `mode=webhook`) → `internal/agents/channels/slack.go`
+- [x] **5.2** Access control matcher (everyone/users/groups), check per-message → `internal/agents/channels/slack.go` (`allowedCfg`)
+- [x] **5.3** Reaction lifecycle: ⏳ (queued) → ⚙️ (working) → ✅ (done) / 🚫 (blocked) / ❌ (error) → `internal/agents/channels/slack.go`
+- [x] **5.4** Final response message + chunking 3800-char limit → `internal/agents/channels/slack.go` (`postReply`, `chunkText`)
+- [x] **5.5** Meta-command parser: `/agent`, `/reset`, `/status`, `/log`, `/dashboard` → `internal/agents/channels/metacmd.go`
+- [x] **5.6** `/dashboard` command: build URL dari `PublicURL` config + thread_ts → `internal/agents/channels/metacmd.go`
+- [x] **5.7** Slack rate limit handling (exponential backoff pada `sendMsg`) → `internal/agents/channels/slack.go`
+- [x] **5.8** Hot-reload: `watchSlackConfig` goroutine 30s poll, hash diff trigger restart listener → `internal/agents/channels/slack.go`
+- [x] **5.9** `pool.PoolConfig.OnSessionCreated` callback + wire ke `agentsMgr.Register` di `server.go` — session auto-created oleh Slack channel langsung muncul di dashboard
+- [ ] **5.10** Manual test: kirim pesan di Slack → reaction berubah, final reply muncul → manual
+
+**Selesai (PR #209, 2026-05-09)**: 5.1–5.9 done. Code quality: dead `allowed()` wrapper removed (callers pakai `allowedCfg` langsung), double-lock di `OnAgentEvent` dimerge jadi single lock per case, `configDecorators` map init di `NewHandler`, guard dropdown `Options` loop di `configs.templ`.
 
 **Exit criteria**: full Slack flow works.
 
