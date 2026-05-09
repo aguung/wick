@@ -3,7 +3,12 @@
 Status: draft.
 Update terakhir: 2026-05-09.
 
-> **⚠️ Refactor in flight: Project → Workspace.** Konsep "Project" (1 repo auto-clone, session = git worktree) sedang diganti jadi "Workspace" (folder shared, session pinjam pakai cwd, no worktree, no auto-clone). Lihat **§0.2** untuk perbandingan lengkap lama vs baru, decisions, dan phase tracker. Section §3-§6 di bawah masih mencerminkan model lama sampai refactor selesai.
+> **⚠️ Refactor in flight: Project → Workspace** + **Backend → Provider**.
+>
+> 1. "Project" (1 repo auto-clone, session = git worktree) → "Workspace" (folder shared, session pinjam pakai cwd, no worktree, no auto-clone). Lihat **§0.2**.
+> 2. "Backend" (= AI CLI kind) → "Provider" sepanjang stack: `session.AgentEntry.Provider`, `workspace.Meta.DefaultProvider`, `userconfig.ProvidersConfig`, `pool.FactoryOptions.ProviderType/Name`, dll. Pkg `internal/agents/agent/` digabung jadi `internal/agents/provider/`. Lihat Phase 4.6 di **§1**.
+>
+> Section §3-§6 di bawah masih mencerminkan model lama sampai refactor selesai.
 
 ---
 
@@ -162,6 +167,7 @@ Update tabel ini saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | Phase 3 — Command Gate | `[x]` | claude PreToolUse hook + `wick-gate` binary + glob matcher + shell-metachar guard + scope prefix. Integration test builds the binary and invokes it as a subprocess with real stdin/env (no mocks). 91 tests / 21 pkgs total. Real-claude pool e2e green after the phase-2 pool fix; verified against claude 2.1.132 on Windows. |
 | Phase 4 — UI Manager Tool (MVP) | `[x]` | `internal/tools/agents/` — handler + service + stream (Broadcaster) + view/ subpackage (layout/overview/sessions/projects/presets) + js/agents.js. SSE via GET /stream, send via POST /sessions/{id}/send, kill/delete actions. `tags.AI` group tag added. Agents link in nav UserMenu + profile layout tab. Pool.Kill() added. Bootstrap wired in server.go with graceful shutdown. 86 tests green. |
 | Phase 4.5 — Refactor: Project → Workspace | `[~]` | Konsep Project (1 repo auto-clone, session = git worktree) diganti Workspace (folder shared, session pinjam pakai cwd, no worktree, no auto-clone). Detail decisions + impact map + phase tracker R0–R5 di **§0.2**. Trigger: bug spawn `chdir sessions/<id>/workspace: file not found` + use case shared folder berisi banyak repo. R0–R3 selesai 2026-05-09 (82 tests hijau). R4 (default_workspace tools-config) + R5 (doc rewrite §0/§3/§4/§5/§6) tersisa. |
+| Phase 4.6 — Providers Registry & Diagnostics | `[~]` | Rename "backend" → "provider" sepanjang stack (session/workspace/userconfig/pool/UI). Pkg `internal/agents/agent/` dimerge ke `internal/agents/provider/` jadi 1 paket per-CLI: Agent driver + Spawner + Type/Instance config (multi-instance per type, mis. `claude/work` + `claude/personal` beda PAT) + SpawnLogger. Boot wires `provider.NewSpawnLogger(layout.BaseDir)` ke `pool.ClaudeFactory.SpawnLogger`; tiap spawn dump 1 jsonl ke `<base>/providers/spawns/<type>__<name>__<session>__<unix-ms>.jsonl` (start + exit events). UI: nav baru `/tools/agents/providers` (status card per instance dgn LookPath + `--version`, edit binary path / extra args / env, add custom instance), spawn detail page; Overview tampil Active/Max + Running/Queue snapshot. **Selesai 2026-05-09**: 82 tests hijau across 22 pkg, `go build` clean. **Sisa**: real-claude smoke test, doc rewrite §4/§6/§9 mencerminkan pkg baru. |
 | Phase 5 — Slack Transport | `[ ]` | — |
 | Phase 6 — Polish | `[ ]` | — |
 
@@ -240,6 +246,36 @@ Tujuan: bisa kelola agent dari web UI tanpa Slack. End-to-end test path.
 - [ ] **4.10** Smoke test: buka `/tools/agents`, klik Send → claude jalan, conversation muncul real-time → manual
 
 **Exit criteria MVP**: tanpa Slack, user bisa kelola full lifecycle agent dari web UI. End-to-end claude works.
+
+### Phase 4.6 — Providers Registry & Diagnostics
+
+Tujuan: user bisa lihat path + versi tiap AI CLI provider (claude/codex/gemini), override binary path / extra args / env per instance, simpen multi-instance per type (mis. `claude/work` + `claude/personal` dgn PAT beda), dan inspect spawn history per provider tanpa scan semua session log.
+
+**Decisions (2026-05-09)**:
+
+| # | Putusan | Alasan |
+|---|---|---|
+| P1 | Naming: "provider" (bukan "backend") sepanjang stack | Sebelumnya pakai "backend" — overlap sama "backend service" + "DefaultBackend" generic. "Provider" lebih spesifik = "AI provider runtime". |
+| P2 | Pkg layout: `internal/agents/provider/` 1 paket gabungan (Agent driver + Spawner interface + Type/Instance config + SpawnLogger), sub-pkg `claude/codex/gemini` per-CLI argv math | Sebelumnya `agent/` (driver) + `runtime/` (config) terpisah → ngebagi concern artificial. 1 paket "all per-provider" baca natural; sub-pkg per-CLI tetap supaya extension Phase 6 ngga rusak parent. |
+| P3 | Multi-instance per type: list di userconfig JSON. Tiap instance punya Name (unik per type), BinaryPath (kosong = LookPath), ExtraArgs, Env, Disabled | Use case 2 claude beda PAT = literally "2 instances". Auto-seed default instance whose Name == Type kalau list kosong; user bisa Add custom name (mis. "work") via UI. |
+| P4 | Spawn-log filename encode `<type>__<name>__<session>__<unix-ms>.jsonl` di `<base>/providers/spawns/` | `ls` udah filter cepet by type/name/session tanpa baca isi. Stable across restart, mudah backup `tar gz`. |
+| P5 | Pool stats refresh = page reload manual (no SSE) | "active terus / idle terus" UI yg user complain solved by surfacing Active/Max + Running/Queue list di Overview. Realtime refresh = future work, ngga blocking MVP. |
+| P6 | Selection saat session create = field `provider` (form) → `session.AgentEntry.Provider` (persist) → `pool.FactoryOptions.ProviderType/Name` (spawn) | Linear flow form → registry → pool → spawn-logger. ProviderName default = ProviderType sampai per-instance picker shipped. |
+
+- [x] **4.6.1** `internal/agents/provider/` pkg: merge `agent/` (driver) + new `runtime/` (config) → `provider/` (1 paket). Sub-pkg `claude/codex/gemini` ikut pindah, package-level rename `agent` → `provider`. → `internal/agents/provider/{provider,agent,spawner,spawnlog}.go` + `provider/{claude,codex,gemini}/`
+- [x] **4.6.2** `userconfig.ProvidersConfig` + `ProviderInstance` (Name, BinaryPath, ExtraArgs, Env, Disabled) → `internal/userconfig/config.go`
+- [x] **4.6.3** `provider.Type/Instance/Status`, `Load/Find/Save/Delete/Probe/ProbeAll` (auto-seed default per type kalau list kosong) → `internal/agents/provider/provider.go`
+- [x] **4.6.4** `provider.SpawnLogger` + `SpawnEvent` + `SpawnLogFile` (filename `<type>__<name>__<session>__<unix-ms>.jsonl`, dir `<base>/providers/spawns/`) → `internal/agents/provider/spawnlog.go`
+- [x] **4.6.5** `pool.FactoryOptions.ProviderType/Name` + `ClaudeFactory.SpawnLogger` (dump start + exit event per spawn) → `internal/agents/pool/{pool,factory}.go`
+- [x] **4.6.6** `pool.MaxConcurrent()`, `pool.ActiveSnapshot()`, `pool.QueueSnapshot()` (read-only views buat UI) → `internal/agents/pool/pool.go`
+- [x] **4.6.7** Rename `Backend` → `Provider` di session/workspace/general config + JSON tags + form field name `backend` → `provider` di handler + templ → `internal/agents/{session,workspace,config}/` + `internal/tools/agents/`
+- [x] **4.6.8** UI: `/tools/agents/providers` page (per-instance status card, edit binary/extra/env, add custom modal, recent spawns table) + spawn detail page → `internal/tools/agents/{providers.go,view/providers.templ}` + nav tab "Providers" di `view/layout.templ`
+- [x] **4.6.9** Boot wiring: `provider.NewSpawnLogger(layout.BaseDir)` ke `ClaudeFactory.SpawnLogger`, `provider.AppName = APP_NAME` env, `agentstool.SetSpawnLogger` setter → `internal/pkg/api/server.go` + `internal/tools/agents/handler.go`
+- [x] **4.6.10** Overview page surface pool stats: Active/Max + Running list + Queue list (with waiting time) → `internal/tools/agents/view/overview.templ`
+- [ ] **4.6.11** Real-claude smoke test: open Providers page, klik Edit ke ubah binary path, create session pakai instance custom, lihat spawn-log file muncul → manual
+- [ ] **4.6.12** Doc rewrite §4 (entitas Provider) + §6 (struktur modul) + §9 (Manager UI add Providers page) mencerminkan pkg baru
+
+**Exit criteria**: user bisa Open `/tools/agents/providers`, lihat 3 default cards (claude/codex/gemini), edit binary override + version probe pass, add `claude/work` instance dgn `ANTHROPIC_API_KEY=...` di env, create session pilih instance, spawn jalan + spawn-log file ke-create. Idle/active state yang ke-display di Overview bukan lagi "idle terus tanpa info" — Active/Max + queue waiting time keliat realtime tiap reload.
 
 ### Phase 5 — Slack Transport
 

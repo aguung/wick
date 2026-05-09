@@ -8,7 +8,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/provider"
 )
 
 // multiTurnSpawner is the stdin-driven fake claude used by the
@@ -72,7 +72,7 @@ func (s *multiTurnSpawner) SetTurns(workspace string, perSpawn ...[]turnScript) 
 }
 
 // Spawn implements agent.Spawner.
-func (s *multiTurnSpawner) Spawn(ctx context.Context, opt agent.SpawnOptions) (agent.Process, error) {
+func (s *multiTurnSpawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider.Process, error) {
 	s.mu.Lock()
 	scripts := s.turns[opt.Workspace]
 	if len(scripts) == 0 {
@@ -140,7 +140,7 @@ type multiTurnProc struct {
 
 	stdinMu  sync.Mutex
 	stdinBuf *bytes.Buffer
-	opt      agent.SpawnOptions
+	opt      provider.SpawnOptions
 	done     chan struct{}
 	turns    []turnScript
 	once     sync.Once

@@ -88,8 +88,8 @@ func (m *Manager) SwitchWorkspace(ctx context.Context, id, newWorkspace string) 
 }
 
 // AddAgent + cache refresh.
-func (m *Manager) AddAgent(id, name, backend string) error {
-	if err := session.AddAgent(m.reg.layout, id, name, backend); err != nil {
+func (m *Manager) AddAgent(id, name, provider string) error {
+	if err := session.AddAgent(m.reg.layout, id, name, provider); err != nil {
 		return err
 	}
 	s, err := session.Load(m.reg.layout, id)

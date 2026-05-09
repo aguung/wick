@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	provider "github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/state"
 )
@@ -32,7 +32,7 @@ func TestRealClaudeMultiTurn(t *testing.T) {
 
 	collected := &eventCollector{}
 	st := state.New(nil)
-	a := agent.New(agent.Options{
+	a := provider.New(provider.Options{
 		Workspace:     t.TempDir(),
 		IdleTimeout:   90 * time.Second, // generous; claude takes a few seconds per turn
 		ParserFactory: func() event.Parser { return event.NewClaudeParser() },

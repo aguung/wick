@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/pool"
 	"github.com/yogasw/wick/internal/agents/session"
@@ -117,7 +117,7 @@ func TestPipeline_ParserErrorSurfacedAsErrorEvent(t *testing.T) {
 
 // helpers ---------------------------------------------------------
 
-func newE2EPool(t *testing.T, max int, sp agent.Spawner) (*pool.Pool, config.Layout) {
+func newE2EPool(t *testing.T, max int, sp provider.Spawner) (*pool.Pool, config.Layout) {
 	t.Helper()
 	layout := config.NewLayout(t.TempDir())
 	if err := layout.EnsureLayout(); err != nil {
@@ -186,7 +186,7 @@ type scriptedSpawner struct {
 	resumeArg []string
 }
 
-func (s *scriptedSpawner) Spawn(ctx context.Context, opt agent.SpawnOptions) (agent.Process, error) {
+func (s *scriptedSpawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider.Process, error) {
 	s.mu.Lock()
 	idx := s.calls
 	s.calls++

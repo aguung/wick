@@ -16,6 +16,7 @@ import (
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/pool"
 	"github.com/yogasw/wick/internal/agents/preset"
+	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/registry"
 	"github.com/yogasw/wick/internal/agents/session"
 	"github.com/yogasw/wick/internal/agents/workspace"
@@ -26,10 +27,11 @@ import (
 // Package-level singletons wired at boot from server.go via SetX funcs.
 // Handlers return 503 when these are nil rather than panicking.
 var (
-	globalMgr    *registry.Manager
-	globalPool   *pool.Pool
-	globalBcast  *Broadcaster
-	globalLayout agentconfig.Layout
+	globalMgr      *registry.Manager
+	globalPool     *pool.Pool
+	globalBcast    *Broadcaster
+	globalLayout   agentconfig.Layout
+	globalSpawnLog *provider.SpawnLogger
 )
 
 // SetManager wires in the agents registry manager.
@@ -43,6 +45,11 @@ func SetBroadcaster(b *Broadcaster) { globalBcast = b }
 
 // SetLayout wires in the on-disk layout used for direct file reads.
 func SetLayout(l agentconfig.Layout) { globalLayout = l }
+
+// SetSpawnLogger wires in the per-spawn jsonl writer/reader. The
+// Providers page reads from it via List + Read; the pool factory
+// already writes through it.
+func SetSpawnLogger(s *provider.SpawnLogger) { globalSpawnLog = s }
 
 // Register mounts all Agents routes under /tools/agents.
 func Register(r tool.Router) {
@@ -66,6 +73,11 @@ func Register(r tool.Router) {
 	r.POST("/presets", createPreset)
 	r.POST("/presets/{name}", updatePreset)
 	r.DELETE("/presets/{name}", deletePreset)
+
+	r.GET("/providers", providersPage)
+	r.POST("/providers", saveProviderInstance)
+	r.DELETE("/providers/{type}/{name}", deleteProviderInstance)
+	r.GET("/providers/spawns/{file}", providerSpawnDetail)
 
 	r.GET("/stream", streamSSE)
 }
@@ -91,10 +103,28 @@ func overviewPage(c *tool.Ctx) {
 	if len(recent) > 10 {
 		recent = recent[:10]
 	}
+	active := globalPool.ActiveSnapshot()
+	queued := globalPool.QueueSnapshot()
+	now := time.Now()
+	activeVM := make([]view.ActiveAgentVM, len(active))
+	for i, e := range active {
+		activeVM[i] = view.ActiveAgentVM{SessionID: e.SessionID, AgentName: e.AgentName}
+	}
+	queueVM := make([]view.QueuedAgentVM, len(queued))
+	for i, q := range queued {
+		queueVM[i] = view.QueuedAgentVM{
+			SessionID: q.SessionID,
+			AgentName: q.AgentName,
+			WaitingMs: now.Sub(q.Enqueued).Milliseconds(),
+		}
+	}
 	c.HTML(view.Overview(view.OverviewVM{
 		Base:       c.Base(),
 		Active:     globalPool.Active(),
 		QueueLen:   globalPool.QueueLen(),
+		PoolMax:    globalPool.MaxConcurrent(),
+		ActiveList: activeVM,
+		QueueList:  queueVM,
 		SessionIDs: recent,
 		Sessions:   globalMgr.Registry().Sessions(),
 	}))
@@ -137,9 +167,9 @@ func createSession(c *tool.Ctx) {
 		return
 	}
 	ws := c.Form("workspace")
-	backend := c.Form("backend")
-	if backend == "" {
-		backend = "claude"
+	prov := c.Form("provider")
+	if prov == "" {
+		prov = "claude"
 	}
 	id := uuid.New().String()
 	_, err := globalMgr.CreateSession(c.Context(), session.CreateOptions{
@@ -152,7 +182,7 @@ func createSession(c *tool.Ctx) {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := globalMgr.AddAgent(id, "main", backend); err != nil {
+	if err := globalMgr.AddAgent(id, "main", prov); err != nil {
 		log.Ctx(c.Context()).Error().Msgf("add agent: %s", err.Error())
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
@@ -306,17 +336,17 @@ func createWorkspace(c *tool.Ctx) {
 		return
 	}
 	opt := workspace.CreateOptions{
-		Name:           name,
-		CustomPath:     strings.TrimSpace(c.Form("custom_path")),
-		DefaultPreset:  c.Form("preset"),
-		DefaultBackend: c.Form("backend"),
-		Description:    c.Form("description"),
+		Name:            name,
+		CustomPath:      strings.TrimSpace(c.Form("custom_path")),
+		DefaultPreset:   c.Form("preset"),
+		DefaultProvider: c.Form("provider"),
+		Description:     c.Form("description"),
 	}
 	if opt.DefaultPreset == "" {
 		opt.DefaultPreset = "default"
 	}
-	if opt.DefaultBackend == "" {
-		opt.DefaultBackend = "claude"
+	if opt.DefaultProvider == "" {
+		opt.DefaultProvider = "claude"
 	}
 	if _, err := globalMgr.CreateWorkspace(c.Context(), opt); err != nil {
 		log.Ctx(c.Context()).Error().Msgf("create workspace %s: %s", name, err.Error())

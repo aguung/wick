@@ -31,8 +31,8 @@ templ SessionsList(vm SessionsListVM) {
 							</select>
 						</div>
 						<div>
-							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Backend</label>
-							<select name="backend" class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100 focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 focus:outline-none">
+							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Provider</label>
+							<select name="provider" class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100 focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 focus:outline-none">
 								<option value="claude">Claude</option>
 								<option value="codex">Codex</option>
 								<option value="gemini">Gemini</option>
@@ -125,7 +125,7 @@ templ SessionDetail(vm SessionDetailVM) {
 							<span>Workspace: <strong class="text-black-900 dark:text-white-100">{ vm.Session.Meta.Workspace }</strong></span>
 						}
 						if len(vm.Session.Agents) > 0 {
-							<span>Agent: <strong class="text-black-900 dark:text-white-100">{ vm.Session.Agents[0].Name }</strong> ({ vm.Session.Agents[0].Backend })</span>
+							<span>Agent: <strong class="text-black-900 dark:text-white-100">{ vm.Session.Agents[0].Name }</strong> ({ vm.Session.Agents[0].Provider })</span>
 						}
 						@statusBadge(string(vm.Session.Meta.Status))
 					</div>

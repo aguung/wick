@@ -31,7 +31,7 @@ import (
 type Meta struct {
 	CustomPath     string    `json:"custom_path,omitempty"`
 	DefaultPreset  string    `json:"default_preset"`
-	DefaultBackend string    `json:"default_backend,omitempty"`
+	DefaultProvider string    `json:"default_provider,omitempty"`
 	Description    string    `json:"description,omitempty"`
 	Tags           []string  `json:"tags,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -53,7 +53,7 @@ type CreateOptions struct {
 	Name           string
 	CustomPath     string
 	DefaultPreset  string
-	DefaultBackend string
+	DefaultProvider string
 	Description    string
 	Tags           []string
 }
@@ -90,7 +90,7 @@ func Create(layout config.Layout, opt CreateOptions) (Workspace, error) {
 	meta := Meta{
 		CustomPath:     opt.CustomPath,
 		DefaultPreset:  opt.DefaultPreset,
-		DefaultBackend: opt.DefaultBackend,
+		DefaultProvider: opt.DefaultProvider,
 		Description:    opt.Description,
 		Tags:           opt.Tags,
 		CreatedAt:      time.Now().UTC(),

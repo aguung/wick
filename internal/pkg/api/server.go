@@ -24,7 +24,7 @@ import (
 	"github.com/yogasw/wick/internal/entity"
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
-	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/provider"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentevent "github.com/yogasw/wick/internal/agents/event"
 	agentpool "github.com/yogasw/wick/internal/agents/pool"
@@ -211,14 +211,16 @@ func NewServer() *Server {
 		log.Fatal().Msgf("agents bootstrap: %s", agentsBootErr.Error())
 	}
 	agentsBcast := agentstool.NewBroadcaster()
+	agentsSpawnLogger := provider.NewSpawnLogger(agentsLayout.BaseDir)
 	var agentsPool *agentpool.Pool
 	agentsFactory := &agentpool.ClaudeFactory{
-		Layout:    agentsLayout,
-		RecordRaw: false,
+		Layout:      agentsLayout,
+		RecordRaw:   false,
+		SpawnLogger: agentsSpawnLogger,
 		OnEvent: func(sid, name string, ev agentevent.AgentEvent) {
 			agentsBcast.Publish(sid, name, ev)
 		},
-		OnExit: func(sid, name string, reason agent.ExitReason) {
+		OnExit: func(sid, name string, reason provider.ExitReason) {
 			agentsPool.HandleExit(sid, name, reason)
 			agentsBcast.Publish(sid, name, agentevent.AgentEvent{Type: agentevent.Done})
 		},
@@ -233,6 +235,8 @@ func NewServer() *Server {
 	agentstool.SetPool(agentsPool)
 	agentstool.SetBroadcaster(agentsBcast)
 	agentstool.SetLayout(agentsLayout)
+	agentstool.SetSpawnLogger(agentsSpawnLogger)
+	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
 
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
 	// Register the code-side definitions for dispatch and auto-seed

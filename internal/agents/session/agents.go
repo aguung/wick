@@ -14,7 +14,7 @@ import (
 // `--resume <id>`. See agents-design.md §5.2.
 type AgentEntry struct {
 	Name         string    `json:"name"`
-	Backend      string    `json:"backend"`
+	Provider     string    `json:"provider"`
 	CLISessionID string    `json:"cli_session_id,omitempty"`
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -39,7 +39,7 @@ func SaveAgents(layout config.Layout, id string, agents []AgentEntry) error {
 
 // AddAgent appends a new agent entry. Errors on duplicate name within
 // the same session.
-func AddAgent(layout config.Layout, id, name, backend string) error {
+func AddAgent(layout config.Layout, id, name, provider string) error {
 	sess, err := Load(layout, id)
 	if err != nil {
 		return err
@@ -51,7 +51,7 @@ func AddAgent(layout config.Layout, id, name, backend string) error {
 	}
 	sess.Agents = append(sess.Agents, AgentEntry{
 		Name:      name,
-		Backend:   backend,
+		Provider:  provider,
 		Status:    "idle",
 		CreatedAt: time.Now().UTC(),
 	})

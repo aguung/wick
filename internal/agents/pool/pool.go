@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/session"
@@ -23,7 +23,7 @@ import (
 // that arrive while full, and grants slots when one frees up.
 //
 // Pool deliberately knows nothing about CLI specifics — it asks an
-// AgentFactory to build an *agent.Agent for a given session+agent
+// AgentFactory to build an *provider.Agent for a given session+agent
 // name. Tests inject a factory that returns agents wired to the
 // fakeSpawner; production wires ClaudeSpawner.
 type Pool struct {
@@ -61,18 +61,25 @@ type PoolConfig struct {
 // OnExit hook itself (so it can free the slot); the factory should
 // not.
 type AgentFactory interface {
-	Build(opt FactoryOptions) (*agent.Agent, *state.Machine, *store.Store, error)
+	Build(opt FactoryOptions) (*provider.Agent, *state.Machine, *store.Store, error)
 }
 
 // FactoryOptions is what the pool hands to the factory. ResumeID is
-// pulled from the session's agents.json by the pool.
+// pulled from the session's agents.json by the pool. ProviderType /
+// ProviderName identify which provider runtime instance to spawn
+// against — empty ProviderName resolves to the per-type default whose
+// name equals the type itself ("claude" / "codex" / "gemini"). Both
+// are forwarded to the spawn logger so /tools/agents/providers can
+// surface per-provider history without re-parsing files.
 type FactoryOptions struct {
-	SessionID   string
-	AgentName   string
-	Workspace   string
-	ResumeID    string
-	IdleTimeout time.Duration
-	OnEvent     func(event.AgentEvent)
+	SessionID    string
+	AgentName    string
+	ProviderType string
+	ProviderName string
+	Workspace    string
+	ResumeID     string
+	IdleTimeout  time.Duration
+	OnEvent      func(event.AgentEvent)
 }
 
 // queueEntry is one request waiting for a slot.
@@ -84,7 +91,7 @@ type queueEntry struct {
 
 // runEntry tracks an active agent in the pool.
 type runEntry struct {
-	agent    *agent.Agent
+	agent    *provider.Agent
 	state    *state.Machine
 	store    *store.Store
 	buffer   *Buffer
@@ -181,9 +188,11 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 		return err
 	}
 	resumeID := ""
+	pType := ""
 	for _, a := range sess.Agents {
 		if a.Name == agentName {
 			resumeID = a.CLISessionID
+			pType = a.Provider
 			break
 		}
 	}
@@ -194,11 +203,13 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 	}
 
 	a, st, sto, err := p.cfg.Factory.Build(FactoryOptions{
-		SessionID:   sessionID,
-		AgentName:   agentName,
-		Workspace:   cwd,
-		ResumeID:    resumeID,
-		IdleTimeout: p.cfg.IdleTimeout,
+		SessionID:    sessionID,
+		AgentName:    agentName,
+		ProviderType: pType,
+		ProviderName: pType, // default-name = type until per-instance pickers ship
+		Workspace:    cwd,
+		ResumeID:     resumeID,
+		IdleTimeout:  p.cfg.IdleTimeout,
 	})
 	if err != nil {
 		return err
@@ -411,6 +422,56 @@ func (p *Pool) QueueLen() int {
 	return len(p.queue)
 }
 
+// MaxConcurrent surfaces the configured slot cap for the Backends UI.
+// Read-only — change via PoolConfig at construction time.
+func (p *Pool) MaxConcurrent() int {
+	return p.cfg.MaxConcurrent
+}
+
+// QueueSnapshot returns a defensive copy of the current FIFO queue
+// (oldest first). Used by the Backends UI to show what's waiting.
+func (p *Pool) QueueSnapshot() []QueueEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]QueueEntry, len(p.queue))
+	for i, q := range p.queue {
+		out[i] = QueueEntry{
+			SessionID: q.sessionID,
+			AgentName: q.agentName,
+			Enqueued:  q.enqueued,
+		}
+	}
+	return out
+}
+
+// QueueEntry is the public snapshot view of one queued request.
+type QueueEntry struct {
+	SessionID string
+	AgentName string
+	Enqueued  time.Time
+}
+
+// ActiveSnapshot returns a defensive copy of every running agent in
+// the pool. Used by the Backends UI to show what's eating each slot.
+func (p *Pool) ActiveSnapshot() []ActiveEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]ActiveEntry, 0, len(p.active))
+	for _, e := range p.active {
+		out = append(out, ActiveEntry{
+			SessionID: e.sessID,
+			AgentName: e.agentNm,
+		})
+	}
+	return out
+}
+
+// ActiveEntry is the public snapshot view of one running agent.
+type ActiveEntry struct {
+	SessionID string
+	AgentName string
+}
+
 // Kill stops the running agent for sessionID+agentName. Idempotent if
 // the agent is not currently active — returns nil in that case.
 // The normal onAgentExit hook still fires, releasing the slot and
@@ -430,7 +491,7 @@ func (p *Pool) Kill(sessionID, agentName string) error {
 // It defers to the unexported onAgentExit but accepts the reason so
 // future code can branch (e.g. don't grant queue if the previous exit
 // was an error).
-func (p *Pool) HandleExit(sessionID, agentName string, _ agent.ExitReason) {
+func (p *Pool) HandleExit(sessionID, agentName string, _ provider.ExitReason) {
 	p.onAgentExit(sessionID, agentName)
 }
 

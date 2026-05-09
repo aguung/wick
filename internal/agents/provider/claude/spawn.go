@@ -27,7 +27,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	provider "github.com/yogasw/wick/internal/agents/provider"
 )
 
 // Spawner spawns the real `claude` CLI binary with stream-json output
@@ -64,7 +64,7 @@ type Spawner struct {
 //
 // `--verbose` is required by claude when `-p` is paired with
 // `--output-format stream-json` — claude errors out otherwise.
-func (s Spawner) Spawn(ctx context.Context, opt agent.SpawnOptions) (agent.Process, error) {
+func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider.Process, error) {
 	bin := s.Binary
 	if bin == "" {
 		bin = "claude"
@@ -165,7 +165,7 @@ func (t *teeReader) Read(p []byte) (int, error) {
 }
 func (t *teeReader) Close() error { _ = t.f.Close(); return t.src.Close() }
 
-// process implements agent.Process for a started claude subprocess.
+// process implements provider.Process for a started claude subprocess.
 type process struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser

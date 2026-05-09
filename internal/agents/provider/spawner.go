@@ -1,12 +1,20 @@
-// Package agent owns one CLI subprocess: spawn it, pipe stdin/stdout,
-// run an idle timer, surface state, and tear down on demand.
+// Package provider owns everything per-AI-CLI for the agents module:
 //
-// The package keeps the subprocess interaction behind a Spawner
-// interface so tests can drive the agent lifecycle without spawning a
-// real claude binary. The real implementation is in claude_spawn.go;
-// tests inject a fake spawner that produces canned stream-json on a
-// pipe.
-package agent
+//   - Agent lifecycle: spawn one CLI subprocess, pipe stdin/stdout,
+//     run an idle timer, surface state, tear down on demand
+//   - Spawner interface: pluggable subprocess construction so tests
+//     can drive the agent without a real claude binary
+//   - Type / Instance config: which CLIs are supported (claude /
+//     codex / gemini), per-instance overrides (binary path, extra
+//     args, env) read from userconfig
+//   - Detect + `--version` probes used by the Backends UI page
+//   - Per-spawn jsonl logs used by the Backends UI page
+//
+// Sub-packages `claude/`, `codex/`, `gemini/` provide the real
+// CLI-specific Spawner implementations. They depend on this package
+// for the Spawner / SpawnOptions interface; this package never
+// imports them back.
+package provider
 
 import (
 	"context"

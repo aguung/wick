@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yogasw/wick/internal/agents/agent"
+	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/session"
 )
@@ -24,7 +24,7 @@ type scriptedSpawner struct {
 	Procs []*scriptedProc
 }
 
-func (s *scriptedSpawner) Spawn(ctx context.Context, opt agent.SpawnOptions) (agent.Process, error) {
+func (s *scriptedSpawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider.Process, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := s.Calls
@@ -59,7 +59,7 @@ type scriptedProc struct {
 	stdoutW  *io.PipeWriter
 	stdinMu  sync.Mutex
 	stdinBuf *bytes.Buffer
-	opt      agent.SpawnOptions
+	opt      provider.SpawnOptions
 	done     chan struct{}
 	once     sync.Once
 }

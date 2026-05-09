@@ -7,7 +7,7 @@ type GeneralConfig struct {
 	Enabled        bool   `wick:"checkbox;desc=Enable the Agents feature."`
 	MaxConcurrent  int    `wick:"number;desc=Max concurrent agent subprocesses. Default: 2."`
 	IdleTimeoutSec int    `wick:"number;desc=Seconds of inactivity before subprocess is killed. Default: 120."`
-	DefaultBackend string `wick:"dropdown=claude|codex|gemini;desc=Default CLI backend."`
+	DefaultProvider string `wick:"dropdown=claude|codex|gemini;desc=Default CLI provider."`
 	AllowedCmds    string `wick:"kvlist;desc=Allowed shell command patterns. Unlisted commands are auto-blocked."`
 	PublicURL      string `wick:"url;desc=Public base URL of this wick instance. Used for the dashboard meta-command."`
 }
@@ -21,7 +21,7 @@ func DefaultGeneralConfig() GeneralConfig {
 		Enabled:        false,
 		MaxConcurrent:  2,
 		IdleTimeoutSec: 120,
-		DefaultBackend: "claude",
+		DefaultProvider: "claude",
 		AllowedCmds:    `[{"value":"git status"},{"value":"git diff"},{"value":"git log"},{"value":"ls *"},{"value":"cat *"}]`,
 	}
 }
