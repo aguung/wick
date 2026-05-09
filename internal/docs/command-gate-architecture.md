@@ -694,26 +694,96 @@ Urutan prioritas: `WICK_GATE_BIN` env → embedded binary. Kalau keduanya tidak 
 
 **Launch config:** `.vscode/launch.json` → `wicklab` → `preLaunchTask: "debug: prep"`
 
-**Yang perlu dilakukan:**
+#### Dua launch untuk debug gate
 
-1. Update `.vscode/tasks.json` — tambah build gate ke task `debug: prep`:
-   ```json
-   {
-     "label": "debug: prep",
-     "type": "shell",
-     "command": "templ generate ./... && bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-gate.exe ./cmd/wick-gate",
-     "problemMatcher": []
-   }
-   ```
-   Setiap kali F5, gate binary di-rebuild otomatis sebelum server jalan.
+Untuk debug gate secara terpisah tanpa restart wicklab, kita pakai dua launch yang berjalan bersamaan:
 
-2. Tambah ke `.env` (buat dari `.env.example`):
-   ```env
-   WICK_GATE_BIN=bin/wick-gate.exe
-   ```
-   Launch config sudah punya `"envFile": "${workspaceFolder}/.env"` — langsung terbaca.
+```
+wicklab          → daemon berjalan, buat session → tulis spec.json
+wicklab-gate     → attach debugger ke gate, baca spec dari session yang sama
+```
 
-**Path note:** `cwd` di launch config adalah `${workspaceFolder}/cmd/lab`, tapi `WICK_GATE_BIN` relatif terhadap CWD daemon saat runtime. Lebih aman pakai path absolut atau `${workspaceFolder}/bin/wick-gate.exe` — atau daemon resolve relatif terhadap executable-nya, bukan CWD.
+"Sync link" antara keduanya: task `gate: sync-spec` yang otomatis cari `spec.json` dari session terbaru yang dibuat wicklab, lalu tulis path-nya ke `bin/.gate-debug.env`. Gate launch baca dari file itu.
+
+```
+wicklab buat session
+  → ~\.wick\sessions\<id>\gate\spec.json ditulis
+  → jalankan task "gate: sync-spec"
+     → ls -t ~\.wick\sessions\*/gate/spec.json | head -1
+     → tulis WICK_GATE_SPEC=<path> ke bin/.gate-debug.env
+wicklab-gate launch
+  → envFile: bin/.gate-debug.env
+  → gate baca spec → sama persis dengan yang wicklab pakai
+```
+
+#### Yang perlu ditambah ke `.vscode/tasks.json`
+
+```json
+{
+  "label": "debug: prep",
+  "type": "shell",
+  "command": "templ generate ./... && bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-gate.exe ./cmd/wick-gate",
+  "problemMatcher": []
+},
+{
+  "label": "gate: sync-spec",
+  "type": "shell",
+  "command": "powershell -NoProfile -Command \"$spec = Get-ChildItem $env:USERPROFILE\\.wick\\sessions -Recurse -Filter spec.json | Where-Object { $_.FullName -like '*\\gate\\spec.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName; if ($spec) { Set-Content -Path bin\\.gate-debug.env -Value \\\"WICK_GATE_SPEC=$spec\\\" -NoNewline; Write-Host \\\"Linked: $spec\\\" } else { Write-Error 'No session spec found. Start wicklab and create a session first.' }\"",
+  "problemMatcher": []
+}
+```
+
+> **Linux/macOS** — ganti command task `gate: sync-spec` dengan:
+> ```bash
+> "command": "spec=$(ls -t ~/.wick/sessions/*/gate/spec.json 2>/dev/null | head -1) && [ -n \"$spec\" ] && printf 'WICK_GATE_SPEC=%s' \"$spec\" > bin/.gate-debug.env && echo \"Linked: $spec\" || echo 'No session spec found'"
+> ```
+
+#### Yang perlu ditambah ke `.vscode/launch.json`
+
+```json
+{
+  "name": "wicklab-gate",
+  "type": "go",
+  "request": "launch",
+  "mode": "auto",
+  "program": "${workspaceFolder}/cmd/wick-gate",
+  "output": "${workspaceFolder}/bin/wick-gate",
+  "envFile": "${workspaceFolder}/bin/.gate-debug.env",
+  "console": "integratedTerminal"
+}
+```
+
+`"console": "integratedTerminal"` wajib — gate baca stdin (JSON hook input dari Claude). Di terminal kamu bisa paste payload test:
+
+```json
+{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /data"}}
+```
+
+#### Compound launch (opsional — jalankan keduanya sekaligus)
+
+```json
+{
+  "name": "wicklab + gate",
+  "configurations": ["wicklab", "wicklab-gate"]
+}
+```
+
+Tambahkan ke array `"compounds"` di `launch.json`. Tapi karena gate langsung exit setelah proses stdin, lebih praktis jalankan terpisah: `wicklab` dulu, baru `wicklab-gate` saat butuh debug.
+
+#### Flow debug lengkap
+
+```
+1. F5 → "wicklab"                 → daemon jalan, buka web UI
+2. Buat session di web UI          → spec.json ditulis di ~/.wick/sessions/<id>/gate/
+3. Terminal → run task             → "gate: sync-spec"
+   → bin/.gate-debug.env terisi WICK_GATE_SPEC=<path>
+4. F5 → "wicklab-gate"            → debugger attach, nunggu stdin
+5. Paste JSON di terminal:
+   {"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"}}
+6. Gate proses → breakpoint hit → inspect spec, rules, decision
+```
+
+**Path note:** `WICK_GATE_BIN` di `.env` tetap diperlukan agar wicklab tahu binary gate yang mana. `WICK_GATE_SPEC` di `.gate-debug.env` adalah untuk gate launch sendiri (bukan untuk wicklab).
 
 ### 9.3 MSI (Windows Installer)
 
