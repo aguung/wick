@@ -908,3 +908,48 @@ Urutan logis: gate binary siap dulu → daemon socket → approval flow → web 
 [x] E4. .env.example — WICK_GATE_BIN entry sudah ada
 [ ] E5. template release workflow — tambah step "Build wick-gate" sebelum "wick build --installer"
 ```
+
+---
+
+## 13. Nama Teknik & Referensi
+
+Daftar istilah teknis yang dipakai dalam arsitektur ini beserta link dokumentasi primer.
+
+### Naming
+
+| Istilah | Arti dalam konteks wick |
+|---|---|
+| **Pre-execution Hook** | Hook yang fire sebelum tool dieksekusi — `PreToolUse` di Claude |
+| **PEP** (Policy Enforcement Point) | Yang enforce keputusan → claude CLI |
+| **PDP** (Policy Decision Point) | Yang bikin keputusan → wick-gate |
+| **Stateless ephemeral binary** | Binary tanpa state internal, semua via env/stdin/file, hidup detik-an |
+| **HITL** (Human-in-the-loop) | Approval yang butuh keputusan manusia sebelum proses lanjut |
+| **Allow-list / deny-by-default** | Hanya yang explicit di whitelist boleh; semua lainnya block |
+| **Sidecar** | Proses pendamping kecil yang jalan parallel dengan proses utama |
+| **bypassPermissions mode** | Claude mode yang matikan interactive TTY approval — hook jadi authority |
+
+### Hook per CLI
+
+| CLI | Nama Hook | Cara Block | Docs |
+|---|---|---|---|
+| Claude CLI | `PreToolUse` | exit code `2` | https://code.claude.com/docs/en/hooks-guide |
+| Codex CLI | `PermissionRequest` | stdout JSON `{"behavior":"deny"}` | https://developers.openai.com/codex/hooks |
+| Gemini CLI | `BeforeTool` | stdout JSON deny | https://geminicli.com/docs/hooks/ |
+
+### Kenapa Pre-exec (bukan post-exec audit)?
+
+- **Pre-exec**: command belum jalan saat hook fire — block = command tidak pernah jalan
+- **Post-exec audit**: command sudah jalan, hook cuma rekam — blast radius sudah terjadi
+
+### Kenapa Whitelist (bukan Blacklist)?
+
+Blacklist mudah di-bypass: alias, path absolut (`/usr/bin/rm` vs `rm`), encoding (`r\m`), built-in vs binary. Whitelist + shell-metachar guard = surface area kecil, default deny.
+
+### Bacaan Lanjutan
+
+1. **Claude hooks-guide** — https://code.claude.com/docs/en/hooks-guide
+2. **OPA sidecar PDP pattern** — https://www.openpolicyagent.org/docs/latest/
+3. **OWASP Command Injection** — https://owasp.org/www-community/attacks/Command_Injection
+4. **Slack interactivity** (untuk future Slack approval) — https://api.slack.com/interactivity/handling
+5. **12-Factor Processes** — https://12factor.net/processes
+6. **XACML PEP/PDP** — https://docs.oasis-open.org/xacml/3.0/xacml-3.0-core-spec-os-en.html
