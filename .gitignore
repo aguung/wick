@@ -45,3 +45,6 @@ docs/yarn.lock
 bin/
 graphify-out/
 .debug/
+
+# templ generated files
+*_templ.go
