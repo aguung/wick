@@ -40,6 +40,10 @@ import (
 type Spawner struct {
 	Binary       string // empty → "claude"
 	SettingsPath string // empty → no --settings flag
+	// BypassPermissions forces --permission-mode bypassPermissions even
+	// when no gate settings file is present. Use when running Claude in
+	// non-interactive contexts (Slack/HTTP) without a gate configured.
+	BypassPermissions bool
 	// ExtraArgs is appended after the canonical headless flags, before
 	// any caller-supplied ResumeID. Useful for tests / debugging
 	// (--debug, --verbose-extra, ...).
@@ -83,14 +87,11 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		args = append(args, "--add-dir", opt.Workspace)
 	}
 	if s.SettingsPath != "" {
+		// Gate is active: bypass interactive prompts so the PreToolUse
+		// hook is the sole allow/block authority.
+		args = append(args, "--permission-mode", "bypassPermissions")
 		args = append(args, "--settings", s.SettingsPath)
-		// When wick injects a settings file with a PreToolUse hook
-		// it's because we want our own gate to be the source of
-		// truth — but claude's default permission mode prompts the
-		// user before every Bash call, which blocks the hook from
-		// even firing in non-interactive sessions. bypassPermissions
-		// disables those prompts so our hook is the authoritative
-		// allow/block decision.
+	} else if s.BypassPermissions {
 		args = append(args, "--permission-mode", "bypassPermissions")
 	}
 	args = append(args, s.ExtraArgs...)

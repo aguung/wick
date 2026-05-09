@@ -9,6 +9,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ import (
 	"github.com/yogasw/wick/internal/entity"
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
+	agentchannels "github.com/yogasw/wick/internal/agents/channels"
+	"github.com/yogasw/wick/internal/agents/gate"
 	"github.com/yogasw/wick/internal/agents/provider"
 	agentaskuser "github.com/yogasw/wick/internal/agents/askuser"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
@@ -33,6 +36,8 @@ import (
 	agentgate "github.com/yogasw/wick/internal/agents/gate"
 	agentpool "github.com/yogasw/wick/internal/agents/pool"
 	agentregistry "github.com/yogasw/wick/internal/agents/registry"
+	agentsession "github.com/yogasw/wick/internal/agents/session"
+	agentworkspace "github.com/yogasw/wick/internal/agents/workspace"
 	"github.com/yogasw/wick/internal/health"
 	"github.com/yogasw/wick/internal/home"
 	"github.com/yogasw/wick/internal/initcreds"
@@ -51,6 +56,7 @@ import (
 	"github.com/yogasw/wick/internal/tags"
 	"github.com/yogasw/wick/internal/tools"
 	"github.com/yogasw/wick/pkg/job"
+	pkgentity "github.com/yogasw/wick/pkg/entity"
 	"github.com/yogasw/wick/pkg/tool"
 	"github.com/yogasw/wick/web"
 
@@ -271,16 +277,24 @@ func NewServer() *Server {
 	}
 
 	var agentsPool *agentpool.Pool
+	var slackChan *agentchannels.SlackChannel // forward ref so factory closure can call it
 	agentsFactory := &agentpool.ClaudeFactory{
 		Layout:      agentsLayout,
 		RecordRaw:   false,
 		SpawnLogger: agentsSpawnLogger,
 		OnEvent: func(sid, name string, ev agentevent.AgentEvent) {
 			agentsBcast.Publish(sid, name, ev)
+			if slackChan != nil {
+				slackChan.OnAgentEvent(sid, ev)
+			}
 		},
 		OnExit: func(sid, name string, reason provider.ExitReason) {
 			agentsPool.HandleExit(sid, name, reason)
-			agentsBcast.Publish(sid, name, agentevent.AgentEvent{Type: agentevent.Done})
+			doneEv := agentevent.AgentEvent{Type: agentevent.Done}
+			agentsBcast.Publish(sid, name, doneEv)
+			if slackChan != nil {
+				slackChan.OnAgentEvent(sid, doneEv)
+			}
 		},
 	}
 	if agentsApprovals != nil {
@@ -300,12 +314,46 @@ func NewServer() *Server {
 	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "idle_timeout_sec")); err == nil && n > 0 {
 		idleSec = n
 	}
+	killAfterIdleSec := 0
+	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "kill_after_idle_sec")); err == nil && n >= 0 {
+		killAfterIdleSec = n
+	}
+
+	agentsFactory.BypassPermissionsLoader = func() bool {
+		return configsSvc.GetOwned("agents", "bypass_permissions") == "true"
+	}
+
+	// GateLoader is evaluated on every agent spawn so UI changes to
+	// gate_enabled / allowed_cmds take effect immediately without
+	// requiring a server restart.
+	gateBin := resolveWickGateBin()
+	if gateBin == "" {
+		log.Warn().Msg("agents: wick-gate binary not found — gate will be disabled even if gate_enabled=true (build cmd/wick-gate or put it in PATH)")
+	}
+	agentsFactory.GateLoader = func() *agentpool.GateConfig {
+		if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
+			return nil
+		}
+		if gateBin == "" {
+			return nil
+		}
+		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
+		log.Debug().Int("rules", len(rules)).Msg("agents: gate active for spawn")
+		return &agentpool.GateConfig{
+			WickGateBinary: gateBin,
+			Rules:          rules,
+		}
+	}
 	agentsPool = agentpool.New(agentpool.PoolConfig{
 		MaxConcurrent:    maxConc,
 		IdleTimeout:      time.Duration(idleSec) * time.Second,
+		KillAfterIdle:    time.Duration(killAfterIdleSec) * time.Second,
 		Layout:           agentsLayout,
 		Factory:          agentsFactory,
 		DefaultWorkspace: agentsWorkspaceCfg.DefaultWorkspace,
+		OnSessionCreated: func(s agentsession.Session) {
+			agentsMgr.Register(s)
+		},
 		OnLifecycle: func(ev agentpool.LifecycleEvent) {
 			agentsBcast.PublishLifecycle(ev.SessionID, ev.AgentName, ev.Lifecycle, ev.PID)
 			// Bind the per-session approval socket on first spawn.
@@ -346,6 +394,36 @@ func NewServer() *Server {
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
 	agentstool.SetConfigs(configsSvc)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
+
+	// ── Agents: Slack channel (optional — only starts when configured) ──
+	slackCfg := agentconfig.SlackConfig{
+		Mode:          configsSvc.GetOwned("agents", "mode"),
+		BotToken:      configsSvc.GetOwned("agents", "bot_token"),
+		AppToken:      configsSvc.GetOwned("agents", "app_token"),
+		SigningSecret: configsSvc.GetOwned("agents", "signing_secret"),
+		AccessMode:    configsSvc.GetOwned("agents", "access_mode"),
+		AllowedUsers:  configsSvc.GetOwned("agents", "allowed_users"),
+		AllowedGroups: configsSvc.GetOwned("agents", "allowed_groups"),
+	}
+	slackChannel := agentchannels.NewSlack(
+		slackCfg,
+		func(ctx context.Context, sessionID, agentName, source, role, text string) error {
+			ws := configsSvc.GetOwned("agents", "slack_workspace")
+			if ws == "" {
+				if wsNames, err := agentworkspace.List(agentsLayout); err == nil && len(wsNames) == 1 {
+					ws = wsNames[0]
+				}
+			}
+			return agentsPool.SendWithWorkspace(ctx, sessionID, agentName, source, role, text, ws)
+		},
+		configsSvc.GetOwned("agents", "public_url"),
+	)
+	slackChan = slackChannel // wire forward ref so factory callbacks can reach it
+	if slackChannel.IsConfigured() {
+		log.Info().Msg("agents: slack channel configured, will start with server")
+	} else {
+		log.Info().Msg("agents: slack channel not configured, skipping (set BotToken + AppToken in Settings → Agents)")
+	}
 
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
 	// Register the code-side definitions for dispatch and auto-seed
@@ -432,6 +510,26 @@ func NewServer() *Server {
 
 	tagsSvc := tags.NewService(db)
 	managerHandler := manager.NewHandler(jobsSvc, configsSvc, connectorsSvc, tagsSvc, authSvc, allItems)
+
+	// Inject live workspace names into the slack_workspace dropdown on the
+	// Agents config page. Options are re-read from disk on every page load
+	// so newly-created workspaces appear immediately without a restart.
+	// If exactly one workspace exists and slack_workspace is not yet set,
+	// auto-save it so the user doesn't need to interact with the dropdown.
+	managerHandler.RegisterConfigDecorator("agents", func(rows []pkgentity.Config) []pkgentity.Config {
+		wsNames, _ := agentworkspace.List(agentsLayout)
+		options := strings.Join(wsNames, "|")
+		for i := range rows {
+			if rows[i].Key == "slack_workspace" {
+				rows[i].Options = options
+				if len(wsNames) == 1 && rows[i].Value == "" {
+					_ = configsSvc.SetOwned(context.Background(), "agents", "slack_workspace", wsNames[0])
+					rows[i].Value = wsNames[0]
+				}
+			}
+		}
+		return rows
+	})
 
 	// jobrunnerHandler exposes /jobs/{key} — the operator surface with
 	// a Run Now button and run history. Admin-only settings stay on
@@ -532,6 +630,11 @@ func NewServer() *Server {
 	// 302 them into /auth/login which they can't follow.
 	r.Handle("POST /mcp", mcpAuth.Wrap(mcpHandler))
 
+	// Slack HTTP Event API webhook — public, no session auth.
+	// Integrity is enforced inside the handler via HMAC-SHA256 signing secret.
+	// Active only when mode=http and SigningSecret is set; otherwise returns 503.
+	r.Handle("POST /integrations/slack/events", slackChannel.HTTPHandler())
+
 	// OAuth 2.1 surface — .well-known metadata + /oauth/{register,
 	// authorize, token} (public) + /profile/connections (auth-gated
 	// inside, per-user grant dashboard).
@@ -562,14 +665,70 @@ func NewServer() *Server {
 	// Home
 	r.Handle("/", http.HandlerFunc(homeHandler.Index))
 
-	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool}
+	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, slackChannel: slackChannel}
 }
 
 type Server struct {
-	router      *http.ServeMux
-	configsSvc  *configs.Service
-	authMidd    *login.Middleware
-	agentsPool  *agentpool.Pool
+	router       *http.ServeMux
+	configsSvc   *configs.Service
+	authMidd     *login.Middleware
+	agentsPool   *agentpool.Pool
+	slackChannel *agentchannels.SlackChannel
+}
+
+// watchSlackConfig starts the Slack channel immediately if configured, then
+// polls every 30 s. When BotToken or AppToken changes it calls Reload() so
+// the operator never needs to restart the server after updating credentials.
+func (s *Server) watchSlackConfig(ctx context.Context) {
+	readCfg := func() (agentconfig.SlackConfig, string) {
+		return agentconfig.SlackConfig{
+			Mode:          s.configsSvc.GetOwned("agents", "mode"),
+			BotToken:      s.configsSvc.GetOwned("agents", "bot_token"),
+			AppToken:      s.configsSvc.GetOwned("agents", "app_token"),
+			SigningSecret: s.configsSvc.GetOwned("agents", "signing_secret"),
+			AccessMode:    s.configsSvc.GetOwned("agents", "access_mode"),
+			AllowedUsers:  s.configsSvc.GetOwned("agents", "allowed_users"),
+			AllowedGroups: s.configsSvc.GetOwned("agents", "allowed_groups"),
+		}, s.configsSvc.GetOwned("agents", "public_url")
+	}
+	// Hash covers both connection fields (trigger reconnect) and access-control
+	// fields (AllowedUsers, AllowedGroups, AccessMode) so operator changes to
+	// who can trigger agents are picked up without a token rotation.
+	connHash := func(cfg agentconfig.SlackConfig) string {
+		return cfg.BotToken + "|" + cfg.AppToken + "|" + cfg.Mode + "|" +
+			cfg.AccessMode + "|" + cfg.AllowedUsers + "|" + cfg.AllowedGroups
+	}
+
+	cfg, _ := readCfg()
+	hash := connHash(cfg)
+	if s.slackChannel.IsConfigured() {
+		log.Info().Msg("agents: slack channel configured, starting")
+		go func() {
+			if err := s.slackChannel.Start(ctx); err != nil {
+				log.Ctx(ctx).Error().Err(err).Msg("agents: slack channel stopped")
+			}
+		}()
+	} else {
+		log.Info().Msg("agents: slack channel not configured (set BotToken + AppToken in Settings → Agents)")
+	}
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			newCfg, newPubURL := readCfg()
+			newHash := connHash(newCfg)
+			if newHash == hash {
+				continue
+			}
+			hash = newHash
+			log.Info().Msg("agents: slack config changed, hot-reloading")
+			s.slackChannel.Reload(ctx, newCfg, newPubURL)
+		}
+	}
 }
 
 // appNameHandler injects the configurable app name into every request
@@ -642,6 +801,14 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	}
 	logger := zerolog.Ctx(ctx)
 	addr := fmt.Sprintf(":%d", port)
+
+	// Start Slack channel listener and watch for config changes.
+	// watchSlackConfig starts the channel immediately if configured, then
+	// polls every 30 s and hot-reloads when BotToken/AppToken change so
+	// the operator never needs to restart the server after updating creds.
+	if s.slackChannel != nil {
+		go s.watchSlackConfig(ctx)
+	}
 
 	h := chainMiddleware(
 		s.authMidd.Session(s.router),
@@ -791,4 +958,47 @@ func RunMCPStdio(version, commit, buildTime string) {
 		WithWickRoot(root).
 		WithAppURL(configsSvc.AppURL).
 		ServeStdioOS(ctx)
+}
+
+// resolveWickGateBin finds the wick-gate binary: first next to this
+// executable, then on PATH.
+func resolveWickGateBin() string {
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "wick-gate")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		candidate += ".exe"
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath("wick-gate"); err == nil {
+		return p
+	}
+	return ""
+}
+
+// parseGateRules decodes the kvlist JSON (pattern|scope columns) stored in
+// AllowedCmds into a slice of gate.CommandRule.
+func parseGateRules(raw string) []gate.CommandRule {
+	if raw == "" {
+		return nil
+	}
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		return nil
+	}
+	rules := make([]gate.CommandRule, 0, len(rows))
+	for _, r := range rows {
+		pattern := strings.TrimSpace(r["pattern"])
+		if pattern == "" {
+			continue
+		}
+		rules = append(rules, gate.CommandRule{
+			Pattern: pattern,
+			Scope:   strings.TrimSpace(r["scope"]),
+		})
+	}
+	return rules
 }

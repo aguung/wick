@@ -28,12 +28,23 @@ type ClaudeFactory struct {
 	OnEvent   func(sessionID, agentName string, ev event.AgentEvent)
 	OnExit    func(sessionID, agentName string, reason provider.ExitReason)
 
-	// Gate (optional) attaches a command whitelist to every spawn.
+	// Gate (optional) attaches a static command whitelist to every spawn.
 	// When non-nil, Build writes a per-session settings.json + spec
 	// file to a temp dir, points the spawner at the settings file,
 	// and injects WICK_GATE_SPEC into ExtraEnv so wick-gate finds
 	// its config. nil = no gate (fail-open, only safe for tests).
 	Gate *GateConfig
+	// GateLoader (optional) is called on every Build to fetch the
+	// current gate config from the live config store. Takes precedence
+	// over Gate when non-nil. This lets operators toggle gate_enabled
+	// or edit AllowedCmds in the UI without restarting the server.
+	GateLoader func() *GateConfig
+	// BypassPermissionsLoader (optional) is called on every Build to
+	// check whether --permission-mode bypassPermissions should be added
+	// when no gate is active. Useful for non-interactive channels
+	// (Slack, HTTP) where the operator wants to skip prompts without
+	// enabling the full command gate.
+	BypassPermissionsLoader func() bool
 
 	// SpawnLogger (optional) writes one jsonl per spawn under
 	// `<base>/backends/spawns/`. Each spawn emits `start` on Build +
@@ -91,14 +102,25 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		RecordRaw: f.RecordRaw,
 	})
 
+	bypassPerms := false
+	if f.BypassPermissionsLoader != nil {
+		bypassPerms = f.BypassPermissionsLoader()
+	}
 	spawner := f.Spawner
 	if spawner == nil {
-		spawner = claude.Spawner{}
+		spawner = claude.Spawner{BypassPermissions: bypassPerms}
+	}
+
+	// Resolve active gate config: dynamic loader takes precedence so
+	// UI changes take effect on the next spawn without server restart.
+	activeGate := f.Gate
+	if f.GateLoader != nil {
+		activeGate = f.GateLoader()
 	}
 
 	var extraEnv []string
-	if f.Gate != nil {
-		s, env, err := f.attachGate(opt, spawner)
+	if activeGate != nil {
+		s, env, err := f.attachGateConfig(opt, spawner, activeGate)
 		if err != nil {
 			return BuildResult{}, fmt.Errorf("attach gate: %w", err)
 		}
@@ -184,6 +206,7 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		Workspace:     opt.Workspace,
 		ResumeID:      opt.ResumeID,
 		IdleTimeout:   opt.IdleTimeout,
+		KillAfterIdle: opt.KillAfterIdle,
 		ParserFactory: func() event.Parser { return event.NewClaudeParser() },
 		Spawner:       gateAwareSpawner{inner: spawner, extraEnv: extraEnv},
 		Store:         sto,
@@ -203,17 +226,17 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 //     them) but ignored
 //   - the env-var slice ([WICK_GATE_SPEC=<path>]) the spawner adds
 //     to its subprocess
-func (f *ClaudeFactory) attachGate(opt FactoryOptions, base provider.Spawner) (provider.Spawner, []string, error) {
-	root := f.Gate.TempDirRoot
+func (f *ClaudeFactory) attachGateConfig(opt FactoryOptions, base provider.Spawner, cfg *GateConfig) (provider.Spawner, []string, error) {
+	root := cfg.TempDirRoot
 	if root == "" {
 		root = filepath.Join(f.Layout.SessionDir(opt.SessionID), "gate")
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return base, nil, err
 	}
-	sockDir := f.Gate.SocketDir
-	if f.Gate.SocketDirFor != nil {
-		sockDir = f.Gate.SocketDirFor(opt.SessionID)
+	sockDir := cfg.SocketDir
+	if cfg.SocketDirFor != nil {
+		sockDir = cfg.SocketDirFor(opt.SessionID)
 	}
 	socketPath := ""
 	if sockDir != "" {
@@ -223,8 +246,8 @@ func (f *ClaudeFactory) attachGate(opt FactoryOptions, base provider.Spawner) (p
 		socketPath = filepath.Join(sockDir, "gate.sock")
 	}
 	var autoApproved []string
-	if f.Gate.AutoApprovedFor != nil {
-		autoApproved = f.Gate.AutoApprovedFor(opt.SessionID)
+	if cfg.AutoApprovedFor != nil {
+		autoApproved = cfg.AutoApprovedFor(opt.SessionID)
 	}
 	spec := gate.Spec{
 		SessionID: opt.SessionID,
@@ -232,11 +255,11 @@ func (f *ClaudeFactory) attachGate(opt FactoryOptions, base provider.Spawner) (p
 		Layout: gate.SpecLayout{
 			SessionCommandsPath: f.Layout.SessionCommands(opt.SessionID),
 		},
-		Rules:        f.Gate.Rules,
+		Rules:        cfg.Rules,
 		SocketPath:   socketPath,
 		AutoApproved: autoApproved,
 	}
-	settingsPath, specPath, err := gate.WriteSpawnArtifacts(root, spec, f.Gate.WickGateBinary)
+	settingsPath, specPath, err := gate.WriteSpawnArtifacts(root, spec, cfg.WickGateBinary)
 	if err != nil {
 		return base, nil, err
 	}
