@@ -162,6 +162,7 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		Workspace:     opt.Workspace,
 		ResumeID:      opt.ResumeID,
 		IdleTimeout:   opt.IdleTimeout,
+		KillAfterIdle: opt.KillAfterIdle,
 		ParserFactory: func() event.Parser { return event.NewClaudeParser() },
 		Spawner:       gateAwareSpawner{inner: spawner, extraEnv: extraEnv},
 		Store:         sto,

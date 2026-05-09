@@ -253,6 +253,10 @@ func NewServer() *Server {
 	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "idle_timeout_sec")); err == nil && n > 0 {
 		idleSec = n
 	}
+	killAfterIdleSec := 0
+	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "kill_after_idle_sec")); err == nil && n >= 0 {
+		killAfterIdleSec = n
+	}
 
 	// Wire command gate when gate_enabled=true. The wick-gate binary is
 	// resolved next to the running executable, then falls back to PATH.
@@ -272,6 +276,7 @@ func NewServer() *Server {
 	agentsPool = agentpool.New(agentpool.PoolConfig{
 		MaxConcurrent:    maxConc,
 		IdleTimeout:      time.Duration(idleSec) * time.Second,
+		KillAfterIdle:    time.Duration(killAfterIdleSec) * time.Second,
 		Layout:           agentsLayout,
 		Factory:          agentsFactory,
 		DefaultWorkspace: agentsWorkspaceCfg.DefaultWorkspace,

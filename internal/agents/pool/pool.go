@@ -53,6 +53,7 @@ type Pool struct {
 type PoolConfig struct {
 	MaxConcurrent    int
 	IdleTimeout      time.Duration
+	KillAfterIdle    time.Duration
 	Layout           config.Layout
 	Factory          AgentFactory
 	DefaultWorkspace string
@@ -128,9 +129,10 @@ type FactoryOptions struct {
 	ProviderType string
 	ProviderName string
 	Workspace    string
-	ResumeID     string
-	IdleTimeout  time.Duration
-	OnEvent      func(event.AgentEvent)
+	ResumeID      string
+	IdleTimeout   time.Duration
+	KillAfterIdle time.Duration
+	OnEvent       func(event.AgentEvent)
 }
 
 // queueEntry is one request waiting for a slot.
@@ -276,7 +278,8 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 		ProviderName: pType, // default-name = type until per-instance pickers ship
 		Workspace:    cwd,
 		ResumeID:     resumeID,
-		IdleTimeout:  p.cfg.IdleTimeout,
+		IdleTimeout:   p.cfg.IdleTimeout,
+		KillAfterIdle: p.cfg.KillAfterIdle,
 	})
 	if err != nil {
 		return err
