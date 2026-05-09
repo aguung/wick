@@ -1,0 +1,7 @@
+# Embedded wick-gate binaries are produced by CI (release.yml step
+# "Build wick-gate") right before the main build that runs //go:embed.
+# Do not commit them — checked-in copies would drift from source.
+wick-gate-*
+*.exe
+!.gitkeep
+!.gitignore

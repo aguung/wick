@@ -425,6 +425,29 @@ jobs:
         if: matrix.os == 'windows'
         run: sudo apt-get update && sudo apt-get install -y wixl
 
+      # wick-gate is the small hook binary claude invokes before every
+      # Bash command (see internal/agents/gate). We compile it for the
+      # target platform and drop it into internal/agents/gate/assets/
+      # so the main `go build` (run by `wick build` below) embeds it
+      # via //go:embed. Skipped on downstream forks that don't ship the
+      # gate dir — the embed has a graceful fallback to PATH lookup.
+      - name: Build wick-gate
+        shell: bash
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          if [ ! -d cmd/wick-gate ]; then
+            echo "cmd/wick-gate not present — skipping (downstream fork)."
+            exit 0
+          fi
+          mkdir -p internal/agents/gate/assets
+          EXT=""
+          [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
+          OUT="internal/agents/gate/assets/wick-gate-${{ matrix.os }}-${{ matrix.arch }}${EXT}"
+          go build -trimpath -ldflags="-s -w" -o "$OUT" ./cmd/wick-gate
+          ls -la internal/agents/gate/assets/
+
       - name: Build
         env:
           GOOS: ${{ matrix.os }}

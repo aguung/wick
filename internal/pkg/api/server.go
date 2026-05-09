@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -26,8 +27,10 @@ import (
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
 	"github.com/yogasw/wick/internal/agents/provider"
+	agentaskuser "github.com/yogasw/wick/internal/agents/askuser"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentevent "github.com/yogasw/wick/internal/agents/event"
+	agentgate "github.com/yogasw/wick/internal/agents/gate"
 	agentpool "github.com/yogasw/wick/internal/agents/pool"
 	agentregistry "github.com/yogasw/wick/internal/agents/registry"
 	"github.com/yogasw/wick/internal/health"
@@ -217,6 +220,56 @@ func NewServer() *Server {
 	}
 	agentsBcast := agentstool.NewBroadcaster()
 	agentsSpawnLogger := provider.NewSpawnLogger(agentsLayout.BaseDir)
+
+	// ── Gate (interactive command approval) ───────────────────────
+	// Resolve the wick-gate binary up front: env override for dev,
+	// embedded asset for production, PATH lookup as a last resort.
+	// Failure here is non-fatal — gate stays disabled and the pool
+	// falls back to whitelist-only mode. Operator sees one log line.
+	//
+	// User-controlled toggle: agents.gate_enabled (default true). When
+	// false, every provider falls back to its own default permission
+	// handling (claude headless: blocks). Wick injects no --settings
+	// and no --permission-mode in that path.
+	var agentsApprovals *agentgate.ApprovalManager
+	// Default ON when the cell is empty/unparseable so a fresh DB
+	// without the row still gates by default.
+	gateConfigEnabled := true
+	if v := configsSvc.GetOwned("agents", "gate_enabled"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			gateConfigEnabled = b
+		}
+	}
+	wickGateBin, wickGateSource, gateBinErr := agentgate.ResolveGateBinaryWithSource(filepath.Join(agentsLayout.BaseDir, "_gate-bin"))
+	gateStatus := agentstool.GateStatus{
+		Enabled: gateBinErr == nil && gateConfigEnabled,
+		Binary:  wickGateBin,
+		Source:  wickGateSource,
+	}
+	switch {
+	case !gateConfigEnabled:
+		gateStatus.Reason = "disabled via agents.gate_enabled"
+		log.Info().Msg("agents gate disabled via config")
+	case gateBinErr != nil:
+		gateStatus.Reason = gateBinErr.Error()
+		log.Warn().Msgf("agents gate disabled: %s", gateBinErr.Error())
+	default:
+		agentsApprovals, _ = agentgate.NewApprovalManager(agentgate.ApprovalManagerOptions{
+			SocketDir: func(sid string) string {
+				return filepath.Join(agentsLayout.SessionDir(sid), "gate")
+			},
+			SpecPath: func(sid string) string {
+				return filepath.Join(agentsLayout.SessionDir(sid), "gate", "spec.json")
+			},
+			OnRequest: func(sid string, r agentgate.ApprovalRequest) {
+				agentsBcast.PublishApprovalRequest(sid, r)
+			},
+			OnResolved: func(sid, requestID, decision string) {
+				agentsBcast.PublishApprovalResolved(sid, requestID, decision)
+			},
+		})
+	}
+
 	var agentsPool *agentpool.Pool
 	agentsFactory := &agentpool.ClaudeFactory{
 		Layout:      agentsLayout,
@@ -229,6 +282,15 @@ func NewServer() *Server {
 			agentsPool.HandleExit(sid, name, reason)
 			agentsBcast.Publish(sid, name, agentevent.AgentEvent{Type: agentevent.Done})
 		},
+	}
+	if agentsApprovals != nil {
+		agentsFactory.Gate = &agentpool.GateConfig{
+			WickGateBinary: wickGateBin,
+			SocketDirFor: func(sid string) string {
+				return filepath.Join(agentsLayout.SessionDir(sid), "gate")
+			},
+			AutoApprovedFor: agentsApprovals.AutoApprovedFor,
+		}
 	}
 	maxConc := 2
 	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "max_concurrent")); err == nil && n > 0 {
@@ -246,13 +308,43 @@ func NewServer() *Server {
 		DefaultWorkspace: agentsWorkspaceCfg.DefaultWorkspace,
 		OnLifecycle: func(ev agentpool.LifecycleEvent) {
 			agentsBcast.PublishLifecycle(ev.SessionID, ev.AgentName, ev.Lifecycle, ev.PID)
+			// Bind the per-session approval socket on first spawn.
+			// StartSession is idempotent so respawns are no-ops.
+			if agentsApprovals != nil && ev.Lifecycle == "spawning" {
+				if _, err := agentsApprovals.StartSession(ev.SessionID); err != nil {
+					log.Warn().Err(err).Str("session_id", ev.SessionID).Msg("agents gate StartSession")
+				}
+			}
 		},
 	})
+	if agentsApprovals != nil {
+		agentstool.SetApprovals(agentsApprovals)
+	}
+	agentstool.SetGateStatus(gateStatus)
+
+	// ── ask_user MCP tool wiring ─────────────────────────────────
+	// One Manager per process: agents tool publishes SSE on
+	// OnRequest/OnResolved, MCP handler calls Ask() and blocks.
+	agentsAskUsers := agentaskuser.NewManager(agentaskuser.Options{
+		OnRequest: func(req agentaskuser.AskRequest) {
+			payload, err := json.Marshal(req)
+			if err != nil {
+				log.Warn().Err(err).Msg("ask_user marshal failed")
+				return
+			}
+			agentsBcast.PublishAskUser(req.SessionID, req.AgentName, payload)
+		},
+		OnResolved: func(sid, requestID string) {
+			agentsBcast.PublishAskUserResolved(sid, requestID)
+		},
+	})
+	agentstool.SetAskUsers(agentsAskUsers)
 	agentstool.SetManager(agentsMgr)
 	agentstool.SetPool(agentsPool)
 	agentstool.SetBroadcaster(agentsBcast)
 	agentstool.SetLayout(agentsLayout)
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
+	agentstool.SetConfigs(configsSvc)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
 
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
@@ -311,7 +403,9 @@ func NewServer() *Server {
 	// Bearer auth in front, connector dispatch behind. PAT and
 	// OAuth-issued tokens both flow through the same middleware —
 	// dispatch by prefix.
-	mcpHandler := mcp.NewHandler(connectorsSvc).WithAppURL(configsSvc.AppURL)
+	mcpHandler := mcp.NewHandler(connectorsSvc).
+		WithAppURL(configsSvc.AppURL).
+		WithAskUser(agentstool.AskUsers())
 	mcpAuth := mcp.NewAuthMiddleware(
 		tokensSvc,
 		authSvc,

@@ -1,0 +1,3 @@
+# Embedded wick-gate binaries land here at build time.
+# Filename pattern: wick-gate-<goos>-<goarch>[.exe]
+# CI step "Build wick-gate" populates this dir before the main build.

@@ -14,10 +14,22 @@ import (
 // the session's gate-temp dir so the path can be passed to claude
 // via `--settings <path>` and to wick-gate via env vars.
 type Spec struct {
-	SessionID    string        `json:"session_id"`
-	AgentName    string        `json:"agent_name"`
-	Layout       SpecLayout    `json:"layout"`
-	Rules        []CommandRule `json:"rules"`
+	SessionID string        `json:"session_id"`
+	AgentName string        `json:"agent_name"`
+	Layout    SpecLayout    `json:"layout"`
+	Rules     []CommandRule `json:"rules"`
+
+	// SocketPath is the Unix socket wick-gate dials when a command is
+	// not auto-allowed. Empty = no interactive approval (whitelist-only
+	// mode, fail-safe block on unlisted commands).
+	SocketPath string `json:"socket_path,omitempty"`
+
+	// AutoApproved holds matchKey hashes the user already chose
+	// "Always allow" for. wick-gate checks this list before dialing
+	// the socket so always-approved commands take a zero-latency
+	// fast path identical to whitelisted ones. Rewritten by the
+	// daemon when the user toggles always-allow / revoke.
+	AutoApproved []string `json:"auto_approved,omitempty"`
 }
 
 // SpecLayout is the subset of config.Layout the gate binary needs:

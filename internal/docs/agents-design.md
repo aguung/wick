@@ -170,6 +170,7 @@ Update tabel ini saat phase selesai. Format `[ ] / [x] / [~] in-progress`.
 | Phase 4.6 — Providers Registry & Diagnostics | `[~]` | Rename "backend" → "provider" sepanjang stack (session/workspace/userconfig/pool/UI). Pkg `internal/agents/agent/` dimerge ke `internal/agents/provider/` jadi 1 paket per-CLI: Agent driver + Spawner + Type/Instance config (multi-instance per type, mis. `claude/work` + `claude/personal` beda PAT) + SpawnLogger. Boot wires `provider.NewSpawnLogger(layout.BaseDir)` ke `pool.ClaudeFactory.SpawnLogger`; tiap spawn dump 1 jsonl ke `<base>/providers/spawns/<type>__<name>__<session>__<unix-ms>.jsonl` (start + exit events). UI: nav baru `/tools/agents/providers` (status card per instance dgn LookPath + `--version`, edit binary path / extra args / env, add custom instance), spawn detail page; Overview tampil Active/Max + Running/Queue snapshot. **Selesai 2026-05-09**: 82 tests hijau across 22 pkg, `go build` clean. **Sisa**: real-claude smoke test, doc rewrite §4/§6/§9 mencerminkan pkg baru. |
 | Phase 5 — Slack Transport | `[x]` | Socket Mode + HTTP Event API, per-thread session binding, reaction lifecycle (⏳⚙️✅🚫❌), chunked reply (3800-char limit), rate-limit backoff, meta-commands (`/dashboard /reset /status /log /agent`), access control (everyone/users/groups), hot-reload watchSlackConfig (30s poll). Pkg `internal/agents/channels/`. Selesai di PR #209. |
 | Phase 6 — Polish | `[ ]` | — |
+| Phase 7 — Mid-session Gate Approval + AskUser | `[~]` | Stages 1–8 code-complete (166 unit tests hijau across 25 packages relevan). Whitelist-only gate diupgrade ke interactive approval via Unix socket (gate ↔ daemon) + web UI modal 4-mode (`approve_once`/`approve_session`/`approve_always`/`block`) + Approved-commands panel dgn Revoke. AskUser MCP tool wired (agent panggil → SSE → web card → POST /answer). Stage 8 follow-ups: multi-stage audit logging di commands.jsonl (received/socket_dial/socket_sent/socket_recv/terminal, semua di-tie via RequestID), Gate status card di Providers page, GateDisabledBanner di session detail, sibling-of-executable resolution. Sisa: real-claude smoke test (S5.8 + S6.6). Source: [command-gate-architecture.md](./command-gate-architecture.md). |
 
 ### Dependency graph
 
@@ -183,6 +184,8 @@ Phase 3 (gate)   Phase 4 (UI) ← entry point user dimulai sini
                 Phase 5 (slack)
                   ↓
                 Phase 6 (multi-CLI + polish)
+                  ↓
+                Phase 7 (mid-session approval + AskUser)
 ```
 
 Phase 3 dan 4 bisa parallel kalau ada 2 dev.
@@ -321,6 +324,50 @@ Tujuan: trigger agent dari Slack thread. Reaction lifecycle + final message + me
 - [ ] **6.9** Documentation user-facing (how-to: setup Slack, buat project, dll) → `docs/guide/agents.md`
 
 **Exit criteria**: 3 backend bekerja, retention jalan, doc user lengkap.
+
+### Phase 7 — Mid-session Gate Approval + AskUser
+
+> **Source of truth**: [command-gate-architecture.md](./command-gate-architecture.md). Doc itu detail-kan Unix socket protocol, IPC trade-off, embed strategy, VSCode debug flow. Sini cuma high-level + checklist mirror.
+
+Tujuan: phase 3 gate cuma whitelist binary (allow/block based on glob). Phase 7 tambah **interactive approval mid-turn** — kalau command tidak whitelisted, gate connect ke daemon via Unix socket, daemon broadcast SSE → web UI render modal dgn 4 mode. Plus `ask_user` MCP tool buat pertanyaan dari agent.
+
+**Decisions** (dipinjam dari command-gate-architecture.md §11):
+
+| # | Putusan | Alasan |
+|---|---|---|
+| G1 | Unix domain socket bukan HTTP/named pipe/file polling | Zero network exposure, performa terbaik (~0.1ms), implementasi 1-line ganti dari HTTP, akses dikontrol filesystem (chmod 0600 di session dir) |
+| G2 | Embed `wick-gate` ke main binary via `//go:embed`, extract ke session dir saat start | User download 1 file, version selalu sync, MSI logic tidak berubah. Trade-off ~2-5MB per platform di main binary acceptable |
+| G3 | 4 decision modes (`approve_once`/`approve_session`/`approve_always`/`block`) bukan 2 (approve/block) | "Setiap kali" bikin user fatigue; "always" perlu untuk command yg trusted. Session-level cocok untuk one-off task tanpa polusi global config |
+| G4 | `approve_always` persist di `gate/spec.json` field `auto_approved` — gate binary cek langsung tanpa round-trip ke daemon | Zero-latency hot-path; user yg klik "Always" experience-nya identik dgn whitelist asli |
+| G5 | `approve_session` in-memory map di daemon, hilang saat restart | Session-level scope, no persistence overhead, restart = clean slate (intentional) |
+| G6 | Timeout 25 detik di daemon (< 30s hook timeout claude) | Pastikan gate sempat exit bersih sebelum claude timeout dgn pesan ambigu |
+| G7 | Fail-safe block kalau daemon tidak respond / socket missing | Default deny lebih aman daripada default allow saat infra failure |
+| G8 | `ask_user` sebagai MCP tool (bukan harness `AskUserQuestion`) | Harness tool tidak tersedia di pipe mode (`-p`). MCP tool jalan di semua CLI yg attach ke wick MCP, blocking semantics native |
+| G9 | `WICK_GATE_BIN` env var override untuk dev (VSCode/`go run`) | Dev binary tidak ada embed; env var paling tidak invasif — tidak ubah resolve path code |
+
+**Checklist** (mirror dari command-gate-architecture.md §12, urut timeline; kelola progress detail di sana):
+
+```
+Stage 1 — Spec & Wiring (gate.Spec field SocketPath + AutoApproved, factory wire)
+Stage 2 — Daemon socket listener (per session, chmod 0600, sync.Map pending, 25s timeout)
+Stage 3 — wick-gate connect socket + auto_approved short-circuit + fail-safe
+Stage 4 — //go:embed + extractEmbeddedGate + resolveGateBin + CI build step
+Stage 5 — Web UI: SSE event types, POST /approve, modal 4-mode, Approved-commands panel + Revoke
+Stage 6 — ask_user MCP tool + SSE ask_user/_resolved + POST /answer + web card
+Stage 7 — VSCode dev tooling (debug:prep build gate, gate:sync-spec task, wicklab-gate launch)
+```
+
+- [x] **7.1** Stage 1 — gate.Spec extension (`SocketPath`, `AutoApproved`) + factory wire (`SocketDirFor`, `AutoApprovedFor`) + tests → `internal/agents/gate/claude_hook.go` + `internal/agents/pool/factory.go` + `factory_test.go`
+- [x] **7.2** Stage 2 — Unix socket listener + pending state mgr + ApprovalManager (session approve + persistent always-allow) → `internal/agents/gate/{socket,manager}.go`
+- [x] **7.3** Stage 3 — wick-gate socket client + auto_approved short-circuit + fail-safe → `cmd/wick-gate/main.go` + `internal/agents/gate/matchkey.go`
+- [x] **7.4** Stage 4 — `//go:embed` + `extractEmbeddedGate` + `ResolveGateBinary` + CI build step → `internal/agents/gate/embed.go` + `internal/agents/gate/assets/{.gitkeep,.gitignore}` + `template/.github/workflows/release.yml`
+- [x] **7.5** Stage 5 — SSE `approval_request`/`approval_resolved` + `POST /approve` + 4-mode modal + Approved-commands panel + Revoke → `internal/tools/agents/{handler,stream,approvals}.go` + `view/approvals.templ` + `js/agents.js`
+- [x] **7.6** Stage 6 — `ask_user` MCP tool + SSE `ask_user`/`ask_user_resolved` + `POST /answer` + inline card → `internal/agents/askuser/` + `internal/mcp/handler.go` (descriptor + dispatch + handleAskUser) + `internal/tools/agents/{askuser_handler.go,view/askuser.templ}`
+- [x] **7.7** Stage 7 — VSCode debug tooling: `debug: prep` build wick-gate sebagai sibling di `bin/`, `ResolveGateBinary` tambah sibling-of-executable step → wicklab pickup otomatis tanpa env. `wicklab-gate` standalone launch dihapus (gate gak bisa di-debug tanpa parent context — pakai `Debug Test` di VSCode untuk inspect logic) → `.vscode/{tasks,launch}.json` + `.env.example` + `internal/agents/gate/embed.go`
+- [x] **7.8** Stage 8 — Observability follow-ups (post-real-test debug): wick-gate emit per-stage audit trail ke `commands.jsonl` (received → socket_dial → socket_sent → socket_recv → terminal, di-tie via RequestID); Entry struct extend dgn Stage/Tool/Decision/RequestID/MatchKey; `ResolveGateBinaryWithSource` return source label; Providers page punya GateStatusCard (enabled+binary+source vs disabled+reason+fallback note); SessionDetail tampil GateDisabledBanner kalau gate gak resolved → `internal/agents/gate/{log,embed}.go` + `cmd/wick-gate/main.go` + `internal/tools/agents/{providers,handler}.go` + `view/{approvals,providers,sessions}.templ`
+- [ ] **7.9** Smoke test manual: claude jalanin command unlisted → modal muncul → klik tiap mode → behavior konsisten (once tetap muncul, session auto setelah ke-2, always persist after restart). ask_user → card muncul → user pilih → agent terima jawaban. **Belum dijalankan** — manual + butuh real claude binary.
+
+**Exit criteria**: gate punya 4 decision mode dari web UI, `approve_always` survive restart, `approve_session` reset on restart, `ask_user` MCP tool jalan end-to-end (claude ask → web answer → claude lanjut).
 
 ---
 
@@ -699,7 +746,7 @@ Pool mengatur jumlah subprocess agent yang berjalan bersamaan, lintas semua sess
 
 ### 4.5 Command Gate
 
-> **Status**: Claude implementation landed in commit `<phase-3>`. Codex / Gemini variants pending phase 6.
+> **Status**: Claude whitelist gate landed in phase 3. Codex/Gemini variants pending phase 6. **Mid-session interactive approval + AskUser MCP tool pending phase 7** — design lengkap di [command-gate-architecture.md](./command-gate-architecture.md).
 
 Semua tiga CLI support **pre-execution hooks** — hook dipanggil sebelum command dijalankan, bisa return allow atau block. Wick memanfaatkan ini untuk whitelist enforcement.
 

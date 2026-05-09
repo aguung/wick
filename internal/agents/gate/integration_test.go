@@ -95,7 +95,7 @@ func TestWickGate_Allow(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit: got %d, want 0 (allow)", exit)
 	}
-	entries := readCommands(t, layout, "S1")
+	entries := terminalOnly(readCommands(t, layout, "S1"))
 	if len(entries) != 1 || entries[0].Status != "allowed" || entries[0].Cmd != "ls -la" {
 		t.Fatalf("commands.jsonl: %+v", entries)
 	}
@@ -112,7 +112,7 @@ func TestWickGate_BlockUnlistedCommand(t *testing.T) {
 	if !strings.Contains(stderr, "blocked") {
 		t.Errorf("stderr should mention block: %q", stderr)
 	}
-	entries := readCommands(t, layout, "S1")
+	entries := terminalOnly(readCommands(t, layout, "S1"))
 	if len(entries) != 1 || entries[0].Status != "blocked" || entries[0].Cmd != "rm -rf ." {
 		t.Fatalf("commands.jsonl: %+v", entries)
 	}
@@ -127,9 +127,51 @@ func TestWickGate_BlockShellMetacharOnAllowedRule(t *testing.T) {
 	if exit != 2 {
 		t.Fatalf("metachar should block: exit %d", exit)
 	}
-	entries := readCommands(t, layout, "S1")
+	entries := terminalOnly(readCommands(t, layout, "S1"))
 	if len(entries) != 1 || !strings.Contains(entries[0].Reason, "metacharacter") {
 		t.Fatalf("entry: %+v", entries)
+	}
+}
+
+// TestWickGate_AuditTrailLogged: every invocation must emit a
+// "received" stage + a terminal status row. Without the stage row,
+// operators have no way to tell wick-gate-fired-but-failed apart
+// from wick-gate-never-ran. The terminal row is what the UI shows;
+// the stage row is the audit trail.
+func TestWickGate_AuditTrailLogged(t *testing.T) {
+	bin, layout, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+	exit, _ := runGate(t, bin, specPath,
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"}}`)
+	if exit != 0 {
+		t.Fatalf("exit: got %d", exit)
+	}
+
+	all := readCommands(t, layout, "S1")
+	var sawReceived, sawTerminal bool
+	var requestID string
+	for _, e := range all {
+		if e.Stage == "received" {
+			sawReceived = true
+			requestID = e.RequestID
+		}
+		if e.Status == "allowed" {
+			sawTerminal = true
+			if e.RequestID != requestID && requestID != "" {
+				t.Errorf("RequestID mismatch: stage=%q terminal=%q", requestID, e.RequestID)
+			}
+			if e.MatchKey == "" {
+				t.Errorf("terminal entry missing MatchKey")
+			}
+			if e.Tool != "Bash" {
+				t.Errorf("terminal entry tool: %q", e.Tool)
+			}
+		}
+	}
+	if !sawReceived {
+		t.Errorf("expected at least one stage=received entry, got: %+v", all)
+	}
+	if !sawTerminal {
+		t.Errorf("expected at least one terminal status=allowed entry, got: %+v", all)
 	}
 }
 
@@ -203,6 +245,19 @@ func readCommands(t *testing.T, layout config.Layout, sessionID string) []gate.E
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+// terminalOnly drops audit-trail "stage=..." entries so tests can
+// assert just the user-visible decision row. wick-gate emits one
+// terminal entry (Status=allowed|blocked, no Stage) per invocation.
+func terminalOnly(entries []gate.Entry) []gate.Entry {
+	out := make([]gate.Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Stage == "" && e.Status != "" {
+			out = append(out, e)
+		}
 	}
 	return out
 }
