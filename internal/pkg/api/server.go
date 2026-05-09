@@ -258,19 +258,25 @@ func NewServer() *Server {
 		killAfterIdleSec = n
 	}
 
-	// Wire command gate when gate_enabled=true. The wick-gate binary is
-	// resolved next to the running executable, then falls back to PATH.
-	// Gate config is read at boot; rule changes require a server restart.
-	if configsSvc.GetOwned("agents", "gate_enabled") == "true" {
-		if bin := resolveWickGateBin(); bin != "" {
-			rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
-			agentsFactory.Gate = &agentpool.GateConfig{
-				WickGateBinary: bin,
-				Rules:          rules,
-			}
-			log.Info().Str("bin", bin).Int("rules", len(rules)).Msg("agents: command gate enabled")
-		} else {
-			log.Warn().Msg("agents: gate_enabled=true but wick-gate binary not found — gate disabled (build cmd/wick-gate or put it in PATH)")
+	// GateLoader is evaluated on every agent spawn so UI changes to
+	// gate_enabled / allowed_cmds take effect immediately without
+	// requiring a server restart.
+	gateBin := resolveWickGateBin()
+	if gateBin == "" {
+		log.Warn().Msg("agents: wick-gate binary not found — gate will be disabled even if gate_enabled=true (build cmd/wick-gate or put it in PATH)")
+	}
+	agentsFactory.GateLoader = func() *agentpool.GateConfig {
+		if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
+			return nil
+		}
+		if gateBin == "" {
+			return nil
+		}
+		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
+		log.Debug().Int("rules", len(rules)).Msg("agents: gate active for spawn")
+		return &agentpool.GateConfig{
+			WickGateBinary: gateBin,
+			Rules:          rules,
 		}
 	}
 	agentsPool = agentpool.New(agentpool.PoolConfig{
