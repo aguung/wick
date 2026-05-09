@@ -14,6 +14,7 @@ import (
 	"github.com/yogasw/wick/internal/configs"
 	"github.com/yogasw/wick/internal/enc"
 	"github.com/yogasw/wick/internal/entity"
+	"github.com/yogasw/wick/internal/metrics"
 	"github.com/yogasw/wick/pkg/connector"
 )
 
@@ -101,6 +102,10 @@ type Service struct {
 	// found in the input/credential maps before calling the connector,
 	// and auto-encrypts sensitive plaintext appearing in the response.
 	enc *enc.Service
+
+	// metrics records connector run telemetry. Defaults to Noop when
+	// not wired — safe to call unconditionally.
+	metrics metrics.Recorder
 }
 
 // SetEnc wires the encrypted-fields cipher in after construction. Call
@@ -128,7 +133,19 @@ func NewService(r *Repo) *Service {
 		repo:       r,
 		httpClient: connector.NewHTTPClient(),
 		modules:    make(map[string]connector.Module),
+		metrics:    metrics.Noop{},
 	}
+}
+
+// SetMetrics wires a telemetry recorder into the service. Call once at
+// boot before the server starts accepting requests. Passing nil is safe
+// — the Noop recorder is used instead.
+func (s *Service) SetMetrics(rec metrics.Recorder) {
+	if rec == nil {
+		s.metrics = metrics.Noop{}
+		return
+	}
+	s.metrics = rec
 }
 
 // NewServiceFromDB is a convenience constructor for the web server and
@@ -574,6 +591,7 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 		masker.add(collectSensitiveValues(mod, op, configs, input))
 	}
 
+	s.metrics.IncActive()
 	startedAt := time.Now()
 	run := &entity.ConnectorRun{
 		ConnectorID:  c.ID,
@@ -644,6 +662,8 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 	if err := s.repo.FinishRun(ctx, run.ID, res.Status, res.ResponseJSON, res.ErrorMessage, latencyMs, 0); err != nil {
 		return res, fmt.Errorf("finish run: %w", err)
 	}
+	s.metrics.DecActive()
+	s.metrics.RecordRun(c.Key, op.Key, string(res.Status), latencyMs)
 	return res, execErr
 }
 
