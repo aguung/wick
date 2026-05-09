@@ -11,10 +11,12 @@ package agents
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -160,6 +162,12 @@ func (h *Handler) createSession(c *tool.Ctx) {
 		c.Error(http.StatusInternalServerError, "failed to create session")
 		return
 	}
+	// Ensure workspace dir exists — claude spawn sets cmd.Dir to this
+	// path and fails with ENOENT when it's missing (no project attached).
+	wsDir := filepath.Join(h.layout.SessionDir(id), "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		log.Warn().Err(err).Str("session", id).Msg("agents: mkdir workspace")
+	}
 	// Refresh in-memory registry.
 	_ = h.mgr.Registry().Reload()
 	c.Redirect(c.Base()+"/sessions/"+id, http.StatusSeeOther)
@@ -191,7 +199,18 @@ func (h *Handler) send(c *tool.Ctx) {
 		agentName = "default"
 	}
 
-	if err := h.pool.Send(c.Context(), id, agentName, "ui", "user", text); err != nil {
+	// Ensure workspace dir exists before handing off to pool — claude
+	// spawn will chdir there and fail with ENOENT otherwise.
+	wsDir := filepath.Join(h.layout.SessionDir(id), "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		log.Warn().Err(err).Str("session", id).Msg("agents: mkdir workspace on send")
+	}
+
+	// Use context.Background — the subprocess must outlive this request.
+	// Passing c.Context() would kill the claude process the instant the
+	// HTTP handler returns (Go cancels the request context on ServeHTTP
+	// return), leaving "Waiting for agent…" forever on the client.
+	if err := h.pool.Send(context.Background(), id, agentName, "ui", "user", text); err != nil {
 		log.Error().Err(err).Str("session", id).Msg("agents: pool.Send")
 		c.Error(http.StatusInternalServerError, fmt.Sprintf("send failed: %s", err.Error()))
 		return
@@ -214,6 +233,10 @@ func (h *Handler) deleteSession(c *tool.Ctx) {
 
 // stream is the SSE endpoint. Clients connect once per session detail
 // page and receive events until they disconnect or the server shuts down.
+//
+// Uses http.NewResponseController instead of a direct http.Flusher
+// assertion so it works even when the ResponseWriter is wrapped by
+// logging or auth middleware (which is always the case here).
 func (h *Handler) stream(c *tool.Ctx) {
 	sessionID := c.Query("session")
 	if sessionID == "" {
@@ -222,11 +245,10 @@ func (h *Handler) stream(c *tool.Ctx) {
 	}
 
 	w := c.W
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		c.Error(http.StatusInternalServerError, "streaming not supported")
-		return
-	}
+	rc := http.NewResponseController(w)
+	// Remove the server-level write deadline so the long-lived SSE
+	// connection isn't killed by the 60 s WriteTimeout.
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -236,10 +258,9 @@ func (h *Handler) stream(c *tool.Ctx) {
 	ch, unsub := h.hub.Subscribe(sessionID)
 	defer unsub()
 
-	// Send a keepalive comment immediately so the browser knows the
-	// connection is open.
+	// Keepalive comment so the browser sees the connection as open.
 	fmt.Fprintf(w, ": connected\n\n")
-	flusher.Flush()
+	_ = rc.Flush()
 
 	ctx := c.Context()
 	ticker := time.NewTicker(25 * time.Second)
@@ -254,10 +275,10 @@ func (h *Handler) stream(c *tool.Ctx) {
 				return
 			}
 			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			_ = rc.Flush()
 		case <-ticker.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
+			_ = rc.Flush()
 		}
 	}
 }
