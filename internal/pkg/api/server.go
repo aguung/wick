@@ -258,6 +258,10 @@ func NewServer() *Server {
 		killAfterIdleSec = n
 	}
 
+	agentsFactory.BypassPermissionsLoader = func() bool {
+		return configsSvc.GetOwned("agents", "bypass_permissions") == "true"
+	}
+
 	// GateLoader is evaluated on every agent spawn so UI changes to
 	// gate_enabled / allowed_cmds take effect immediately without
 	// requiring a server restart.

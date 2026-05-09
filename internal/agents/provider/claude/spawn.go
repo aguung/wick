@@ -40,6 +40,10 @@ import (
 type Spawner struct {
 	Binary       string // empty → "claude"
 	SettingsPath string // empty → no --settings flag
+	// BypassPermissions forces --permission-mode bypassPermissions even
+	// when no gate settings file is present. Use when running Claude in
+	// non-interactive contexts (Slack/HTTP) without a gate configured.
+	BypassPermissions bool
 	// ExtraArgs is appended after the canonical headless flags, before
 	// any caller-supplied ResumeID. Useful for tests / debugging
 	// (--debug, --verbose-extra, ...).
@@ -87,6 +91,8 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		// hook is the sole allow/block authority.
 		args = append(args, "--permission-mode", "bypassPermissions")
 		args = append(args, "--settings", s.SettingsPath)
+	} else if s.BypassPermissions {
+		args = append(args, "--permission-mode", "bypassPermissions")
 	}
 	args = append(args, s.ExtraArgs...)
 	if opt.ResumeID != "" {

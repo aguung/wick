@@ -8,7 +8,8 @@ type GeneralConfig struct {
 	MaxConcurrent   int    `wick:"number;desc=Max concurrent agent subprocesses. Default: 2."`
 	IdleTimeoutSec  int    `wick:"number;desc=Seconds of inactivity before subprocess is killed. Default: 120."`
 	DefaultProvider string `wick:"dropdown=claude|codex|gemini;desc=Default CLI provider."`
-	KillAfterIdleSec int    `wick:"number;desc=Extra seconds after idle timeout before the subprocess is killed. 0 = kill immediately at idle timeout. Default: 0."`
+	BypassPermissions bool   `wick:"checkbox;desc=Always pass --permission-mode bypassPermissions to Claude. Enable this if Claude prompts for permission in Slack/HTTP sessions and no gate is configured."`
+	KillAfterIdleSec  int    `wick:"number;desc=Extra seconds after idle timeout before the subprocess is killed. 0 = kill immediately at idle timeout. Default: 0."`
 	GateEnabled     bool   `wick:"checkbox;desc=Enable command gate (wick-gate). When on, only patterns in the list below are allowed; everything else is auto-blocked."`
 	AllowedCmds     string `wick:"kvlist=pattern|scope;desc=Command whitelist. pattern supports a trailing * wildcard (e.g. 'git *'). scope (optional) restricts path args to a directory prefix."`
 	PublicURL       string `wick:"url;desc=Public base URL of this wick instance. Used for the dashboard meta-command."`

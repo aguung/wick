@@ -39,6 +39,12 @@ type ClaudeFactory struct {
 	// over Gate when non-nil. This lets operators toggle gate_enabled
 	// or edit AllowedCmds in the UI without restarting the server.
 	GateLoader func() *GateConfig
+	// BypassPermissionsLoader (optional) is called on every Build to
+	// check whether --permission-mode bypassPermissions should be added
+	// when no gate is active. Useful for non-interactive channels
+	// (Slack, HTTP) where the operator wants to skip prompts without
+	// enabling the full command gate.
+	BypassPermissionsLoader func() bool
 
 	// SpawnLogger (optional) writes one jsonl per spawn under
 	// `<base>/backends/spawns/`. Each spawn emits `start` on Build +
@@ -74,9 +80,13 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		RecordRaw: f.RecordRaw,
 	})
 
+	bypassPerms := false
+	if f.BypassPermissionsLoader != nil {
+		bypassPerms = f.BypassPermissionsLoader()
+	}
 	spawner := f.Spawner
 	if spawner == nil {
-		spawner = claude.Spawner{}
+		spawner = claude.Spawner{BypassPermissions: bypassPerms}
 	}
 
 	// Resolve active gate config: dynamic loader takes precedence so
