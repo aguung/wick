@@ -172,6 +172,9 @@ func ResolveDBPath(appName, customPath string) {
 	if err != nil {
 		return
 	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
 	dbPath := filepath.Join(dir, "wick.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		if legacy, lerr := legacyDBPath(appName); lerr == nil {
@@ -209,9 +212,26 @@ func binaryName() string {
 	return name
 }
 
+// hiddenName turns an app name into a path-safe hidden directory name.
+// Slugifies: lowercase, spaces → "-", strips chars that break Windows
+// paths (< > : " / \ | ? *) and leading dots. "My App" → ".my-app".
 func hiddenName(name string) string {
 	name = filepath.Base(strings.TrimSpace(name))
 	name = strings.TrimLeft(name, ".")
+	name = strings.ToLower(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r == ' ' || r == '\t':
+			b.WriteByte('-')
+		case r == '<' || r == '>' || r == ':' || r == '"' || r == '/' || r == '\\' || r == '|' || r == '?' || r == '*':
+			// drop
+		default:
+			b.WriteRune(r)
+		}
+	}
+	name = strings.Trim(b.String(), "-.")
 	if name == "" {
 		name = "wick"
 	}
