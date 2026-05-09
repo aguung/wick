@@ -14,7 +14,7 @@ templ WorkspacesPage(vm WorkspacesVM) {
 			<div id="create-workspace-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
 				<div class="w-full max-w-md rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-6 shadow-xl mx-4">
 					<h2 class="mb-4 text-base font-semibold text-black-900 dark:text-white-100">New Workspace</h2>
-					<form method="POST" action={ templ.SafeURL(vm.Base + "/workspaces") } class="space-y-4">
+					<form method="POST" action={ templ.SafeURL(vm.Base + "/workspaces") } data-create-workspace-form class="space-y-4">
 						<div>
 							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Name <span class="text-red-500">*</span></label>
 							<input
@@ -26,14 +26,42 @@ templ WorkspacesPage(vm WorkspacesVM) {
 							/>
 						</div>
 						<div>
-							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Custom Path (optional)</label>
-							<input
-								type="text"
-								name="custom_path"
-								placeholder="/abs/path/to/existing/folder"
-								class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100 focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 focus:outline-none"
-							/>
-							<p class="mt-1 text-xs text-black-600 dark:text-black-700">Leave empty to use a managed folder under the wick base directory.</p>
+							<label class="flex items-center gap-2 text-xs font-medium text-black-800 dark:text-black-600 mb-1 cursor-pointer">
+								<input
+									type="checkbox"
+									data-custom-path-toggle
+									class="h-4 w-4 rounded border-white-400 dark:border-navy-600 text-green-500 focus:ring-green-500"
+								/>
+								Use custom folder on disk
+							</label>
+							<div data-custom-path-fields class="hidden mt-2 space-y-2">
+								<div class="flex gap-2">
+									<input
+										type="text"
+										name="custom_path"
+										data-custom-path-input
+										placeholder="D:/code/your-folder"
+										class="flex-1 rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm font-mono text-black-900 dark:text-white-100 focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 focus:outline-none"
+									/>
+									<label class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 cursor-pointer transition-colors whitespace-nowrap">
+										Choose…
+										<input
+											type="file"
+											data-folder-picker
+											webkitdirectory
+											directory
+											multiple
+											class="hidden"
+										/>
+									</label>
+								</div>
+								<p data-custom-path-error class="hidden text-xs text-red-600 dark:text-red-400"></p>
+								<div class="rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-2.5 text-xs text-amber-800 dark:text-amber-300">
+									<p class="font-medium mb-1">⚠️ Browser limitation</p>
+									<p>For security, browsers do not expose absolute paths. The picker only fills in the <strong>folder name</strong> — you must prefix the parent path manually.</p>
+									<p class="mt-1.5">Example: picker → <code class="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">work</code> → edit to <code class="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">D:/code/work</code></p>
+								</div>
+							</div>
 						</div>
 						<div>
 							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Default Preset</label>

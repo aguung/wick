@@ -193,6 +193,108 @@
       });
     }
 
+    // ── Workspace custom path: toggle + folder picker ─────────────────
+    var customToggle = document.querySelector("[data-custom-path-toggle]");
+    var customFields = document.querySelector("[data-custom-path-fields]");
+    var customInput = document.querySelector("[data-custom-path-input]");
+    if (customToggle && customFields && customInput) {
+      customToggle.addEventListener("change", function () {
+        if (customToggle.checked) {
+          customFields.classList.remove("hidden");
+        } else {
+          customFields.classList.add("hidden");
+          customInput.value = "";
+        }
+      });
+    }
+
+    // Native folder picker (webkitdirectory). Browser only exposes
+    // File.webkitRelativePath (e.g. "myfolder/sub/file.txt"), so we
+    // grab the first segment as the chosen folder name and let the
+    // user complete the absolute parent path themselves. This keeps
+    // the picker honest about what the browser will give us.
+    var folderPicker = document.querySelector("[data-folder-picker]");
+    var customErr = document.querySelector("[data-custom-path-error]");
+    var createForm = document.querySelector("[data-create-workspace-form]");
+
+    function isAbsolutePath(p) {
+      if (!p) return false;
+      // POSIX: starts with /
+      if (p.charAt(0) === "/") return true;
+      // Windows: C:\, D:/, \\server\share
+      if (/^[A-Za-z]:[\\/]/.test(p)) return true;
+      if (p.indexOf("\\\\") === 0) return true;
+      return false;
+    }
+
+    function showCustomErr(msg) {
+      if (!customErr) return;
+      customErr.textContent = msg;
+      customErr.classList.remove("hidden");
+      if (customInput) {
+        customInput.classList.add("border-red-500", "dark:border-red-700");
+        customInput.classList.remove("border-white-400", "dark:border-navy-600");
+      }
+    }
+
+    function clearCustomErr() {
+      if (!customErr) return;
+      customErr.classList.add("hidden");
+      if (customInput) {
+        customInput.classList.remove("border-red-500", "dark:border-red-700");
+        customInput.classList.add("border-white-400", "dark:border-navy-600");
+      }
+    }
+
+    if (folderPicker && customInput) {
+      folderPicker.addEventListener("change", function () {
+        var files = folderPicker.files;
+        if (!files || !files.length) return;
+        var rel = files[0].webkitRelativePath || files[0].name;
+        var folderName = rel.split("/")[0];
+        if (!folderName) return;
+        // Preserve existing parent path if user already typed one.
+        var current = customInput.value.trim();
+        if (current && (current.endsWith("/") || current.endsWith("\\"))) {
+          customInput.value = current + folderName;
+        } else {
+          customInput.value = folderName;
+          showCustomErr(
+            "Add the absolute parent path before \"" + folderName + "\" (e.g. D:/code/" + folderName + ")."
+          );
+        }
+        customInput.focus();
+        // Reset the input so picking the same folder again still fires change.
+        folderPicker.value = "";
+        if (isAbsolutePath(customInput.value.trim())) clearCustomErr();
+      });
+
+      customInput.addEventListener("input", function () {
+        var v = customInput.value.trim();
+        if (!v || isAbsolutePath(v)) clearCustomErr();
+      });
+    }
+
+    if (createForm && customToggle && customInput) {
+      createForm.addEventListener("submit", function (e) {
+        if (!customToggle.checked) return;
+        var v = customInput.value.trim();
+        if (!v) {
+          e.preventDefault();
+          showCustomErr("Custom path is required when the toggle is on.");
+          customInput.focus();
+          return;
+        }
+        if (!isAbsolutePath(v)) {
+          e.preventDefault();
+          showCustomErr("Path must be absolute (e.g. D:/code/work or /home/user/work).");
+          customInput.focus();
+          return;
+        }
+        clearCustomErr();
+      });
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
     function resolveBase() {
       if (base) return base;
