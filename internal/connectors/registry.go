@@ -20,6 +20,7 @@ package connectors
 import (
 	"github.com/yogasw/wick/internal/connectors/crudcrud"
 	"github.com/yogasw/wick/internal/connectors/github"
+	"github.com/yogasw/wick/internal/connectors/httprest"
 	"github.com/yogasw/wick/pkg/connector"
 	"github.com/yogasw/wick/pkg/entity"
 )
@@ -50,6 +51,11 @@ func RegisterBuiltins() {
 			Meta:       github.Meta(),
 			Configs:    entity.StructToConfigs(github.Configs{}),
 			Operations: github.Operations(),
+    },
+	  connector.Module{
+			Meta:       httprest.Meta(),
+			Configs:    entity.StructToConfigs(httprest.Configs{}),
+			Operations: httprest.Operations(),
 		},
 	)
 }
