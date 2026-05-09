@@ -82,13 +82,10 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if opt.Workspace != "" {
 		args = append(args, "--add-dir", opt.Workspace)
 	}
-	// wick always runs Claude in a non-interactive automated context
-	// (Slack, HTTP, MCP). bypassPermissions suppresses interactive
-	// permission prompts so they never block a headless session. When
-	// gate is enabled, the PreToolUse hook is the authoritative
-	// allow/block decision; without gate, all tools are permitted.
-	args = append(args, "--permission-mode", "bypassPermissions")
 	if s.SettingsPath != "" {
+		// Gate is active: bypass interactive prompts so the PreToolUse
+		// hook is the sole allow/block authority.
+		args = append(args, "--permission-mode", "bypassPermissions")
 		args = append(args, "--settings", s.SettingsPath)
 	}
 	args = append(args, s.ExtraArgs...)
