@@ -52,9 +52,13 @@ type Connector struct {
 	Key       string `gorm:"type:varchar(100);index;not null"`
 	Label     string `gorm:"type:varchar(255);not null"`
 	Disabled  bool   `gorm:"default:false"`
-	CreatedBy string `gorm:"type:varchar(36)"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// RateLimitRPM caps how many times this connector instance may be
+	// called per minute across all users. 0 means unlimited. Enforced
+	// in-process via a sliding-window counter — not distributed.
+	RateLimitRPM int    `gorm:"default:0"`
+	CreatedBy    string `gorm:"type:varchar(36)"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (c *Connector) BeforeCreate(tx *gorm.DB) error {

@@ -28,6 +28,7 @@ func (h *Handler) connectorRoutes(mux *http.ServeMux, authMidd *login.Middleware
 	mux.Handle("POST /manager/connectors/{key}/{id}/label", auth(h.setConnectorLabel))
 	mux.Handle("POST /manager/connectors/{key}/{id}/configs/{configKey}", auth(h.setConnectorConfig))
 	mux.Handle("POST /manager/connectors/{key}/{id}/disable", auth(h.toggleConnectorDisabled))
+	mux.Handle("POST /manager/connectors/{key}/{id}/rate-limit", auth(h.setConnectorRateLimit))
 	mux.Handle("POST /manager/connectors/{key}/{id}/duplicate", auth(h.duplicateConnector))
 	mux.Handle("POST /manager/connectors/{key}/{id}/delete", auth(h.deleteConnector))
 	mux.Handle("POST /manager/connectors/{key}/{id}/operations/{opKey}", auth(h.toggleConnectorOperation))
@@ -346,6 +347,28 @@ func (h *Handler) toggleConnectorDisabled(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.connectors.SetDisabled(ctx, row.ID, !row.Disabled); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/manager/connectors/"+key+"/"+row.ID, http.StatusFound)
+}
+
+func (h *Handler) setConnectorRateLimit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := login.GetUser(ctx)
+	key := r.PathValue("key")
+	id := r.PathValue("id")
+
+	row, err := h.connectors.Get(ctx, id)
+	if err != nil || row.Key != key || !h.canSeeRow(r, user, row.ID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	rpm, _ := strconv.Atoi(r.FormValue("rpm"))
+	if rpm < 0 {
+		rpm = 0
+	}
+	if err := h.connectors.SetRateLimit(ctx, row.ID, rpm); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

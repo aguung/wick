@@ -235,6 +235,16 @@ func (r *Repo) SetDisabled(ctx context.Context, id string, disabled bool) error 
 		}).Error
 }
 
+// SetRateLimit updates the per-minute call cap for a connector instance.
+// Pass 0 to remove the limit.
+func (r *Repo) SetRateLimit(ctx context.Context, id string, rpm int) error {
+	return r.db.WithContext(ctx).Model(&entity.Connector{}).Where("id = ?", id).
+		Updates(map[string]any{
+			"rate_limit_rpm": rpm,
+			"updated_at":     time.Now(),
+		}).Error
+}
+
 // Delete hard-deletes a connector row plus its operation toggles. Run
 // history is intentionally preserved — deleting a connector should not
 // retroactively erase the audit trail. The retention job purges old

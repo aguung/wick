@@ -86,6 +86,7 @@ func (s *Service) RowConfigs(c entity.Connector) []entity.Config {
 type Service struct {
 	repo       *Repo
 	httpClient *http.Client
+	rl         *rateLimiter
 
 	mu      sync.RWMutex
 	modules map[string]connector.Module // key -> registered module
@@ -133,6 +134,7 @@ func NewService(r *Repo) *Service {
 		repo:       r,
 		httpClient: connector.NewHTTPClient(),
 		modules:    make(map[string]connector.Module),
+		rl:         newRateLimiter(),
 		metrics:    metrics.Noop{},
 	}
 }
@@ -387,6 +389,12 @@ func (s *Service) SetDisabled(ctx context.Context, id string, disabled bool) err
 	return s.repo.SetDisabled(ctx, id, disabled)
 }
 
+// SetRateLimit updates the calls-per-minute cap for a connector instance.
+// Pass 0 to remove the limit.
+func (s *Service) SetRateLimit(ctx context.Context, id string, rpm int) error {
+	return s.repo.SetRateLimit(ctx, id, rpm)
+}
+
 // Delete hard-deletes the connector row plus its operation toggles
 // and its per-field config rows. Run history is intentionally
 // preserved for audit.
@@ -533,6 +541,10 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 	}
 	if c.Disabled {
 		return nil, fmt.Errorf("connector %q is disabled", c.ID)
+	}
+
+	if err := s.rl.Allow(c.ID, c.RateLimitRPM); err != nil {
+		return nil, err
 	}
 
 	mod, ok := s.Module(c.Key)
