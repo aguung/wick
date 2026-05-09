@@ -384,20 +384,18 @@
       btn.addEventListener("click", function (e) {
         e.stopPropagation();
         var id = btn.dataset.deleteSession;
-        confirmAt(btn, "Delete this session? This cannot be undone.", { confirmLabel: "Delete" }).then(function (ok) {
-          if (!ok) return;
-          var b = base || document.querySelector("[data-base]")?.dataset.base;
-          if (!b) return;
-          fetch(b + "/sessions/" + encodeURIComponent(id), { method: "DELETE" })
-            .then(function () {
-              if (window.location.pathname.includes("/sessions/" + id)) {
-                window.location.href = b + "/sessions";
-              } else {
-                location.reload();
-              }
-            })
-            .catch(function (err) { console.error("delete session failed:", err); });
-        });
+        if (!confirm("Delete this session? This cannot be undone.")) return;
+        var b = base || document.querySelector("[data-base]")?.dataset.base;
+        if (!b) return;
+        fetch(b + "/sessions/" + encodeURIComponent(id), { method: "DELETE" })
+          .then(function () {
+            if (window.location.pathname.includes("/sessions/" + id)) {
+              window.location.href = b + "/sessions";
+            } else {
+              location.reload();
+            }
+          })
+          .catch(function (err) { console.error("delete session failed:", err); });
       });
     });
 
