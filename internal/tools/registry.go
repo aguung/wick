@@ -21,6 +21,7 @@ import (
 	pkgentity "github.com/yogasw/wick/pkg/entity"
 
 	converttext "github.com/yogasw/wick/internal/tools/convert-text"
+	"github.com/yogasw/wick/internal/tools/agents"
 	"github.com/yogasw/wick/internal/tools/encfields"
 	"github.com/yogasw/wick/internal/tools/external"
 
@@ -63,6 +64,18 @@ func init() {
 // Intended for the wick lab binary (cmd/lab) — downstream projects
 // start with an empty registry and register only their own tools.
 func RegisterBuiltins() {
+	agentsHandler := agents.New()
+	extra = append(extra, tool.Module{
+		Meta: tool.Tool{
+			Key:               "agents",
+			Name:              "Agents",
+			Description:       "Manage Claude agent sessions: create sessions, send messages, and watch responses in real-time.",
+			Icon:              "🤖",
+			Category:          "AI",
+			DefaultVisibility: entity.VisibilityPrivate,
+		},
+		Register: agentsHandler.Register,
+	})
 	extra = append(extra, tool.Module{
 		Meta: tool.Tool{
 			Key:               "convert-text",

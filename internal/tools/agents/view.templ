@@ -1,0 +1,232 @@
+package agents
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/yogasw/wick/internal/agents/session"
+	"github.com/yogasw/wick/internal/agents/store"
+)
+
+// OverviewPage is the landing page for the Agents tool.
+templ OverviewPage(base string, active, queued, total int, recent []session.Session) {
+	<main class="mx-auto w-full max-w-container px-6 py-8">
+		<div class="flex items-center justify-between">
+			<h1 class="text-xl font-semibold text-black-900 dark:text-white-100">Agents</h1>
+			<form method="POST" action={ templ.SafeURL(base + "/sessions") }>
+				<button type="submit" class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600">New Session</button>
+			</form>
+		</div>
+
+		<!-- Stats -->
+		<div class="mt-6 grid grid-cols-3 gap-4">
+			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-4 shadow-sm">
+				<p class="text-sm text-black-700 dark:text-black-600">Active</p>
+				<p class="mt-1 text-2xl font-semibold text-black-900 dark:text-white-100">{ fmt.Sprintf("%d", active) }</p>
+			</div>
+			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-4 shadow-sm">
+				<p class="text-sm text-black-700 dark:text-black-600">Queued</p>
+				<p class="mt-1 text-2xl font-semibold text-black-900 dark:text-white-100">{ fmt.Sprintf("%d", queued) }</p>
+			</div>
+			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-4 shadow-sm">
+				<p class="text-sm text-black-700 dark:text-black-600">Total Sessions</p>
+				<p class="mt-1 text-2xl font-semibold text-black-900 dark:text-white-100">{ fmt.Sprintf("%d", total) }</p>
+			</div>
+		</div>
+
+		<!-- Recent sessions -->
+		<section class="mt-8">
+			<div class="flex items-center justify-between">
+				<h2 class="text-base font-semibold text-black-900 dark:text-white-100">Recent Sessions</h2>
+				<a href={ templ.SafeURL(base + "/sessions") } class="text-sm text-green-600 hover:underline">View all</a>
+			</div>
+			if len(recent) == 0 {
+				<p class="mt-4 text-sm text-black-700 dark:text-black-600">No sessions yet. Create one above.</p>
+			} else {
+				@sessionsTable(base, recent)
+			}
+		</section>
+	</main>
+}
+
+// SessionsPage lists all sessions.
+templ SessionsPage(base string, sessions []session.Session) {
+	<main class="mx-auto w-full max-w-container px-6 py-8">
+		<div class="flex items-center justify-between">
+			<h1 class="text-xl font-semibold text-black-900 dark:text-white-100">Sessions</h1>
+			<form method="POST" action={ templ.SafeURL(base + "/sessions") }>
+				<button type="submit" class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600">New Session</button>
+			</form>
+		</div>
+		<div class="mt-6">
+			if len(sessions) == 0 {
+				<p class="text-sm text-black-700 dark:text-black-600">No sessions yet.</p>
+			} else {
+				@sessionsTable(base, sessions)
+			}
+		</div>
+	</main>
+}
+
+templ sessionsTable(base string, sessions []session.Session) {
+	<div class="mt-4 overflow-hidden rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
+					<th class="px-4 py-3 text-left font-medium text-black-800 dark:text-black-600">Session ID</th>
+					<th class="px-4 py-3 text-left font-medium text-black-800 dark:text-black-600">Status</th>
+					<th class="px-4 py-3 text-left font-medium text-black-800 dark:text-black-600">Agent</th>
+					<th class="px-4 py-3 text-left font-medium text-black-800 dark:text-black-600">Last Active</th>
+					<th class="px-4 py-3 text-right font-medium text-black-800 dark:text-black-600">Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, s := range sessions {
+					<tr class="border-b border-white-300 dark:border-navy-600 last:border-0">
+						<td class="px-4 py-3 font-mono text-xs text-black-900 dark:text-white-100">
+							<a href={ templ.SafeURL(base + "/sessions/" + s.ID) } class="hover:text-green-600">{ shortSessionID(s.ID) }</a>
+						</td>
+						<td class="px-4 py-3">
+							@sessionStatusBadge(s.Meta.Status)
+						</td>
+						<td class="px-4 py-3 text-black-800 dark:text-black-600">
+							if s.Meta.ActiveAgent != "" {
+								{ s.Meta.ActiveAgent }
+							} else {
+								<span class="text-black-700 dark:text-black-600">—</span>
+							}
+						</td>
+						<td class="px-4 py-3 text-black-800 dark:text-black-600">
+							{ relativeAge(s.Meta.LastActive) }
+						</td>
+						<td class="px-4 py-3 text-right">
+							<a href={ templ.SafeURL(base + "/sessions/" + s.ID) } class="text-xs font-medium text-green-600 hover:underline">Open</a>
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+templ sessionStatusBadge(status session.Status) {
+	switch status {
+		case session.StatusRunning:
+			<span class="inline-flex items-center rounded-full bg-pos-100 px-2 py-0.5 text-[10px] font-medium text-pos-400">running</span>
+		case session.StatusQueued:
+			<span class="inline-flex items-center rounded-full bg-prog-100 px-2 py-0.5 text-[10px] font-medium text-prog-400">queued</span>
+		default:
+			<span class="inline-flex items-center rounded-full bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-[10px] font-medium text-black-700 dark:text-black-600">idle</span>
+	}
+}
+
+// SessionDetailPage renders one session with conversation log + composer.
+templ SessionDetailPage(base string, sess session.Session, turns []store.ConversationTurn) {
+	<main class="mx-auto w-full max-w-container px-6 py-8">
+		<!-- Breadcrumb -->
+		<div class="flex items-center gap-2 text-sm text-black-700 dark:text-black-600">
+			<a href={ templ.SafeURL(base) } class="hover:text-green-600">Agents</a>
+			<span>/</span>
+			<a href={ templ.SafeURL(base + "/sessions") } class="hover:text-green-600">Sessions</a>
+			<span>/</span>
+			<span class="font-mono text-xs text-black-900 dark:text-white-100">{ shortSessionID(sess.ID) }</span>
+		</div>
+
+		<!-- Header -->
+		<div class="mt-4 flex items-center gap-3">
+			<div>
+				<div class="flex items-center gap-2">
+					<h1 class="text-lg font-semibold text-black-900 dark:text-white-100 font-mono">{ sess.ID }</h1>
+					@sessionStatusBadge(sess.Meta.Status)
+				</div>
+				<p class="mt-0.5 text-xs text-black-700 dark:text-black-600">Last active: { relativeAge(sess.Meta.LastActive) }</p>
+			</div>
+			<div class="ml-auto flex gap-2">
+				<form method="POST" action={ templ.SafeURL(base + "/sessions/" + sess.ID + "/delete") }>
+					<button type="submit" class="rounded-lg border border-neg-300 px-3 py-1.5 text-xs font-medium text-neg-400 hover:bg-neg-100">Delete</button>
+				</form>
+			</div>
+		</div>
+
+		<!-- Conversation -->
+		<section class="mt-6">
+			<div id="conversation" class="flex flex-col gap-3 rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-4 min-h-48 max-h-[60vh] overflow-y-auto shadow-sm">
+				if len(turns) == 0 {
+					<p class="text-sm text-black-700 dark:text-black-600">No messages yet. Send one below.</p>
+				} else {
+					for _, t := range turns {
+						@turnBubble(t)
+					}
+				}
+				<div id="stream-output" class="hidden">
+					<div class="rounded-lg bg-white-200 dark:bg-navy-800 px-4 py-3 text-sm text-black-900 dark:text-white-100 whitespace-pre-wrap font-mono" id="stream-text"></div>
+				</div>
+			</div>
+		</section>
+
+		<!-- Composer -->
+		<section class="mt-4">
+			<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-4 shadow-sm">
+				<textarea
+					id="msg-input"
+					rows="3"
+					placeholder="Type a message…"
+					class="block w-full resize-none rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100 placeholder:text-black-700 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800"
+				></textarea>
+				<div class="mt-3 flex items-center gap-3">
+					<button
+						id="send-btn"
+						type="button"
+						class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 disabled:opacity-50"
+					>Send</button>
+					<span id="status-msg" class="text-xs text-black-700 dark:text-black-600"></span>
+				</div>
+			</div>
+		</section>
+	</main>
+	<div id="agents-config" data-base={ base } data-session={ sess.ID } class="hidden"></div>
+	<script src={ base + "/static/js/agents.js" }></script>
+	<script>
+		(function(){var c=document.getElementById("agents-config");AgentsUI.init({base:c.dataset.base,sessionID:c.dataset.session});})();
+	</script>
+}
+
+templ turnBubble(t store.ConversationTurn) {
+	if t.Role == "user" {
+		<div class="flex justify-end">
+			<div class="max-w-[75%] rounded-lg bg-green-500 px-4 py-3 text-sm text-white-100 whitespace-pre-wrap">{ t.Text }</div>
+		</div>
+	} else if t.Role == "assistant" {
+		<div class="flex justify-start">
+			<div class="max-w-[75%] rounded-lg bg-white-200 dark:bg-navy-800 px-4 py-3 text-sm text-black-900 dark:text-white-100 whitespace-pre-wrap font-mono">{ t.Text }</div>
+		</div>
+	} else {
+		<div class="text-center">
+			<span class="text-xs text-black-700 dark:text-black-600 italic">{ t.Text }</span>
+		</div>
+	}
+}
+
+func shortSessionID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12] + "…"
+}
+
+func relativeAge(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return t.Format("2006-01-02")
+	}
+}
