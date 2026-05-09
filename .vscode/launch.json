@@ -19,6 +19,7 @@
       "request": "launch",
       "mode": "auto",
       "program": "${workspaceFolder}/cmd/wick-lab",
+      "output": "${workspaceFolder}/bin/wick-lab",
       "args": ["worker"],
       "envFile": "${workspaceFolder}/.env",
       "preLaunchTask": "debug: prep"
