@@ -4,8 +4,17 @@ import (
 	"encoding/json"
 	"sync"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/yogasw/wick/internal/agents/event"
 )
+
+// subBuffer is per-subscriber channel depth. Sized for tool_use bursts
+// where a single agent turn can fire 20-50 events back-to-back; 256
+// gives slow clients (browser tab backgrounded, slow network) room to
+// catch up before we start dropping. Drop-on-full is still the policy —
+// a stuck client must never stall the agent reader goroutine.
+const subBuffer = 256
 
 // Event is one SSE payload pushed to browser subscribers.
 type Event struct {
@@ -40,7 +49,7 @@ func NewBroadcaster() *Broadcaster {
 // Subscribe registers a listener for a specific session (or "" for all).
 // The caller must call the returned unsub func when the SSE connection closes.
 func (b *Broadcaster) Subscribe(sessionID string) (<-chan Event, func()) {
-	ch := make(chan Event, 64)
+	ch := make(chan Event, subBuffer)
 	b.mu.Lock()
 	b.subs[sessionID] = append(b.subs[sessionID], ch)
 	b.mu.Unlock()
@@ -78,6 +87,12 @@ func (b *Broadcaster) Publish(sessionID, agentName string, ev event.AgentEvent) 
 			select {
 			case ch <- payload:
 			default:
+				log.Warn().
+					Str("session_id", sessionID).
+					Str("agent", agentName).
+					Str("event_type", payload.Type).
+					Int("buffer", subBuffer).
+					Msg("sse: subscriber buffer full, dropping event")
 			}
 		}
 	}

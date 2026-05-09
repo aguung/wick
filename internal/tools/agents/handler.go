@@ -430,17 +430,15 @@ func streamSSE(c *tool.Ctx) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		c.Error(http.StatusInternalServerError, "streaming not supported")
-		return
-	}
+	rc := http.NewResponseController(w)
 	ch, unsub := globalBcast.Subscribe(sessionID)
 	defer unsub()
 
 	ctx := c.R.Context()
 	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
+
+	flush := func() { _ = rc.Flush() }
 
 	for {
 		select {
@@ -449,10 +447,10 @@ func streamSSE(c *tool.Ctx) {
 				return
 			}
 			fmt.Fprintf(w, "event: agent\ndata: %s\n\n", ev.JSON())
-			flusher.Flush()
+			flush()
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
+			flush()
 		case <-ctx.Done():
 			return
 		}
