@@ -8,6 +8,81 @@ Keputusan final yang sudah locked:
 - Gate binary: embed ke main binary via `//go:embed` (bukan sidecar/subcommand)
 - Dev override: `WICK_GATE_BIN` env var di `.env`
 - Approval style: Gate style (Pola A) — system intercept, bukan Claude Code style
+- Decision modes: 4 (`approve_once` / `approve_session` / `approve_always` / `block`)
+- AskUser: MCP tool (bukan harness), bridged ke web UI lewat SSE
+
+---
+
+## Checklist Implementasi (Quick Reference)
+
+Urutan **timeline-aware**: tiap stage hanya butuh stage sebelumnya. Bisa di-pause di akhir stage manapun dan tetap shippable. Detail per task + exit criteria di [§12](#12-checklist-implementasi-detail).
+
+```
+Stage 1 — Spec & Wiring Foundation                                    ✅ done
+[x] S1.1 gate.Spec field SocketPath + AutoApproved
+[x] S1.2 WriteSpawnArtifacts: tulis SocketPath = <sessionDir>/gate/gate.sock
+[x] S1.3 Wire Gate di pool/factory.go (saat ini Gate field masih nil)
+[x] S1.4 Unit test spec marshal + artifact write
+
+Stage 2 — Daemon Socket Listener                                      ✅ done
+[x] S2.1 Unix socket listener per session, chmod 0600
+[x] S2.2 Cleanup os.Remove saat session stop / daemon shutdown
+[x] S2.3 Goroutine per koneksi (raw JSON newline-delimited)
+[x] S2.4 Pending state manager: sync.Map[id]chan ApprovalResponse
+[x] S2.5 Timeout goroutine 25s → auto-block
+[x] S2.6 Test dial socket dari fake gate
+
+Stage 3 — Gate Binary Upgrade                                         ✅ done
+[x] S3.1 wick-gate dial unix socket dari spec
+[x] S3.2 auto_approved short-circuit (zero-latency always-allow)
+[x] S3.3 Encode ApprovalRequest → kirim
+[x] S3.4 Decode ApprovalResponse → exit 0 atau 2
+[x] S3.5 Fail-safe: connect refused / timeout → exit 2
+[x] S3.6 Integration test dgn fake socket server
+
+Stage 4 — Embed + Binary Resolution                                   ✅ done
+[x] S4.1 //go:embed assets/wick-gate-*
+[x] S4.2 extractEmbeddedGate(sessionDir), chmod 0755, idempotent
+[x] S4.3 resolveGateBin: WICK_GATE_BIN env → fallback embed
+[x] S4.4 Wire ke factory.go
+[x] S4.5 CI build step "Build wick-gate" sebelum main build
+
+Stage 5 — Web UI: Approval Modal + 4 Modes                            ✅ done
+[x] S5.1 SSE event types approval_request + approval_resolved
+[x] S5.2 Endpoint POST /api/agents/sessions/{id}/approve
+[x] S5.3 approve_session in-memory map per session
+[x] S5.4 approve_always persist ke spec.AutoApproved
+[x] S5.5 Modal templ: 4 tombol + countdown 25s
+[x] S5.6 matchKey hash(tool + cmd), exact match MVP
+[x] S5.7 "Approved commands" panel + Revoke per item
+[ ] S5.8 Smoke test manual (real-claude end-to-end)
+
+Stage 6 — AskUser MCP Tool + Web Card                                 ✅ done
+[x] S6.1 MCP tool "ask_user" register
+[x] S6.2 Handler: pending channel + broadcast SSE + 5min timeout
+[x] S6.3 SSE event types ask_user + ask_user_resolved
+[x] S6.4 Endpoint POST /api/agents/sessions/{id}/answer
+[x] S6.5 Card templ inline di composer area
+[ ] S6.6 Smoke test agent → web → answer roundtrip (real-claude)
+
+Stage 7 — Dev Tooling                                                 ✅ done
+[x] S7.1 .vscode/tasks.json: debug:prep build bin/wick-gate.exe sibling
+[-] S7.2 task "gate: sync-spec" — dropped (gak diperlukan, lihat D12)
+[-] S7.3 launch "wicklab-gate" — dropped (gate gak bisa standalone, lihat D13)
+[x] S7.4 .env.example: WICK_GATE_BIN dokumented (opsional override)
+[x] S7.5 ResolveGateBinary tambah sibling-of-exe step (auto-discover bin/)
+[x] S7.6 Doc updated dgn flow normal + cara debug via test/logs
+```
+
+| Stage | Hot files |
+|---|---|
+| 1 | `internal/agents/gate/spec.go`, `claude_hook.go`, `pool/factory.go` |
+| 2 | `internal/agents/gate/socket.go` (new) |
+| 3 | `cmd/wick-gate/main.go` |
+| 4 | `internal/agents/gate/embed.go` (new), `template/.github/workflows/release.yml` |
+| 5 | `internal/tools/agents/{handler,stream}.go`, `view/approval.templ`, `js/agents.js`, `internal/agents/gate/matchkey.go` (new) |
+| 6 | `internal/tools/agents/mcp_askuser.go` (new), `view/askuser.templ` |
+| 7 | `.vscode/{tasks,launch}.json` |
 
 ---
 
@@ -426,35 +501,80 @@ Dipicu saat `wick-gate` mengirim request ke daemon. Daemon broadcast SSE event d
 }
 ```
 
-**Yang perlu dirender:** modal/card dengan tombol Approve dan Block, menampilkan command yang mau dieksekusi.
+**Yang perlu dirender:** modal/card menampilkan command, agent, work dir, countdown timer, plus 4 tombol decision (lihat §6.1.1).
 
-**Response dari UI:** `POST /api/agents/sessions/{id}/approve` dengan `{"id":"abc123","decision":"approve"}`.
+**Response dari UI:** `POST /api/agents/sessions/{id}/approve` dengan `{"id":"abc123","decision":"<mode>"}`.
 
 **Timing:** harus dijawab dalam 25 detik atau otomatis di-block oleh daemon.
 
-### 6.2 AskUser dari Claude (Sekarang sudah ada sebagian)
+#### 6.1.1 Decision Modes
 
-Ketika Claude output event `tool_use` dari stream dengan nama tool tertentu yang berisi pertanyaan ke user.
+User punya empat pilihan saat modal muncul. Tiga di antaranya = approve, satu block. Mode beda di scope memori-nya.
 
-> **Catatan:** `AskUserQuestion` adalah tool harness Claude Code CLI (mode interaktif). Di Wick, Claude jalan dengan `-p` (pipe mode) sehingga tool ini **tidak tersedia**. Tapi Claude masih bisa output teks dengan pilihan sebagai bagian dari response biasa — ini turn-based, bukan blocking.
+| Decision | API value | Scope | Future requests yang sama |
+|---|---|---|---|
+| **Approve once** | `approve_once` | Cuma request ini | Tetap muncul modal |
+| **Allow this session** | `approve_session` | Sepanjang session hidup (sampai session deleted/restart) | Auto-approve, tidak muncul modal |
+| **Always allow** | `approve_always` | Persistent (tersimpan di workspace/general config) | Auto-approve di semua session sekarang & masa depan |
+| **Block** | `block` | Cuma request ini | Tetap muncul modal |
 
-Kalau ke depan Wick ingin support interactive question dari Claude (yang blocking), perlu:
-1. Detect event tipe `tool_use` dengan nama khusus di stream parser
-2. Render UI pilihan
-3. Inject tool result ke stdin Claude
+**Match key** (untuk auto-approve di session/always): hash dari `(tool, normalized_cmd_pattern)`. Pattern normalization = strip args yg bersifat data (file paths, URLs) tapi keep root command — supaya `git status` dan `git status -s` di-treat sebagai pattern berbeda kalau user tepat. MVP keep simple: exact-string match dulu, pattern engine ditunda.
 
-Ini berbeda dari gate approval karena tidak ada binary yang nunggu exit code.
+**Storage:**
+- `approve_session` → in-memory map di daemon, key `sessionID + matchKey`, hilang saat daemon restart
+- `approve_always` → `gate/spec.json` field `auto_approved: ["<matchKey>", ...]` → diisi ulang saat gate spec di-rewrite, jadi gate binary sendiri yg auto-allow tanpa round-trip ke daemon (zero latency)
+
+**Revocation:** UI `/tools/agents/sessions/{id}` punya panel "Approved commands" — list semua entry session + always, tombol Revoke per item.
+
+### 6.2 AskUser dari Agent (Web Flow)
+
+Wick sediakan `AskUser` sebagai **MCP tool** (bukan harness tool) sehingga tersedia di pipe mode (`-p`) untuk semua CLI yang attach ke wick MCP. Agent panggil tool ini saat butuh input dari user; tool block sampai user balas via web UI.
+
+#### 6.2.1 Mekanisme
+
+```
+Agent panggil MCP tool "ask_user" dengan {question, options[]}
+  → MCP handler register pending question di daemon (UUID + channel)
+  → broadcast SSE: {type: "ask_user", data: {id, question, options}}
+  → Web UI render card di session detail (composer area)
+  → User pilih option / ketik free text → POST /sessions/{id}/answer {id, answer}
+  → daemon resolve channel → MCP tool return jawaban ke agent
+  → agent lanjut turn dengan jawaban sebagai tool result
+```
+
+Beda dari gate approval: **tidak ada hook subprocess**, tidak ada exit code. Murni MCP request/response yg di-bridge ke web via SSE.
+
+#### 6.2.2 SSE Event
+
+```json
+{
+  "session_id": "sess_xyz",
+  "agent_name": "backend",
+  "type": "ask_user",
+  "data": "{\"id\":\"q_abc123\",\"question\":\"Pakai PostgreSQL atau MySQL?\",\"options\":[{\"label\":\"Postgres\",\"value\":\"pg\"},{\"label\":\"MySQL\",\"value\":\"mysql\"}],\"allow_freeform\":true}"
+}
+```
+
+#### 6.2.3 Response
+
+`POST /api/agents/sessions/{id}/answer` dengan `{"id":"q_abc123","answer":"pg"}` (atau `{"id":"q_abc123","answer_text":"...freeform..."}`).
+
+#### 6.2.4 Timeout
+
+Default 5 menit (config-able). Lewat timeout → MCP tool return error `"user did not respond"` → agent boleh decide retry / abort.
 
 ### 6.3 Perbedaan Dua Interaksi di UI
 
-| | Gate Approval | AskUser Claude |
+| | Gate Approval | AskUser |
 |---|---|---|
-| **Trigger** | SSE `type: approval_request` | SSE `type: tool_use` (nama khusus) |
-| **Deadline** | Ya, 25 detik | Tidak (Claude nunggu turn baru) |
-| **Response ke** | `POST /approve` → daemon → gate | `POST /send` → stdin Claude (turn baru) |
-| **Claude state** | Sedang nunggu (mid-turn) | Sudah selesai turn, nunggu input |
-| **Visual** | Modal dengan countdown timer | Card/inline dengan pilihan |
-| **Bisa diabaikan?** | Tidak (auto-block setelah timeout) | Ya (Claude nunggu terus) |
+| **Trigger** | SSE `type: approval_request` | SSE `type: ask_user` |
+| **Sumber** | `wick-gate` hook (subprocess) → daemon socket | MCP tool `ask_user` dipanggil agent |
+| **Deadline** | 25 detik (sebelum hook timeout 30s) | 5 menit (config-able) |
+| **Response ke** | `POST /approve` → daemon → unblock gate (exit 0/2) | `POST /answer` → daemon → unblock MCP tool return |
+| **Agent state** | Mid-turn, tool execution di-pause | Mid-turn, tool execution di-pause (MCP tool block) |
+| **Visual** | Modal full-screen dgn countdown | Card inline di area composer |
+| **Bisa diabaikan?** | Tidak (auto-block setelah timeout) | Tidak (timeout → agent dapat error) |
+| **Channel komunikasi** | Unix socket (gate↔daemon) | MCP request/response (agent↔daemon) |
 
 ### 6.4 Existing SSE Infrastructure
 
@@ -469,7 +589,16 @@ type Event struct {
 }
 ```
 
-Untuk gate approval, cukup tambah `type: "approval_request"` dan publish via broadcaster yang sama. Frontend tinggal handle tipe baru ini.
+Untuk fitur baru, cukup tambah tipe event dan publish via broadcaster yang sama:
+
+| Type | Sumber | Tujuan |
+|---|---|---|
+| `approval_request` | Daemon (saat gate connect) | UI render modal approval |
+| `approval_resolved` | Daemon (saat decision masuk) | UI dismiss modal di semua tab |
+| `ask_user` | MCP handler (saat tool dipanggil) | UI render card pertanyaan |
+| `ask_user_resolved` | MCP handler (saat answer masuk) | UI dismiss card di semua tab |
+
+Frontend tinggal handle tipe baru ini di SSE listener.
 
 ---
 
@@ -674,35 +803,17 @@ func resolveGateBin(sessionDir string) (string, error) {
 }
 ```
 
-Urutan prioritas: `WICK_GATE_BIN` env → embedded binary. Kalau keduanya tidak ada → gate tidak aktif, commands lolos semua (fail-open, logged).
+Urutan prioritas: `WICK_GATE_BIN` env → embedded binary → **sibling-of-executable** (`wick-gate[.exe]` di folder yang sama dgn parent binary) → `wick-gate` di PATH. Kalau semuanya gak ada → gate tidak aktif, log warning, commands lolos semua (fail-open, logged).
 
 ### 9.2 VSCode (wicklab)
 
 **Launch config:** `.vscode/launch.json` → `wicklab` → `preLaunchTask: "debug: prep"`
 
-#### Dua launch untuk debug gate
+Cara kerjanya simpel — gak ada launch khusus untuk gate, karena gate selalu di-spawn oleh claude (anak wicklab) saat command perlu di-approve.
 
-Untuk debug gate secara terpisah tanpa restart wicklab, kita pakai dua launch yang berjalan bersamaan:
+#### Setup
 
-```
-wicklab          → daemon berjalan, buat session → tulis spec.json
-wicklab-gate     → attach debugger ke gate, baca spec dari session yang sama
-```
-
-"Sync link" antara keduanya: task `gate: sync-spec` yang otomatis cari `spec.json` dari session terbaru yang dibuat wicklab, lalu tulis path-nya ke `bin/.gate-debug.env`. Gate launch baca dari file itu.
-
-```
-wicklab buat session
-  → ~\.wick\sessions\<id>\gate\spec.json ditulis
-  → jalankan task "gate: sync-spec"
-     → ls -t ~\.wick\sessions\*/gate/spec.json | head -1
-     → tulis WICK_GATE_SPEC=<path> ke bin/.gate-debug.env
-wicklab-gate launch
-  → envFile: bin/.gate-debug.env
-  → gate baca spec → sama persis dengan yang wicklab pakai
-```
-
-#### Yang perlu ditambah ke `.vscode/tasks.json`
+`debug: prep` task build dua binary ke `bin/`:
 
 ```json
 {
@@ -710,66 +821,47 @@ wicklab-gate launch
   "type": "shell",
   "command": "templ generate ./... && bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-gate.exe ./cmd/wick-gate",
   "problemMatcher": []
-},
-{
-  "label": "gate: sync-spec",
-  "type": "shell",
-  "command": "powershell -NoProfile -Command \"$spec = Get-ChildItem $env:USERPROFILE\\.wick\\sessions -Recurse -Filter spec.json | Where-Object { $_.FullName -like '*\\gate\\spec.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName; if ($spec) { Set-Content -Path bin\\.gate-debug.env -Value \\\"WICK_GATE_SPEC=$spec\\\" -NoNewline; Write-Host \\\"Linked: $spec\\\" } else { Write-Error 'No session spec found. Start wicklab and create a session first.' }\"",
-  "problemMatcher": []
 }
 ```
 
-> **Linux/macOS** — ganti command task `gate: sync-spec` dengan:
-> ```bash
-> "command": "spec=$(ls -t ~/.wick/sessions/*/gate/spec.json 2>/dev/null | head -1) && [ -n \"$spec\" ] && printf 'WICK_GATE_SPEC=%s' \"$spec\" > bin/.gate-debug.env && echo \"Linked: $spec\" || echo 'No session spec found'"
-> ```
+Saat F5 `wicklab`:
+- VSCode build wicklab → `bin/wick-lab.exe` (via launch `output` field)
+- `debug: prep` udah build → `bin/wick-gate.exe`
+- Hasilnya: keduanya satu folder
 
-#### Yang perlu ditambah ke `.vscode/launch.json`
+Saat wicklab boot panggil `gate.ResolveGateBinary`, sibling-of-executable check langsung pickup `bin/wick-gate.exe` — tanpa env var, tanpa task tambahan.
 
-```json
-{
-  "name": "wicklab-gate",
-  "type": "go",
-  "request": "launch",
-  "mode": "auto",
-  "program": "${workspaceFolder}/cmd/wick-gate",
-  "output": "${workspaceFolder}/bin/wick-gate",
-  "envFile": "${workspaceFolder}/bin/.gate-debug.env",
-  "console": "integratedTerminal"
-}
-```
+#### Cara Debug Gate
 
-`"console": "integratedTerminal"` wajib — gate baca stdin (JSON hook input dari Claude). Di terminal kamu bisa paste payload test:
+wick-gate **gak bisa di-debug standalone** dgn launch terpisah, karena dia stateless forwarder yg butuh `WICK_GATE_SPEC` env (di-inject parent). Pakai salah satu cara berikut:
 
-```json
-{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /data"}}
-```
+**1. Debug via test** (paling praktis)
 
-#### Compound launch (opsional — jalankan keduanya sekaligus)
+Buka [internal/agents/gate/integration_test.go](../agents/gate/integration_test.go) atau [cmd/wick-gate/main_test.go](../../../cmd/wick-gate/main_test.go), set breakpoint di [main.go:run()](../../../cmd/wick-gate/main.go), lalu right-click test function → "Debug Test". Test sudah set spec + env + stdin secara realistic.
 
-```json
-{
-  "name": "wicklab + gate",
-  "configurations": ["wicklab", "wicklab-gate"]
-}
-```
+**2. Logs**
 
-Tambahkan ke array `"compounds"` di `launch.json`. Tapi karena gate langsung exit setelah proses stdin, lebih praktis jalankan terpisah: `wicklab` dulu, baru `wicklab-gate` saat butuh debug.
-
-#### Flow debug lengkap
+wick-gate tulis decision ke `commands.jsonl` di session dir:
 
 ```
-1. F5 → "wicklab"                 → daemon jalan, buka web UI
-2. Buat session di web UI          → spec.json ditulis di ~/.wick/sessions/<id>/gate/
-3. Terminal → run task             → "gate: sync-spec"
-   → bin/.gate-debug.env terisi WICK_GATE_SPEC=<path>
-4. F5 → "wicklab-gate"            → debugger attach, nunggu stdin
-5. Paste JSON di terminal:
-   {"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"}}
-6. Gate proses → breakpoint hit → inspect spec, rules, decision
+~\.wick\agents\sessions\<id>\commands.jsonl
 ```
 
-**Path note:** `WICK_GATE_BIN` di `.env` tetap diperlukan agar wicklab tahu binary gate yang mana. `WICK_GATE_SPEC` di `.gate-debug.env` adalah untuk gate launch sendiri (bukan untuk wicklab).
+Tail file itu sambil F5 wicklab + trigger command via web UI.
+
+**3. Attach to process** (rare)
+
+wick-gate hidup cuma milidetik per call, susah caught. Hanya berguna untuk kasus stuck (socket timeout dll).
+
+#### Flow normal (no gate debugging)
+
+```
+1. F5 → "wicklab"                 → daemon jalan + bin/wick-gate.exe ready
+2. Buat session di web UI          → wicklab tulis spec.json + start socket listener
+3. Kirim pesan ke claude di web UI → claude jalan, command picu wick-gate
+4. Gate gak whitelisted → modal approval muncul di web UI
+5. Klik salah satu (approve_once / session / always / block)
+```
 
 ### 9.3 MSI (Windows Installer)
 
@@ -800,11 +892,11 @@ Tidak ada konfigurasi tambahan yang diperlukan.
 
 | | VSCode (wicklab) | Serve / raw binary | MSI |
 |---|---|---|---|
-| **Gate binary dari** | `bin/wick-gate.exe` (lokal) | Embedded → extracted | Embedded → extracted |
-| **Cara set** | `WICK_GATE_BIN` di `.env` | Otomatis | Otomatis |
+| **Gate binary dari** | `bin/wick-gate.exe` (sibling-of-exe) | Embedded → extracted | Embedded → extracted |
+| **Cara set** | Otomatis (sibling discovery) | Otomatis (embed extract) | Otomatis (embed extract) |
 | **Perlu build manual?** | Ya (via `debug: prep` task) | Tidak | Tidak |
 | **Version sync** | Manual (rebuild saat ada perubahan) | Selalu sync (embedded saat compile) | Selalu sync |
-| **File yang perlu diedit** | `.vscode/tasks.json` + `.env` | Tidak ada | Tidak ada |
+| **File yang perlu diedit** | `.vscode/tasks.json` saja | Tidak ada | Tidak ada |
 
 ### 9.6 Template Downstream (cmd/lab)
 
@@ -857,57 +949,148 @@ Kalau pakai embed (opsi 1):
 | D9 | Broadcast approval_request via Broadcaster yang sudah ada | Tidak perlu infrastruktur SSE baru, cukup tambah tipe event |
 | D10 | `WICK_GATE_BIN` env var override untuk dev | VSCode/go run tidak punya embed, perlu path eksplisit. Env var paling tidak invasif — tidak ubah kode path, tidak ubah interface |
 | D11 | `debug: prep` task build gate otomatis | Developer tidak perlu ingat build gate manual sebelum debug — F5 langsung siap |
+| D12 | Drop `gate: sync-spec` task + `envFile`; operator set `WICK_GATE_SPEC` manual | wick-gate cuma baca env var (tidak ada home-dir discovery), jadi sebelumnya pakai task yang tulis path session terbaru ke `bin/.gate-debug.env` + envFile launch. Trade-off: 1 langkah manual vs ~30 baris tooling untuk save 5 detik per debug session. Pilih simpel — debug gate jarang, dan eksplisit lebih mudah di-troubleshoot kalau mismatch path |
+| D13 | Drop `wicklab-gate` launch entirely + tambah sibling-of-executable resolution | wick-gate gak bisa di-debug standalone karena butuh `WICK_GATE_SPEC` env yg di-inject parent. Launch standalone selalu fail-safe exit 2 — bikin operator bingung. Solusi: resolve gate via sibling discovery (sama folder dgn parent .exe) — `debug: prep` task drop binary di `bin/`, wicklab pickup otomatis tanpa env. Debug gate dilakuin via `Debug Test` di VSCode (lihat test files), bukan launch terpisah |
 
 ---
 
-## 12. Checklist Implementasi
+## 12. Checklist Implementasi (Detail)
 
-Urutan logis: gate binary siap dulu → daemon socket → approval flow → web UI → release.
+Versi ringkas (just the boxes) di section paling atas dokumen. Sini detail per task + exit criteria. Urutan **timeline-aware**: tiap stage hanya butuh stage sebelumnya. Bisa di-pause di akhir stage manapun dan tetap shippable (gate fallback ke whitelist-mode kalau socket belum ada).
 
-**A. Gate binary & embed**
-```
-[ ] A1. //go:embed assets/wick-gate-* di daemon package
-[ ] A2. extractEmbeddedGate() — extract ke session dir, chmod 0755, idempotent
-[ ] A3. resolveGateBin() — cek WICK_GATE_BIN env dulu, fallback ke extractEmbeddedGate
-[ ] A4. Update wick-gate binary: tambah socket path dari spec (baca WICK_GATE_SPEC),
-        connect unix socket → send ApprovalRequest → block → terima response → exit 0/2
-```
+### Stage 1 — Spec & Wiring Foundation
 
-**B. Daemon — Unix socket & approval state**
+Tujuan: gate spec siap menampung field baru (socket path, auto-approved). Tidak ada perubahan runtime behavior.
+
 ```
-[ ] B1. Unix socket listener per session (buat saat session start, chmod 0600)
-        path: ~/.wick/sessions/<id>/gate/gate.sock
-[ ] B2. Pending state manager: sync.Map[id]chan ApprovalResponse + goroutine per conn
-[ ] B3. Timeout goroutine: 25s → auto-block kalau user tidak respond
-[ ] B4. Endpoint: POST /api/agents/sessions/{id}/approve
-        body: {"id":"...","decision":"approve|block"}
-        → resolve channel → goroutine balas ke gate
+[ ] S1.1 Tambah field di gate.Spec: SocketPath string, AutoApproved []string
+         → internal/agents/gate/spec.go
+[ ] S1.2 gate.WriteSpawnArtifacts: tulis SocketPath = <sessionDir>/gate/gate.sock
+         → internal/agents/gate/claude_hook.go
+[ ] S1.3 Wire Gate di factory.go (saat ini Gate field masih nil di FactoryOptions)
+         inject GateConfig + spawn artifact write per session
+         → internal/agents/pool/factory.go
+[ ] S1.4 Unit test spec marshal + artifact write pakai t.TempDir()
+         → internal/agents/gate/{spec,claude_hook}_test.go
 ```
 
-**C. SSE & Web UI**
+**Exit criteria**: `wick-gate` baca spec.json yang sudah punya socket_path field; behavior tetap whitelist-only (socket belum dipakai).
+
+### Stage 2 — Daemon Socket Listener
+
+Tujuan: daemon expose socket per session, terima konek tapi belum ada UI — auto-block semua request (smoke test only).
+
 ```
-[ ] C1. SSE event type baru "approval_request" — broadcast via Broadcaster yang sudah ada
-[ ] C2. SSE event type "approval_resolved" — untuk dismiss modal di semua tab
-[ ] C3. Web UI: render modal approval saat terima SSE "approval_request"
-        tampilkan: command, agent name, work dir, countdown 25s
-[ ] C4. Web UI: tombol Approve dan Block → POST /api/agents/sessions/{id}/approve
-[ ] C5. Web UI: auto-dismiss modal saat terima "approval_resolved"
+[ ] S2.1 Unix socket listener per session, dibuat saat session start, chmod 0600
+         path: ~/.wick/agents/sessions/<id>/gate/gate.sock
+         → internal/agents/gate/socket.go (paket baru atau extend gate/)
+[ ] S2.2 Cleanup: os.Remove socket saat session stop / daemon shutdown
+[ ] S2.3 Goroutine per koneksi: read JSON request, send JSON response (raw newline-delimited)
+[ ] S2.4 Pending state manager: sync.Map[id]chan ApprovalResponse
+[ ] S2.5 Timeout goroutine: 25s → auto-block kalau tidak ada decision
+[ ] S2.6 Test: dial socket dari fake gate, kirim ApprovalRequest, expect timeout=block
+         → internal/agents/gate/socket_test.go
 ```
 
-**D. Wiring & factory**
+**Exit criteria**: `nc -U gate.sock` bisa konek, kirim JSON dummy, dapat `{"decision":"block","reason":"timeout"}` setelah 25s.
+
+### Stage 3 — Gate Binary Upgrade
+
+Tujuan: `wick-gate` binary konek ke socket sebelum decide. Fallback ke whitelist + block jika socket tidak ada.
+
 ```
-[ ] D1. Wire Gate di factory.go (saat ini masih nil) — inject socket path ke spec
-[ ] D2. Spec.json: tambah field socket_path untuk gate → daemon socket
+[ ] S3.1 wick-gate baca SocketPath dari spec, dial unix socket
+         → cmd/wick-gate/main.go
+[ ] S3.2 Cek auto_approved list di spec → kalau match, langsung exit 0 tanpa round-trip
+         (zero-latency path untuk "always allow")
+[ ] S3.3 Build ApprovalRequest, encode JSON, kirim ke socket
+[ ] S3.4 Decode ApprovalResponse → exit 0 (approve_*) atau 2 (block)
+[ ] S3.5 Fail-safe: socket connect refused / timeout → exit 2 (block)
+[ ] S3.6 Integration test: spawn wick-gate subprocess dgn fake socket server
+         → cmd/wick-gate/main_test.go (extend existing)
 ```
 
-**E. Dev tooling & release**
+**Exit criteria**: gate binary cocok dgn socket flow + auto_approved short-circuit; existing whitelist tests masih hijau.
+
+### Stage 4 — Embed + Binary Resolution
+
+Tujuan: production binary ship `wick-gate` di dalamnya, dev pakai `WICK_GATE_BIN` env.
+
 ```
-[ ] E1. .vscode/tasks.json — update "debug: prep": tambah go build gate ke perintah
-[ ] E2. .vscode/tasks.json — tambah task "gate: sync-spec" (auto-link spec terbaru)
-[ ] E3. .vscode/launch.json — tambah launch "wicklab-gate" (envFile: bin/.gate-debug.env)
-[x] E4. .env.example — WICK_GATE_BIN entry sudah ada
-[ ] E5. template release workflow — tambah step "Build wick-gate" sebelum "wick build --installer"
+[ ] S4.1 //go:embed assets/wick-gate-* di package daemon
+         → internal/agents/gate/embed.go
+[ ] S4.2 extractEmbeddedGate(sessionDir) — extract ke session dir, chmod 0755, idempotent
+[ ] S4.3 resolveGateBin(sessionDir): cek WICK_GATE_BIN env dulu → fallback ke extract
+[ ] S4.4 Wire resolveGateBin ke factory.go (ganti hard-coded path)
+[ ] S4.5 Build CI step: "Build wick-gate" sebelum main build, output ke assets/
+         → template/.github/workflows/release.yml
 ```
+
+**Exit criteria**: raw binary dari `wick build` berhasil spawn agent + extract gate ke session dir tanpa env var apapun.
+
+### Stage 5 — Web UI: Approval Modal + 4 Modes
+
+Tujuan: user lihat modal saat command butuh approval, klik salah satu dari 4 decision.
+
+```
+[ ] S5.1 SSE event type "approval_request" + "approval_resolved" via existing Broadcaster
+         → internal/tools/agents/stream.go
+[ ] S5.2 Backend endpoint POST /api/agents/sessions/{id}/approve
+         body: {"id":"...","decision":"approve_once|approve_session|approve_always|block"}
+         → resolve pending channel di daemon
+         → internal/tools/agents/handler.go
+[ ] S5.3 approve_session: store di in-memory sessionApprovals map[sessionID][]matchKey
+         next request match → daemon auto-resolve tanpa SSE broadcast
+[ ] S5.4 approve_always: append matchKey ke spec.AutoApproved + rewrite spec.json
+         → gate binary handle short-circuit dari Stage 3.2
+[ ] S5.5 Web UI modal: render dari SSE, countdown timer 25s, 4 tombol decision
+         → internal/tools/agents/view/approval.templ + js/agents.js
+[ ] S5.6 matchKey hash: simple hash(tool + cmd) untuk MVP, exact match
+         → internal/agents/gate/matchkey.go
+[ ] S5.7 "Approved commands" panel di session detail: list session+always entries,
+         tombol Revoke per item → DELETE /api/agents/sessions/{id}/approve/{matchKey}
+[ ] S5.8 Smoke test manual: claude jalanin command non-whitelisted → modal muncul →
+         klik "Allow this session" → command kedua yang sama auto-approve
+```
+
+**Exit criteria**: user bisa Approve once / session / always / Block dari web; revoke jalan; auto_approved persist setelah daemon restart.
+
+### Stage 6 — AskUser MCP Tool + Web Card
+
+Tujuan: agent bisa tanya user via MCP tool, web UI render card jawaban.
+
+```
+[ ] S6.1 MCP tool "ask_user" register di wick MCP server
+         input schema: {question: string, options?: [{label, value}], allow_freeform?: bool}
+         → internal/tools/agents/mcp_askuser.go
+[ ] S6.2 Tool handler: register pending question (UUID + chan), broadcast SSE,
+         block sampai POST /answer atau timeout 5 menit
+[ ] S6.3 SSE event type "ask_user" + "ask_user_resolved"
+[ ] S6.4 Backend endpoint POST /api/agents/sessions/{id}/answer
+         body: {"id":"...","answer":"<value>"} atau {"answer_text":"..."}
+[ ] S6.5 Web UI card: render inline di composer area, klik option → POST answer
+         → internal/tools/agents/view/askuser.templ + js/agents.js
+[ ] S6.6 Smoke test: agent panggil ask_user → card muncul di web → user pilih →
+         agent terima jawaban di tool result
+```
+
+**Exit criteria**: claude bisa pakai `ask_user` MCP tool, jawaban user dari web masuk balik ke turn yang sama.
+
+### Stage 7 — Dev Tooling
+
+Tujuan: developer flow F5 di VSCode jalan tanpa langkah manual.
+
+```
+[x] S7.1 .vscode/tasks.json: extend "debug: prep" — tambah go build wick-gate
+[-] S7.2 task "gate: sync-spec" — DROPPED (operator set $env:WICK_GATE_SPEC manual)
+[x] S7.3 .vscode/launch.json: launch "wicklab-gate" (no envFile — lebih simpel)
+[x] S7.4 .env.example: WICK_GATE_BIN entry sudah ada
+[ ] S7.5 .vscode/launch.json: compound "wicklab + gate" (opsional)
+[ ] S7.6 Doc snippet: developer flow F5 → wicklab → buat session →
+         set $env:WICK_GATE_SPEC → F5 wicklab-gate → paste payload → breakpoint
+```
+
+**Exit criteria**: F5 wicklab + wicklab-gate jalan, dengan satu langkah manual yang explicit (set `$env:WICK_GATE_SPEC` di terminal sebelum F5 wicklab-gate).
 
 ---
 

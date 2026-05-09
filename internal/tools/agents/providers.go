@@ -71,7 +71,29 @@ func providersPage(c *tool.Ctx) {
 		PoolQueueLen:  globalPool.QueueLen(),
 		PoolMax:       poolMaxConcurrent(),
 		SupportedKeys: supportedTypeKeys(),
+		Gate:          gateStatusVM(),
 	}))
+}
+
+// gateStatusVM converts the boot-time GateStatus into the view-model
+// + behaviour note. The note text is the operator-facing payoff: a
+// one-sentence summary of *what gets blocked* given the current
+// state. We compute it here (not in handler.go) so the wording stays
+// next to the UI it shows on.
+func gateStatusVM() view.GateStatusVM {
+	s := GetGateStatus()
+	vm := view.GateStatusVM{
+		Enabled: s.Enabled,
+		Binary:  s.Binary,
+		Source:  s.Source,
+		Reason:  s.Reason,
+	}
+	if s.Enabled {
+		vm.Note = "Every Bash command goes through wick-gate. Whitelist + 'always allow' bypass the modal; everything else asks the user via the web UI. Auto-block on 25s timeout."
+	} else {
+		vm.Note = "Gate binary not resolved — every Bash command auto-blocks (fail-safe), except those matching a whitelist rule. Set WICK_GATE_BIN, place wick-gate next to the parent binary, or build with the embed step to enable interactive approval."
+	}
+	return vm
 }
 
 // saveProviderInstance creates or updates one named runtime instance

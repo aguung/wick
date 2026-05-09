@@ -52,9 +52,31 @@ type GateConfig struct {
 	// Rules is the whitelist enforced for every spawn under this
 	// factory. Future work may take rules per-session.
 	Rules []gate.CommandRule
-	// TempDirRoot is where per-spawn gate artifacts live. If empty,
-	// `<Layout.SessionDir(id)>/gate` is used.
+	// TempDirRoot is where per-spawn gate artifacts (settings.json +
+	// spec.json) live. If empty, `<Layout.SessionDir(id)>/gate` is
+	// used.
 	TempDirRoot string
+
+	// SocketDir is the static (single-session-test) socket dir. The
+	// factory writes `<SocketDir>/gate.sock` into spec.SocketPath so
+	// wick-gate knows where to dial. Empty = no interactive approval
+	// (whitelist-only). Production wires SocketDirFor instead so
+	// each session gets its own socket path.
+	SocketDir string
+
+	// SocketDirFor (preferred over SocketDir for production) returns
+	// the socket dir for a specific session. Factory calls this once
+	// per Build, falling back to SocketDir when the func is nil.
+	// Daemon must listen on `<SocketDirFor(sid)>/gate.sock` before
+	// the spawn — pool's OnLifecycle "spawning" hook is the right
+	// trigger.
+	SocketDirFor func(sessionID string) string
+
+	// AutoApprovedFor returns the list of "always allow" matchKey
+	// hashes for a given session. Called once per Build to populate
+	// spec.AutoApproved so wick-gate can short-circuit without
+	// dialing the socket. nil = no auto-approves.
+	AutoApprovedFor func(sessionID string) []string
 }
 
 // Build returns a fresh agent + state machine + store wired for one
@@ -189,13 +211,30 @@ func (f *ClaudeFactory) attachGate(opt FactoryOptions, base provider.Spawner) (p
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return base, nil, err
 	}
+	sockDir := f.Gate.SocketDir
+	if f.Gate.SocketDirFor != nil {
+		sockDir = f.Gate.SocketDirFor(opt.SessionID)
+	}
+	socketPath := ""
+	if sockDir != "" {
+		// Socket file lives one level above the per-spawn artifact
+		// dir so multiple spawns under the same session share one
+		// listener (created by the daemon at session start).
+		socketPath = filepath.Join(sockDir, "gate.sock")
+	}
+	var autoApproved []string
+	if f.Gate.AutoApprovedFor != nil {
+		autoApproved = f.Gate.AutoApprovedFor(opt.SessionID)
+	}
 	spec := gate.Spec{
 		SessionID: opt.SessionID,
 		AgentName: opt.AgentName,
 		Layout: gate.SpecLayout{
 			SessionCommandsPath: f.Layout.SessionCommands(opt.SessionID),
 		},
-		Rules: f.Gate.Rules,
+		Rules:        f.Gate.Rules,
+		SocketPath:   socketPath,
+		AutoApproved: autoApproved,
 	}
 	settingsPath, specPath, err := gate.WriteSpawnArtifacts(root, spec, f.Gate.WickGateBinary)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,48 @@ func TestLoadSpecMissingEnv(t *testing.T) {
 	t.Setenv(HookEnvVar, "")
 	if _, err := LoadSpec(); err == nil {
 		t.Fatal("expected error when env var unset")
+	}
+}
+
+func TestSpecApprovalFields(t *testing.T) {
+	dir := t.TempDir()
+	spec := Spec{
+		SessionID:    "S1",
+		AgentName:    "default",
+		Layout:       SpecLayout{SessionCommandsPath: filepath.Join(dir, "commands.jsonl")},
+		Rules:        []CommandRule{{Pattern: "ls *"}},
+		SocketPath:   filepath.Join(dir, "gate.sock"),
+		AutoApproved: []string{"hash-a", "hash-b"},
+	}
+
+	_, specPath, err := WriteSpawnArtifacts(dir, spec, "/bin/wick-gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(HookEnvVar, specPath)
+
+	got, err := LoadSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SocketPath != spec.SocketPath {
+		t.Errorf("SocketPath: got %q, want %q", got.SocketPath, spec.SocketPath)
+	}
+	if len(got.AutoApproved) != 2 || got.AutoApproved[0] != "hash-a" || got.AutoApproved[1] != "hash-b" {
+		t.Errorf("AutoApproved: %+v", got.AutoApproved)
+	}
+}
+
+func TestSpecApprovalFieldsOmitEmpty(t *testing.T) {
+	bytes, err := json.Marshal(Spec{SessionID: "S1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(bytes)
+	if strings.Contains(s, "socket_path") {
+		t.Errorf("expected socket_path omitted, got: %s", s)
+	}
+	if strings.Contains(s, "auto_approved") {
+		t.Errorf("expected auto_approved omitted, got: %s", s)
 	}
 }
