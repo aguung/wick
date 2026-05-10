@@ -1,14 +1,19 @@
 // Package appname is the single source of truth for the running
-// app's brand. Every code path that needs a per-app namespace —
-// DB path, log dir, agents Layout, gate spec/socket — reads from
-// here, so all artefacts land under one `~/.<app>/` tree.
+// app's *path-safe identifier* — the slug used in `~/.<app>/` for
+// DB, logs, agents Layout, gate spec/socket. Every artefact lands
+// under one tree.
 //
 // Resolution order (first non-empty wins):
 //
 //  1. BuildAppName  — ldflag-baked at compile time by `wick build`
-//  2. APP_NAME env  — runtime override (dev / debug)
-//  3. wick.yml      — top-level `name:` field, walked from cwd
-//  4. "wick"        — last-ditch fallback
+//  2. wick.yml      — top-level `name:` field, walked from cwd
+//  3. "wick"        — last-ditch fallback
+//
+// `APP_NAME` env var is intentionally NOT in this chain. That env
+// holds the human-readable display label (e.g. "My App" with spaces
+// and capitalization) used by the UI / login / systray title — it
+// must not contaminate filesystem paths. Path identifiers come from
+// `name:` in wick.yml, which already enforces no-space slug rules.
 //
 // The package has zero deps on the rest of the codebase so any
 // other internal package can import it without risking cycles.
@@ -44,9 +49,6 @@ func Resolve() string {
 func resolve() string {
 	if BuildAppName != "" {
 		return BuildAppName
-	}
-	if v := os.Getenv("APP_NAME"); v != "" {
-		return v
 	}
 	for _, path := range []string{"wick.yml", "../wick.yml", "../../wick.yml"} {
 		if data, err := os.ReadFile(path); err == nil {

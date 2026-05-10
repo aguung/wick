@@ -3,6 +3,7 @@ package gate_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -16,9 +17,23 @@ import (
 	"github.com/yogasw/wick/internal/agents/storage"
 )
 
+// writeTestWickYML drops a minimal wick.yml in a fresh tempdir and
+// chdirs the test process into it. Both the test process and any
+// gate child proc it spawns now resolve appname via that file —
+// cwd-inherited, no env or ldflag wiring.
+func writeTestWickYML(t *testing.T, app string) {
+	t.Helper()
+	dir := t.TempDir()
+	yml := filepath.Join(dir, "wick.yml")
+	if err := os.WriteFile(yml, []byte("name: "+app+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+}
+
 // buildGate compiles cmd/gate into a temp file. AppName comes from
-// the APP_NAME env we set in setupGate, so binary name is irrelevant.
-// Skips when `go build` is unavailable.
+// wick.yml in the test process's cwd (see writeTestWickYML), so
+// binary name is irrelevant. Skips when `go build` is unavailable.
 func buildGate(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -44,11 +59,13 @@ func setupGate(t *testing.T, rules []gate.CommandRule) (bin, app string, layout 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	// Gate child proc inherits APP_NAME → appname.Resolve() returns
-	// our test brand without needing ldflag injection.
-	t.Setenv("APP_NAME", app)
 
+	// Build BEFORE chdir — `go build` needs repo cwd to find go.mod.
 	bin = buildGate(t)
+	// Now chdir into a tempdir holding our minimal wick.yml. Gate
+	// child proc inherits cwd → appname.Resolve() picks up our test
+	// brand from `name:` without ldflags or env wiring.
+	writeTestWickYML(t, app)
 	layout = config.NewLayout(t.TempDir())
 	if err := layout.EnsureLayout(); err != nil {
 		t.Fatal(err)
@@ -197,8 +214,8 @@ func TestGate_MissingSharedSpecIsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("APP_NAME", "itest-empty")
 	bin := buildGate(t)
+	writeTestWickYML(t, "itest-empty")
 
 	cmd := exec.Command(bin)
 	cmd.Stdin = strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)

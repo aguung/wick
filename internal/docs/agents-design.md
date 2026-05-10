@@ -19,15 +19,17 @@ Update terakhir: 2026-05-10.
 >   tetap generic (`gate-<os>-<arch>`).
 > - **AppName single source of truth** — `internal/appname.Resolve()`
 >   adalah satu-satunya derivation chain dipakai parent + Layout + gate +
->   DB. Chain: `BuildAppName` ldflag → `APP_NAME` env → `wick.yml` name →
->   "wick". `wick build` inject ldflag ke `internal/appname.BuildAppName`;
->   `app.BuildAppName` jadi mirror di `app.init()`. Gate child proc inherit
->   `APP_NAME` env dari parent → resolve ke brand sama tanpa ldflag.
->   Hasilnya: DB di `~/.<app>/wick.db`, agents di `~/.<app>/agents/`, gate
->   spec/socket/log di `~/.<app>/agents/gate/...` — semua satu pohon.
+>   DB. Chain: `BuildAppName` ldflag → `wick.yml` name → "wick".
+>   `APP_NAME` env **bukan** di chain ini — dia label display (boleh
+>   spasi/kapital) untuk UI/login/title, sementara `appname.Resolve()`
+>   keluarin slug path-safe. `wick build` inject ldflag ke
+>   `internal/appname.BuildAppName`; `app.BuildAppName` jadi mirror di
+>   `app.init()`. Gate child proc walk `wick.yml` dari cwd untuk dapat
+>   brand yg sama tanpa ldflag. Hasilnya: DB di `~/.<app>/wick.db`,
+>   agents di `~/.<app>/agents/`, gate spec/socket/log di
+>   `~/.<app>/agents/gate/...` — semua satu pohon.
 > - Env vars: `WICK_GATE_SPEC` / `GATE_SPEC` / `WICK_GATE_BIN` / `GATE_BIN`
->   tidak ada (Stage 9). `APP_NAME` tetap dipakai sebagai bagian chain
->   `appname.Resolve()`.
+>   tidak ada (Stage 9).
 > - **Daily tail log** — gate emit `~/.<app>/logs/gate-YYYY-MM-DD.log`
 >   tiap invocation + stage transition (mirror format
 >   `app-/server-/worker-` log). Audit jsonl
