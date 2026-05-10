@@ -83,6 +83,35 @@ type Status struct {
 // agents config in ~/.foo/config.json.
 var AppName = ""
 
+// CacheStore is the small slice of internal/configs the provider
+// package needs to persist Status across restarts. Defining the
+// interface here (instead of importing configs) keeps provider
+// dependency-free of the HTTP/config stack — the boot wiring injects
+// the real *configs.Service.
+type CacheStore interface {
+	GetOwned(owner, key string) string
+	SetOwned(ctx context.Context, owner, key, value string) error
+}
+
+var (
+	cacheStoreMu sync.RWMutex
+	cacheStore   CacheStore
+)
+
+// SetCacheStore wires the persistent cache backend. Until called,
+// status cache lives in-memory only (probeCache TTL).
+func SetCacheStore(s CacheStore) {
+	cacheStoreMu.Lock()
+	cacheStore = s
+	cacheStoreMu.Unlock()
+}
+
+func getCacheStore() CacheStore {
+	cacheStoreMu.RLock()
+	defer cacheStoreMu.RUnlock()
+	return cacheStore
+}
+
 // Load returns every configured instance across all supported types,
 // auto-seeding the per-type default entry when its list is empty so
 // the UI always has at least one row per supported runtime.
@@ -137,7 +166,18 @@ func Save(ins Instance) error {
 	if !updated {
 		*list = append(*list, toUserInstance(ins))
 	}
-	return userconfig.Save(AppName, cfg)
+	if err := userconfig.Save(AppName, cfg); err != nil {
+		return err
+	}
+	InvalidateProbeCache(ins.Type, ins.Name)
+	// Persist a fresh probe in the background — user just changed
+	// Binary/ExtraArgs, the previous cached Status is now stale.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = RescanOne(ctx, ins.Type, ins.Name)
+	}()
+	return nil
 }
 
 // Delete removes an instance. Removing the last instance for a type
@@ -154,7 +194,11 @@ func Delete(t Type, name string) error {
 	for i := range *list {
 		if (*list)[i].Name == name {
 			*list = append((*list)[:i], (*list)[i+1:]...)
-			return userconfig.Save(AppName, cfg)
+			if err := userconfig.Save(AppName, cfg); err != nil {
+				return err
+			}
+			InvalidateProbeCache(t, name)
+			return nil
 		}
 	}
 	return nil
@@ -248,6 +292,80 @@ func ProbeAll(ctx context.Context) ([]Status, error) {
 	}
 	wg.Wait()
 	return out, nil
+}
+
+// ── Cached probes ─────────────────────────────────────────────────────
+//
+// Why cache: `<bin> --version` on Windows .cmd shims (npm-installed
+// codex/gemini) cold-starts Node and can take 1–3s each. Without a
+// cache, every Providers page reload re-spawns 3 probes serially in
+// the user's perception, blocking render. The Status payload only
+// changes when the user edits a binary or installs a new CLI, so a
+// short TTL (30s) gives instant reloads while still picking up
+// install/edit changes within the next interval.
+//
+// Mutating ops (Save, Delete) call InvalidateProbeCache to drop the
+// stale entry so the next render re-probes immediately.
+
+const probeCacheTTL = 30 * time.Second
+
+type probeCacheEntry struct {
+	status Status
+	at     time.Time
+}
+
+var (
+	probeCacheMu sync.RWMutex
+	probeCache   = map[string]probeCacheEntry{}
+)
+
+func probeCacheKey(t Type, name string) string { return string(t) + "/" + name }
+
+// ProbeAllCached returns Status per configured instance, serving from
+// an in-memory cache when the entry is younger than probeCacheTTL.
+// Stale or missing entries are re-probed in parallel under ctx.
+func ProbeAllCached(ctx context.Context) ([]Status, error) {
+	all, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Status, len(all))
+	var wg sync.WaitGroup
+	now := time.Now()
+	for i := range all {
+		i := i
+		key := probeCacheKey(all[i].Type, all[i].Name)
+		probeCacheMu.RLock()
+		entry, ok := probeCache[key]
+		probeCacheMu.RUnlock()
+		if ok && now.Sub(entry.at) < probeCacheTTL {
+			out[i] = entry.status
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st := Probe(ctx, all[i])
+			probeCacheMu.Lock()
+			probeCache[key] = probeCacheEntry{status: st, at: time.Now()}
+			probeCacheMu.Unlock()
+			out[i] = st
+		}()
+	}
+	wg.Wait()
+	return out, nil
+}
+
+// InvalidateProbeCache drops the cached Status for one instance.
+// Empty type or name drops the whole cache (useful on bulk ops).
+func InvalidateProbeCache(t Type, name string) {
+	probeCacheMu.Lock()
+	defer probeCacheMu.Unlock()
+	if t == "" || name == "" {
+		probeCache = map[string]probeCacheEntry{}
+		return
+	}
+	delete(probeCache, probeCacheKey(t, name))
 }
 
 // ── internal ──────────────────────────────────────────────────────────

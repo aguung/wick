@@ -360,6 +360,43 @@ Prefix konsisten supaya `grep agents.` di server log nge-trace lifecycle satu sp
 
 Output di `<base>/logs/server-YYYY-MM-DD.log` (bukan app-log, karena emit via global `zerolog/log` yg di-init di server boot, bukan tray).
 
+#### Status Cache (DB-persisted)
+
+Why: cold `--version` spawn pada Node-shim CLI (codex/gemini `.cmd`) bisa 1-3 detik karena Node start. 3 provider sequential blocking bikin Providers page hang setelah lab/MSI baru install. Cache TTL in-memory 30s sebelumnya cuma masking — restart wick = penalti dibayar lagi.
+
+Solusi: persist `Status` ke `configs` table satu row per instance, key `provider_status:<type>/<name>`, value JSON `{path, path_found, version, version_err, scanned_at, version_at}`. Owner `agents`. File: `internal/agents/provider/status_cache.go`.
+
+**Lifecycle**:
+
+| Trigger | Action |
+|---|---|
+| Server boot | Background `RescanAll` (30s ctx timeout) — prime DB sekali |
+| `/tools/agents/providers` GET | `LoadCached` baca DB, render instant. Miss → fall through `Probe` + persist |
+| `Save`/`Delete` provider instance | Background `RescanOne` (10s ctx) — DB row refresh sebelum next reload |
+| Tombol "Rescan all" header | `RescanAll` sync (30s ctx) → 303 redirect |
+| Tombol per-card "Rescan" | `RescanOne` sync (15s ctx) → 303 redirect |
+| Auto-rescan ON + entry stale >24h | Page render trigger background `RescanOne` (10s ctx); current render tetap pake cache |
+| Auto-rescan OFF | Tidak ada background refresh; user harus klik manual |
+
+**Toggle**: `agents.auto_rescan` config key (default `true`). UI button "Auto-rescan: on/off" di header Providers page. `VersionRefreshInterval = 24 * time.Hour`.
+
+**Storage abstraction**: `provider.CacheStore` interface (`GetOwned/SetOwned`) injected via `provider.SetCacheStore(configsSvc)` di boot. Interface kecil ini memungkinkan provider package tetap bebas import `internal/configs`. Sebelum injection (boot belum jalan), cache no-op — `LoadCached` fall through ke live `Probe`.
+
+**Routes**:
+- `POST /tools/agents/providers/rescan` → `RescanAll`
+- `POST /tools/agents/providers/rescan/{type}/{name}` → `RescanOne`
+- `POST /tools/agents/providers/auto-rescan/toggle` → flip toggle
+
+#### Scan Known Locations
+
+`scanKnownLocations(Type) (path, ok)` di `scan_{windows,unix}.go` cek install path standar saat `exec.LookPath` miss. Tray-launched wick inherit PATH minimal dari Explorer/login session, jadi installer-modified PATH (npm prefix, claude installer) often invisible — scan close gap.
+
+**Windows** (`scan_windows.go`): npm root list (`%APPDATA%\npm`, `C:\nvm4w\nodejs`, nvm-windows, fnm, volta, `Program Files\nodejs`) cross-product dgn `.cmd`/`.exe`. Plus per-type installer paths (claude: `~/.local/bin`, `LOCALAPPDATA\Programs\claude`, `Program Files\Claude`).
+
+**macOS/Linux** (`scan_unix.go`): per-user bin (`~/.local/bin`, `~/.npm-global/bin`, pnpm/yarn/volta/asdf/bun) + glob versioned dirs (nvm `~/.nvm/versions/node/*/bin`, fnm Linux `~/.local/share/fnm/...`, fnm macOS `~/Library/Application Support/fnm/...`) + system bin (homebrew Apple Silicon + Intel, MacPorts, distro `/usr/bin`).
+
+First hit wins. Order: per-user bin → versioned managers → system bin. Dipake oleh `Probe` (UI cards) + `pool.resolveProviderBinary` (spawn site) lewat helper sama.
+
 ### Phase 5 — Slack Transport
 
 Tujuan: trigger agent dari Slack thread. Reaction lifecycle + final message + meta-command.

@@ -146,6 +146,7 @@ type ProvidersVM struct {
 	PoolMax       int
 	SupportedKeys []string
 	Gate          GateStatusVM
+	AutoRescan    bool
 }
 
 // GateStatusVM is the small "is the command gate alive?" card on

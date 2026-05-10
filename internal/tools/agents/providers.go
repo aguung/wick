@@ -27,7 +27,7 @@ func providersPage(c *tool.Ctx) {
 
 	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
 	defer cancel()
-	statuses, err := provider.ProbeAll(ctx)
+	statuses, err := provider.LoadCached(ctx)
 	if err != nil {
 		log.Ctx(c.Context()).Error().Msgf("providers probe: %s", err.Error())
 		c.Error(http.StatusInternalServerError, err.Error())
@@ -72,6 +72,7 @@ func providersPage(c *tool.Ctx) {
 		PoolMax:       poolMaxConcurrent(),
 		SupportedKeys: supportedTypeKeys(),
 		Gate:          gateStatusVM(),
+		AutoRescan:    provider.AutoRescanEnabled(),
 	}))
 }
 
@@ -185,6 +186,45 @@ func toggleGate(c *tool.Ctx) {
 	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
 }
 
+// rescanAllProviders forces a fresh path-scan + version probe for
+// every configured instance, persisting results to the cache. Used
+// by the "Rescan all" button on the Providers page when the user
+// just installed a new CLI and doesn't want to wait for the 24h
+// auto-refresh.
+func rescanAllProviders(c *tool.Ctx) {
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+	provider.RescanAll(ctx)
+	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
+}
+
+// rescanOneProvider re-probes a single instance. Used by the per-card
+// Rescan button so the user can refresh just the row they care about.
+func rescanOneProvider(c *tool.Ctx) {
+	t := provider.Type(c.PathValue("type"))
+	name := c.PathValue("name")
+	if t == "" || name == "" {
+		c.Error(http.StatusBadRequest, "type and name required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 15*time.Second)
+	defer cancel()
+	provider.RescanOne(ctx, t, name)
+	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
+}
+
+// toggleAutoRescan flips agents.auto_rescan in configs. When off, the
+// background staleness re-probe stops; user must hit Rescan manually.
+func toggleAutoRescan(c *tool.Ctx) {
+	on := !provider.AutoRescanEnabled()
+	if err := provider.SetAutoRescan(c.Context(), on); err != nil {
+		log.Ctx(c.Context()).Error().Msgf("toggle auto-rescan: %s", err.Error())
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
+}
+
 // providerSpawnDetail renders the timeline of one spawn log file. The
 // `file` path param is the bare filename (no directory) — the
 // SpawnLogger resolves it under its own BaseDir.
@@ -243,7 +283,7 @@ func poolMaxConcurrent() int {
 func providerChoices(ctx context.Context) []view.ProviderChoiceVM {
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	statuses, err := provider.ProbeAll(probeCtx)
+	statuses, err := provider.ProbeAllCached(probeCtx)
 	if err != nil {
 		return nil
 	}

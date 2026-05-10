@@ -442,6 +442,16 @@ func NewServer() *Server {
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
 	agentstool.SetConfigs(configsSvc)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
+	provider.SetCacheStore(configsSvc)
+	// Prime the persistent status cache once in the background so the
+	// first load of /tools/agents/providers renders from cache instead
+	// of waiting on three cold `--version` spawns. Subsequent boots
+	// hit the DB cache directly until 24h staleness or a manual rescan.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = provider.RescanAll(ctx)
+	}()
 
 	// ── Agents: Slack channel (optional — only starts when configured) ──
 	slackCfg := agentconfig.SlackConfig{
