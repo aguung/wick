@@ -76,6 +76,7 @@ func init() {
 func RegisterBuiltins() {
 	agentsConfigs := agentconfig.SeedGeneralConfig()
 	agentsConfigs = append(agentsConfigs, agentconfig.SeedSlackChannelConfig()...)
+	agentsConfigs = append(agentsConfigs, agentconfig.SeedTelegramChannelConfig()...)
 	agentsConfigs = append(agentsConfigs, agentconfig.SeedWorkspaceConfig()...)
 	registerOnce(tool.Module{
 		Meta: tool.Tool{
