@@ -17,25 +17,24 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/yogasw/wick/internal/accesstoken"
 	"github.com/yogasw/wick/internal/admin"
+	agentchannels "github.com/yogasw/wick/internal/agents/channels"
+	agentconfig "github.com/yogasw/wick/internal/agents/config"
+	agentevent "github.com/yogasw/wick/internal/agents/event"
+	"github.com/yogasw/wick/internal/agents/gate"
+	agentgate "github.com/yogasw/wick/internal/agents/gate"
+	agentpool "github.com/yogasw/wick/internal/agents/pool"
+	"github.com/yogasw/wick/internal/agents/provider"
+	agentregistry "github.com/yogasw/wick/internal/agents/registry"
+	agentsession "github.com/yogasw/wick/internal/agents/session"
+	agentworkspace "github.com/yogasw/wick/internal/agents/workspace"
 	"github.com/yogasw/wick/internal/bookmark"
 	"github.com/yogasw/wick/internal/configs"
 	"github.com/yogasw/wick/internal/connectors"
 	"github.com/yogasw/wick/internal/connectors/wickmanager"
-	"github.com/yogasw/wick/internal/metrics"
 	"github.com/yogasw/wick/internal/enc"
 	"github.com/yogasw/wick/internal/entity"
-	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
-	agentstool "github.com/yogasw/wick/internal/tools/agents"
-	agentchannels "github.com/yogasw/wick/internal/agents/channels"
-	"github.com/yogasw/wick/internal/agents/gate"
-	"github.com/yogasw/wick/internal/agents/provider"
-	agentconfig "github.com/yogasw/wick/internal/agents/config"
-	agentevent "github.com/yogasw/wick/internal/agents/event"
-	agentpool "github.com/yogasw/wick/internal/agents/pool"
-	agentregistry "github.com/yogasw/wick/internal/agents/registry"
-	agentsession "github.com/yogasw/wick/internal/agents/session"
-	agentworkspace "github.com/yogasw/wick/internal/agents/workspace"
 	"github.com/yogasw/wick/internal/health"
 	"github.com/yogasw/wick/internal/home"
 	"github.com/yogasw/wick/internal/initcreds"
@@ -43,9 +42,9 @@ import (
 	"github.com/yogasw/wick/internal/jobs"
 	connectorrunspurge "github.com/yogasw/wick/internal/jobs/connector-runs-purge"
 	"github.com/yogasw/wick/internal/login"
-	"github.com/yogasw/wick/internal/accesstoken"
 	"github.com/yogasw/wick/internal/manager"
 	"github.com/yogasw/wick/internal/mcp"
+	"github.com/yogasw/wick/internal/metrics"
 	"github.com/yogasw/wick/internal/oauth"
 	"github.com/yogasw/wick/internal/pkg/config"
 	"github.com/yogasw/wick/internal/pkg/postgres"
@@ -53,8 +52,10 @@ import (
 	"github.com/yogasw/wick/internal/sso"
 	"github.com/yogasw/wick/internal/tags"
 	"github.com/yogasw/wick/internal/tools"
-	"github.com/yogasw/wick/pkg/job"
+	agentstool "github.com/yogasw/wick/internal/tools/agents"
+	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	pkgentity "github.com/yogasw/wick/pkg/entity"
+	"github.com/yogasw/wick/pkg/job"
 	"github.com/yogasw/wick/pkg/tool"
 	"github.com/yogasw/wick/web"
 
@@ -84,6 +85,16 @@ func NewServer() *Server {
 	// loops below. Mirrors the call in internal/pkg/worker.NewServer
 	// so both processes share the same registry view.
 	connectorrunspurge.Register(db)
+
+	// Static built-in modules every wick app gets by default — agents
+	// tool plus the github / httprest connectors. cmd/lab additionally
+	// registers Lab samples (convert-text, crudcrud, sample-post) from
+	// its own main; downstream user apps see only Builtins here.
+	// All three are idempotent on Meta.Key: a downstream main.go can
+	// re-register the same key without producing duplicates.
+	tools.RegisterBuiltins()
+	jobs.RegisterBuiltins()
+	connectors.RegisterBuiltins()
 
 	// ── Tool modules (discover first so their Specs feed into the
 	// config bootstrap below) ──────────────────────────────────────
@@ -225,6 +236,30 @@ func NewServer() *Server {
 	}
 	agentsBcast := agentstool.NewBroadcaster()
 	agentsSpawnLogger := provider.NewSpawnLogger(agentsLayout.BaseDir)
+
+	// Resolve the gate binary up front: sibling-of-executable first, embedded
+	// extract as backup, PATH lookup as last resort. Failure is non-fatal —
+	// gate stays disabled and pool falls back to whitelist-only mode.
+	gateConfigEnabled := true
+	if v := configsSvc.GetOwned("agents", "gate_enabled"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			gateConfigEnabled = b
+		}
+	}
+	resolvedGateBin, gateSource, gateBinErr := agentgate.ResolveGateBinaryWithSource(filepath.Join(agentsLayout.BaseDir, "_gate-bin"))
+	gateStatus := agentstool.GateStatus{
+		Enabled: gateBinErr == nil && gateConfigEnabled,
+		Binary:  resolvedGateBin,
+		Source:  gateSource,
+	}
+	switch {
+	case !gateConfigEnabled:
+		gateStatus.Reason = "disabled via agents.gate_enabled"
+		log.Info().Msg("agents gate disabled via config")
+	case gateBinErr != nil:
+		gateStatus.Reason = gateBinErr.Error()
+		log.Warn().Msgf("agents gate disabled: %s", gateBinErr.Error())
+	}
 	var agentsPool *agentpool.Pool
 	var slackChan *agentchannels.SlackChannel    // forward ref so factory closure can call it
 	var telegramChan *agentchannels.TelegramChannel // forward ref
@@ -270,44 +305,27 @@ func NewServer() *Server {
 		return configsSvc.GetOwned("agents", "bypass_permissions") == "true"
 	}
 
-	// gateAppName is the compile-time app name burned into the gate
-	// binary via -ldflags. Must match what the binary uses so both sides
-	// compute the same SharedSpecPath / SharedSocketPath.
-	gateAppName := strings.TrimSpace(os.Getenv("APP_NAME"))
-	if gateAppName == "" {
-		gateAppName = "wick"
-	}
-
-	// GateLoader is evaluated on every agent spawn so UI changes to
-	// gate_enabled / allowed_cmds take effect immediately without
-	// requiring a server restart.
-	gateBin := resolveWickGateBin()
-	if gateBin == "" {
-		log.Warn().Msg("agents: wick-gate binary not found — gate will be disabled even if gate_enabled=true (build cmd/wick-gate or put it in PATH)")
-		agentstool.SetGateStatus(agentstool.GateStatus{
-			Enabled: false,
-			Reason:  "gate binary not found — run `make build-gate` or place wick-gate on PATH",
-		})
-	} else {
-		agentstool.SetGateStatus(agentstool.GateStatus{
-			Enabled: true,
-			Binary:  gateBin,
-			Source:  gate.SourceSibling,
-		})
+	// syncSharedSpec rewrites the shared spec.json on every spawn so
+	// allowed_cmds edits take effect without a server restart.
+	// AutoApproved entries are preserved from disk.
+	syncSharedSpec := func() error {
+		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
+		spec, _ := agentgate.LoadSpec(agentgate.AppName())
+		spec.Rules = rules
+		return agentgate.WriteSharedSpec(agentgate.AppName(), spec)
 	}
 	agentsFactory.GateLoader = func() *agentpool.GateConfig {
 		if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
 			return nil
 		}
-		if gateBin == "" {
+		if resolvedGateBin == "" {
 			return nil
 		}
-		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
-		log.Debug().Int("rules", len(rules)).Msg("agents: gate active for spawn")
+		_ = syncSharedSpec()
+		log.Debug().Int("rules", 0).Msg("agents: gate active for spawn")
 		return &agentpool.GateConfig{
-			GateBinary:   gateBin,
-			AppName:      gateAppName,
-			Rules:        rules,
+			GateBinary:   resolvedGateBin,
+			AppName:      agentgate.AppName(),
 			DefaultScope: agentsLayout.WorkspaceManagedPath("default"),
 		}
 	}
@@ -333,12 +351,22 @@ func NewServer() *Server {
 	agentstool.SetConfigs(configsSvc)
 	agentstool.SetDB(db)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
+	provider.SetCacheStore(configsSvc)
+	// Prime the persistent status cache once in the background so the
+	// first load of /tools/agents/providers renders from cache instead
+	// of waiting on three cold `--version` spawns. Subsequent boots
+	// hit the DB cache directly until 24h staleness or a manual rescan.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = provider.RescanAll(ctx)
+	}()
 
 	// ── Gate: ApprovalManager (shared socket + initial spec.json) ────────
 	// RouteByCWD maps the gate binary's working directory to the wick
 	// session that owns that workspace so SSE events land in the right tab.
 	approvalMgr, amErr := gate.NewApprovalManager(gate.ApprovalManagerOptions{
-		AppName: gateAppName,
+		AppName: agentgate.AppName(),
 		// Route by active pool sessions only — multiple sessions can share the
 		// same workspace name, so iterating the registry (which includes idle
 		// sessions) is non-deterministic and picks the wrong session. The active
@@ -377,13 +405,17 @@ func NewServer() *Server {
 	})
 	if amErr != nil {
 		log.Warn().Err(amErr).Msg("agents: gate ApprovalManager init failed — interactive approval disabled")
+		gateStatus.Enabled = false
+		gateStatus.Reason = amErr.Error()
 	} else if _, err := approvalMgr.Start(); err != nil {
 		log.Warn().Err(err).Msg("agents: gate socket bind failed — interactive approval disabled")
+		gateStatus.Enabled = false
+		gateStatus.Reason = "listener start: " + err.Error()
 	} else {
 		// Write initial spec.json so the gate binary finds the whitelist
 		// rules on the very first spawn before any agent has started.
 		initialRules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
-		if wsErr := gate.WriteSharedSpec(gateAppName, gate.Spec{
+		if wsErr := gate.WriteSharedSpec(agentgate.AppName(), gate.Spec{
 			Rules:        initialRules,
 			DefaultScope: agentsLayout.WorkspaceManagedPath("default"),
 		}); wsErr != nil {
@@ -392,6 +424,7 @@ func NewServer() *Server {
 		agentstool.SetApprovals(approvalMgr)
 		log.Info().Str("socket", approvalMgr.SocketPath()).Msg("agents: gate socket ready")
 	}
+	agentstool.SetGateStatus(gateStatus)
 
 	// ── Agents: Slack channel (optional — only starts when configured) ──
 	if err := agentchannels.EnsureChannel(db, "slack"); err != nil {

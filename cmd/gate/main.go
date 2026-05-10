@@ -10,10 +10,9 @@
 // for a project initialized with `wick init myapp`).
 //
 // Configuration is loaded from the shared spec at
-// ~/.<app>/agents/gate/spec.json — the gate binary derives this path
-// from the compile-time `gate.AppName` (injected via -ldflags by
-// `wick build`). No runtime env var is consulted; this is the
-// post-Stage 9 model.
+// ~/.<app>/agents/gate/spec.json — the gate binary derives `<app>`
+// from its own executable filename via gate.AppName() (strip
+// `-gate[.exe]` suffix). No env var, no ldflag injection.
 //
 // Fail-safe: if anything goes wrong (spec missing, parse failure,
 // timeout reading stdin), we BLOCK + log. Better to refuse a real
@@ -86,9 +85,22 @@ func main() {
 // of one command.
 func run() int {
 	requestID := newRequestID()
+	app := gate.AppName()
 
-	spec, err := gate.LoadSpec(gate.AppName)
+	// Tail-log the invocation entry point before doing anything else
+	// so operators can see "gate fired" even when later steps fail
+	// (spec missing, stdin parse error, etc.).
+	gate.LogDaily(app, "info", "gate invoked", map[string]any{
+		"request_id": requestID,
+		"pid":        os.Getpid(),
+	})
+
+	spec, err := gate.LoadSpec(app)
 	if err != nil {
+		gate.LogDaily(app, "error", "load spec", map[string]any{
+			"request_id": requestID,
+			"error":      err.Error(),
+		})
 		fmt.Fprintf(os.Stderr, "gate: load spec: %v\n", err)
 		return 2
 	}
@@ -97,6 +109,10 @@ func run() int {
 
 	in, perr := readHookInput(os.Stdin, stdinReadTimeout)
 	if perr != nil {
+		gate.LogDaily(app, "warn", "stdin parse blocked", map[string]any{
+			"request_id": requestID,
+			"error":      perr.Error(),
+		})
 		logTerminalEntry(requestID, "Bash", "", "", "blocked", "", "stdin parse: "+perr.Error())
 		fmt.Fprintf(os.Stderr, "gate: %v\n", perr)
 		return 2
@@ -117,6 +133,10 @@ func run() int {
 	// Whitelist match — fastest happy path.
 	matcher := gate.NewMatcher(spec.Rules, spec.DefaultScope)
 	if allow, _ := matcher.Decide(cmd); allow {
+		gate.LogDaily(app, "info", "allowed via whitelist", map[string]any{
+			"request_id": requestID,
+			"cmd":        cmd,
+		})
 		logTerminalEntry(requestID, "Bash", cmd, cwd, "allowed", "whitelist", "")
 		return 0
 	}
@@ -126,23 +146,48 @@ func run() int {
 	// be running.
 	key := gate.MatchKey("Bash", cmd)
 	if gate.IsAutoApproved(spec, key) {
+		gate.LogDaily(app, "info", "allowed via auto_approved", map[string]any{
+			"request_id": requestID,
+			"cmd":        cmd,
+			"match_key":  key,
+		})
 		logTerminalEntry(requestID, "Bash", cmd, cwd, "allowed", "auto_approved", "")
 		return 0
 	}
 
 	// Interactive approval — dial the shared daemon socket.
-	socketPath := gate.SharedSocketPath(gate.AppName)
+	socketPath := gate.SharedSocketPath(app)
+	gate.LogDaily(app, "info", "dial daemon", map[string]any{
+		"request_id": requestID,
+		"cmd":        cmd,
+		"socket":     socketPath,
+	})
 	logStage(requestID, "socket_dial", cmd, cwd, "", socketPath)
 	decision, reason, err := requestApprovalWithLog(socketPath, "Bash", cmd, cwd, claudeSID, key, requestID)
 	if err != nil {
+		gate.LogDaily(app, "warn", "approval rpc failed (blocked)", map[string]any{
+			"request_id": requestID,
+			"cmd":        cmd,
+			"error":      err.Error(),
+		})
 		logTerminalEntry(requestID, "Bash", cmd, cwd, "blocked", "", "approval rpc: "+err.Error())
 		fmt.Fprintf(os.Stderr, "gate: blocked — approval rpc: %v\n", err)
 		return 2
 	}
 	if gate.IsApprove(decision) {
+		gate.LogDaily(app, "info", "allowed via "+decision, map[string]any{
+			"request_id": requestID,
+			"cmd":        cmd,
+			"reason":     reason,
+		})
 		logTerminalEntry(requestID, "Bash", cmd, cwd, "allowed", decision, reason)
 		return 0
 	}
+	gate.LogDaily(app, "warn", "blocked: "+decision, map[string]any{
+		"request_id": requestID,
+		"cmd":        cmd,
+		"reason":     reason,
+	})
 	logTerminalEntry(requestID, "Bash", cmd, cwd, "blocked", decision, reason)
 	fmt.Fprintf(os.Stderr, "gate: blocked — %s\n", reason)
 	return 2
@@ -175,7 +220,7 @@ func runPathGate(requestID string, spec gate.Spec, in hookInput) int {
 	}
 
 	// Interactive approval via shared socket.
-	socketPath := gate.SharedSocketPath(gate.AppName)
+	socketPath := gate.SharedSocketPath(gate.AppName())
 	decision, reason, err := requestApprovalWithLog(socketPath, tool, path, in.CWD, in.SessionID, key, requestID)
 	if err != nil {
 		logTerminalEntry(requestID, tool, path, in.CWD, "blocked", "", "approval rpc: "+err.Error())
@@ -205,7 +250,7 @@ func logStage(requestID, stage, cmd, cwd, decision, reason string) {
 		Reason:    reason,
 		RequestID: requestID,
 	}
-	_ = gate.Append(gate.AppName, entry)
+	_ = gate.Append(gate.AppName(), entry)
 }
 
 // logTerminalEntry writes the final allowed/blocked entry for any tool.
@@ -226,7 +271,7 @@ func logTerminalEntry(requestID, tool, cmd, cwd, status, decision, reason string
 		RequestID: requestID,
 		MatchKey:  key,
 	}
-	_ = gate.Append(gate.AppName, entry)
+	_ = gate.Append(gate.AppName(), entry)
 }
 
 // requestApprovalWithLog dials the shared daemon socket, sends one

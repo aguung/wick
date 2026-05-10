@@ -148,6 +148,9 @@ func Register(r tool.Router) {
 	r.DELETE("/providers/{type}/{name}", deleteProviderInstance)
 	r.GET("/providers/spawns/{file}", providerSpawnDetail)
 	r.POST("/providers/gate/toggle", toggleGate)
+	r.POST("/providers/rescan", rescanAllProviders)
+	r.POST("/providers/rescan/{type}/{name}", rescanOneProvider)
+	r.POST("/providers/auto-rescan/toggle", toggleAutoRescan)
 
 	r.GET("/channels", channelsPage)
 	r.GET("/channels/slack", slackChannelPage)

@@ -13,12 +13,24 @@ import (
 templ ProvidersPage(vm ProvidersVM) {
 	@AgentsLayout(vm.Base, "providers") {
 		<div class="space-y-6">
-			<div class="flex items-center justify-between">
+			<div class="flex items-center justify-between gap-3">
 				<h1 class="text-lg font-semibold text-black-900 dark:text-white-100">Providers</h1>
-				<button
-					onclick="document.getElementById('add-provider-modal').classList.remove('hidden')"
-					class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 active:bg-green-700 transition-colors"
-				>+ Add Custom</button>
+				<div class="flex items-center gap-2">
+					<form method="POST" action={ templ.SafeURL(vm.Base + "/providers/auto-rescan/toggle") }>
+						if vm.AutoRescan {
+							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Auto-rescan stale entries every 24h. Click to disable.">Auto-rescan: on</button>
+						} else {
+							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Auto-rescan disabled — refresh manually only. Click to enable.">Auto-rescan: off</button>
+						}
+					</form>
+					<form method="POST" action={ templ.SafeURL(vm.Base + "/providers/rescan") }>
+						<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">Rescan all</button>
+					</form>
+					<button
+						onclick="document.getElementById('add-provider-modal').classList.remove('hidden')"
+						class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 active:bg-green-700 transition-colors"
+					>+ Add Custom</button>
+				</div>
 			</div>
 			<!-- Pool stats -->
 			<div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -166,15 +178,19 @@ templ providerCard(base string, st provider.Status) {
 					<p class="text-xs text-green-600 dark:text-green-400 mt-0.5">{ st.Version }</p>
 				}
 			</div>
-			<form method="POST" action={ templ.SafeURL(base + "/providers") } class="text-xs">
-				<input type="hidden" name="type" value={ string(st.Instance.Type) }/>
-				<input type="hidden" name="name" value={ st.Instance.Name }/>
-				<details class="relative">
-					<summary class="cursor-pointer rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 list-none">Edit</summary>
+			<div class="flex items-center gap-2">
+				<form method="POST" action={ templ.SafeURL(base + "/providers/rescan/" + string(st.Instance.Type) + "/" + st.Instance.Name) } class="text-xs">
+					<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Re-probe this provider's binary + version">Rescan</button>
+				</form>
+				<form method="POST" action={ templ.SafeURL(base + "/providers") } class="text-xs">
+					<input type="hidden" name="type" value={ string(st.Instance.Type) }/>
+					<input type="hidden" name="name" value={ st.Instance.Name }/>
+					<details class="relative">
+						<summary class="cursor-pointer rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 list-none">Edit</summary>
 					<div class="absolute right-0 mt-2 w-72 rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-3 shadow-lg z-10 space-y-2">
 						<label class="block">
 							<span class="text-xs text-black-800 dark:text-black-600">Binary path (empty = auto)</span>
-							<input type="text" name="binary" value={ st.Instance.Binary } placeholder={ string(st.Instance.Type) } class="mt-1 w-full rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 text-xs font-mono text-black-900 dark:text-white-100"/>
+							<input type="text" name="binary" value={ st.Instance.Binary } placeholder={ binaryPlaceholder(st) } class="mt-1 w-full rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 text-xs font-mono text-black-900 dark:text-white-100"/>
 						</label>
 						<label class="block">
 							<span class="text-xs text-black-800 dark:text-black-600">Extra args (space separated)</span>
@@ -192,6 +208,7 @@ templ providerCard(base string, st provider.Status) {
 					</div>
 				</details>
 			</form>
+			</div>
 		</div>
 		<dl class="text-xs space-y-1">
 			<div class="flex gap-2">
@@ -382,4 +399,18 @@ func filenameOf(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// binaryPlaceholder returns what the Edit form's binary path input
+// should hint when the registry has no override: the auto-detected
+// path (registry/PATH/scan hit) so the user can see what wick would
+// run, falling back to the bare type name when nothing was found.
+func binaryPlaceholder(st provider.Status) string {
+	if st.Instance.Binary != "" {
+		return string(st.Instance.Type)
+	}
+	if st.Path != "" {
+		return st.Path
+	}
+	return string(st.Instance.Type)
 }

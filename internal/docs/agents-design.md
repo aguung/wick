@@ -14,11 +14,28 @@ Update terakhir: 2026-05-10.
 > di bawah masih sebut nama-nama lama. Perubahan ringkas:
 >
 > - Source rename: `cmd/wick-gate/` → `cmd/gate/`. Binary user-visible
->   `<app>-gate[.exe]`, branded via `gate.AppName` ldflag. Embed asset internal
+>   `<app>-gate[.exe]` (filename mirrors brand for UX, but resolution is
+>   not filename-driven anymore — see next bullet). Embed asset internal
 >   tetap generic (`gate-<os>-<arch>`).
-> - Env vars dihapus seluruhnya: `WICK_GATE_SPEC` / `GATE_SPEC` /
->   `WICK_GATE_BIN` / `GATE_BIN` semua tidak ada. Gate derive path dari
->   compile-time `gate.AppName`.
+> - **AppName single source of truth** — `internal/appname.Resolve()`
+>   adalah satu-satunya derivation chain dipakai parent + Layout + gate +
+>   DB. Chain: `BuildAppName` ldflag → `wick.yml` name → "wick".
+>   `APP_NAME` env **bukan** di chain ini — dia label display (boleh
+>   spasi/kapital) untuk UI/login/title, sementara `appname.Resolve()`
+>   keluarin slug path-safe. `wick build` inject ldflag ke
+>   `internal/appname.BuildAppName`; `app.BuildAppName` jadi mirror di
+>   `app.init()`. Gate child proc walk `wick.yml` dari cwd untuk dapat
+>   brand yg sama tanpa ldflag. Hasilnya: DB di `~/.<app>/wick.db`,
+>   agents di `~/.<app>/agents/`, gate spec/socket/log di
+>   `~/.<app>/agents/gate/...` — semua satu pohon.
+> - Env vars: `WICK_GATE_SPEC` / `GATE_SPEC` / `WICK_GATE_BIN` / `GATE_BIN`
+>   tidak ada (Stage 9).
+> - **Daily tail log** — gate emit `~/.<app>/logs/gate-YYYY-MM-DD.log`
+>   tiap invocation + stage transition (mirror format
+>   `app-/server-/worker-` log). Audit jsonl
+>   (`~/.<app>/agents/gate/commands.jsonl`) tetap source of truth utk
+>   UI; tail log untuk operator yg mau `tail -f` saat debug "gate fired
+>   gak ya".
 > - Spec + socket + audit log jadi **shared per-app** di
 >   `~/.<app>/agents/gate/{spec.json, gate.sock, commands.jsonl}` (bukan per-session
 >   `~/.<app>/agents/sessions/<id>/gate/...` lagi).
@@ -306,6 +323,80 @@ Tujuan: user bisa lihat path + versi tiap AI CLI provider (claude/codex/gemini),
 
 **Exit criteria**: user bisa Open `/tools/agents/providers`, lihat 3 default cards (claude/codex/gemini), edit binary override + version probe pass, add `claude/work` instance dgn `ANTHROPIC_API_KEY=...` di env, create session pilih instance, spawn jalan + spawn-log file ke-create. Idle/active state yang ke-display di Overview bukan lagi "idle terus tanpa info" — Active/Max + queue waiting time keliat realtime tiap reload.
 
+#### Binary Resolution Chain (Probe + Spawn)
+
+Both `provider.Probe` (UI cards) dan `pool.resolveProviderBinary` (spawn site) pakai chain sama, urutan deterministic — first hit wins:
+
+1. **registry** — `Instance.Binary` set via UI form (`/tools/agents/providers` Edit). Absolute path, ngga di-resolve via PATH lagi.
+2. **path** — `exec.LookPath(<type>)` baca `%PATH%` + `PATHEXT` (Windows). Hit kalau CLI installer udah extend PATH.
+3. **scan** — `scanKnownLocations(<type>)` cek install paths standar yang installer drop tapi sering ngga di PATH (mis. `~/.local/bin/claude.exe` di Windows, `~/.npm-global/bin/codex` di Unix). Per-OS list di `internal/agents/provider/scan_{windows,unix}.go`.
+4. **miss/unconfigured** — semua gagal. Probe set `PathFound=false`; spawn fallback ke bare type name (`exec.Command("claude")`) yang akan error pas `Start()`.
+
+Why scan exists: tray-launched wick inherit PATH dari Explorer/login session, bukan dari user shell. Installer-modified PATH (mis. npm `prefix` / claude installer) often visible di terminal tapi invisible ke tray. Scan close that gap tanpa minta user edit binary path manual.
+
+#### Hide Console Windows (Windows tray spawn)
+
+Windows console subsystem child (claude.exe, codex.exe, npm shims) yg di-spawn dari parent **tanpa attached console** (tray app `-H windowsgui`) bikin Windows alokasi console window baru → flash + auto-close. Solusi: `SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}` (CREATE_NO_WINDOW).
+
+Pattern di-apply 2 tempat:
+- `internal/agents/provider/hide_console_{windows,other}.go` — Probe `--version` exec
+- `internal/agents/provider/claude/hide_console_{windows,other}.go` — long-lived spawn
+
+Same pattern existing di `internal/systemtray/{editor,notify}_windows.go`. Dev mode (`go run` dari shell) parent punya console → child inherit → no flash; CREATE_NO_WINDOW aman dipake universal.
+
+#### Spawn/Probe Log Keys
+
+Prefix konsisten supaya `grep agents.` di server log nge-trace lifecycle satu spawn end-to-end:
+
+| Key | Site | Fields |
+|---|---|---|
+| `agents.probe: resolve` | `provider.Probe` (debug) | `type, name, path, source (registry\|path\|scan\|miss), found` |
+| `agents.probe: ok` | `provider.Probe` (debug) | `type, name, version` |
+| `agents.probe: --version failed` | `provider.Probe` (warn) | `type, name, path, err` |
+| `agents.spawn: resolve provider` | `pool.Build` (info) | `session, provider_type, provider_name, binary, source` |
+| `agents.spawn: starting` | `claude.Spawn` (info) | `bin, argv, cwd, resume` |
+| `agents.spawn: started` | `claude.Spawn` (info) | `pid, bin` |
+| `agents.spawn: start failed` | `claude.Spawn` (error) | `bin, err` + hint untuk set `provider.Binary` |
+
+Output di `<base>/logs/server-YYYY-MM-DD.log` (bukan app-log, karena emit via global `zerolog/log` yg di-init di server boot, bukan tray).
+
+#### Status Cache (DB-persisted)
+
+Why: cold `--version` spawn pada Node-shim CLI (codex/gemini `.cmd`) bisa 1-3 detik karena Node start. 3 provider sequential blocking bikin Providers page hang setelah lab/MSI baru install. Cache TTL in-memory 30s sebelumnya cuma masking — restart wick = penalti dibayar lagi.
+
+Solusi: persist `Status` ke `configs` table satu row per instance, key `provider_status:<type>/<name>`, value JSON `{path, path_found, version, version_err, scanned_at, version_at}`. Owner `agents`. File: `internal/agents/provider/status_cache.go`.
+
+**Lifecycle**:
+
+| Trigger | Action |
+|---|---|
+| Server boot | Background `RescanAll` (30s ctx timeout) — prime DB sekali |
+| `/tools/agents/providers` GET | `LoadCached` baca DB, render instant. Miss → fall through `Probe` + persist |
+| `Save`/`Delete` provider instance | Background `RescanOne` (10s ctx) — DB row refresh sebelum next reload |
+| Tombol "Rescan all" header | `RescanAll` sync (30s ctx) → 303 redirect |
+| Tombol per-card "Rescan" | `RescanOne` sync (15s ctx) → 303 redirect |
+| Auto-rescan ON + entry stale >24h | Page render trigger background `RescanOne` (10s ctx); current render tetap pake cache |
+| Auto-rescan OFF | Tidak ada background refresh; user harus klik manual |
+
+**Toggle**: `agents.auto_rescan` config key (default `true`). UI button "Auto-rescan: on/off" di header Providers page. `VersionRefreshInterval = 24 * time.Hour`.
+
+**Storage abstraction**: `provider.CacheStore` interface (`GetOwned/SetOwned`) injected via `provider.SetCacheStore(configsSvc)` di boot. Interface kecil ini memungkinkan provider package tetap bebas import `internal/configs`. Sebelum injection (boot belum jalan), cache no-op — `LoadCached` fall through ke live `Probe`.
+
+**Routes**:
+- `POST /tools/agents/providers/rescan` → `RescanAll`
+- `POST /tools/agents/providers/rescan/{type}/{name}` → `RescanOne`
+- `POST /tools/agents/providers/auto-rescan/toggle` → flip toggle
+
+#### Scan Known Locations
+
+`scanKnownLocations(Type) (path, ok)` di `scan_{windows,unix}.go` cek install path standar saat `exec.LookPath` miss. Tray-launched wick inherit PATH minimal dari Explorer/login session, jadi installer-modified PATH (npm prefix, claude installer) often invisible — scan close gap.
+
+**Windows** (`scan_windows.go`): npm root list (`%APPDATA%\npm`, `C:\nvm4w\nodejs`, nvm-windows, fnm, volta, `Program Files\nodejs`) cross-product dgn `.cmd`/`.exe`. Plus per-type installer paths (claude: `~/.local/bin`, `LOCALAPPDATA\Programs\claude`, `Program Files\Claude`).
+
+**macOS/Linux** (`scan_unix.go`): per-user bin (`~/.local/bin`, `~/.npm-global/bin`, pnpm/yarn/volta/asdf/bun) + glob versioned dirs (nvm `~/.nvm/versions/node/*/bin`, fnm Linux `~/.local/share/fnm/...`, fnm macOS `~/Library/Application Support/fnm/...`) + system bin (homebrew Apple Silicon + Intel, MacPorts, distro `/usr/bin`).
+
+First hit wins. Order: per-user bin → versioned managers → system bin. Dipake oleh `Probe` (UI cards) + `pool.resolveProviderBinary` (spawn site) lewat helper sama.
+
 ### Phase 5 — Slack Transport
 
 Tujuan: trigger agent dari Slack thread. Reaction lifecycle + final message + meta-command.
@@ -394,7 +485,7 @@ Stage 9 — Hapus env vars + single shared spec/socket/audit + installer ship si
 - [x] **7.7** Stage 7 — VSCode debug tooling: `debug: prep` build gate sidecar sebagai sibling di `bin/<app>-gate[.exe]`, `ResolveGateBinary` tambah sibling-of-executable step → wicklab pickup otomatis tanpa env. `wicklab-gate` standalone launch dihapus → `.vscode/{tasks,launch}.json` + `internal/agents/gate/embed.go`
 - [x] **7.8** Stage 8 — Observability follow-ups: gate emit per-stage audit trail ke `commands.jsonl` (received → socket_dial → socket_sent → socket_recv → terminal, di-tie via RequestID); Entry struct extend dgn Stage/Tool/Decision/RequestID/MatchKey; `ResolveGateBinaryWithSource` return source label; Providers page punya GateStatusCard; SessionDetail tampil GateDisabledBanner kalau gate gak resolved → `internal/agents/gate/{log,embed}.go` + `cmd/gate/main.go` + `internal/tools/agents/{providers,handler}.go` + `view/{approvals,providers,sessions}.templ`
 - [x] **7.9** Stage 9 — Spec resolution refactor + cleanup pass:
-  - **9a Source rename** — `cmd/wick-gate/` → `cmd/gate/`, env vars `WICK_GATE_*` → drop entirely, output user-visible `<app>-gate` (branded via `gate.AppName` ldflag); embed asset internal generic `gate-<os>-<arch>`.
+  - **9a Source rename** — `cmd/wick-gate/` → `cmd/gate/`, env vars `WICK_GATE_*` → drop entirely, output user-visible `<app>-gate` (branded by filename — sidecar wajib bernama `<app>-gate[.exe]`); embed asset internal generic `gate-<os>-<arch>`.
   - **9b Shared model** — single shared spec at `~/.<app>/agents/gate/spec.json`, single shared socket at `~/.<app>/agents/gate/gate.sock`, single shared audit log at `~/.<app>/agents/gate/commands.jsonl`. Per-session always-allow scope di-trade ke per-app. Daemon route by cwd dari hook payload (longest workspace-path prefix wins).
   - **9c Builder absorb** — `internal/builder/gate.go` compile `cmd/gate` ke `assets/` + `bin/<app>-gate-<os>-<arch>`; template release.yml drop step "Build wick-gate". Soft-skip pada downstream fork tanpa cmd/gate.
   - **9d Installer ship sidecar** — MSI ship `<App>-gate.exe` di same folder, .deb ship `/usr/bin/<app>-gate`, .app bundle ship `Contents/MacOS/<App>-gate`. Sibling-of-executable jadi resolution path utama, embed extract jadi backup.
@@ -1060,7 +1151,7 @@ Enrichment scan kedua event, ambil yang non-zero. Kalau spawn crash sebelum Star
 
 #### 4.6.2 Pool runtime config
 
-Pool knobs (`MaxConcurrent`, `IdleTimeout`) dibaca dari configsSvc di server boot, BUKAN hardcode. Owner = `"agents"` (set otomatis oleh `tools.RegisterBuiltins` saat append modul). Keys reflected dari `agentconfig.GeneralConfig`:
+Pool knobs (`MaxConcurrent`, `IdleTimeout`) dibaca dari configsSvc di server boot, BUKAN hardcode. Owner = `"agents"` (set otomatis oleh `tools.RegisterBuiltins` saat append modul — agents tool sekarang masuk **default Builtins** yg dipanggil dari `internal/pkg/api/server.go` boot, bukan lab-only lagi). Keys reflected dari `agentconfig.GeneralConfig`:
 
 | Config key | Default | Yang dipengaruhi |
 |---|---|---|
@@ -1628,6 +1719,33 @@ Drop the flat-file vs split-folder distinction in mind: every subfolder == one G
 | Composer (POST /sessions/{id}/send → ke transport) | — | ✅ (handler), ✅ (transport bus) |
 | Config pages (General, Slack, Workspace) | — | ✅ |
 | HTTP routes `/tools/agents/...` | — | ✅ |
+
+### 6.1 Registry split: Builtins vs Lab Samples
+
+`internal/{tools,jobs,connectors}/registry.go` masing-masing punya **dua** seed function:
+
+| Function | Scope | Caller | Isi |
+|---|---|---|---|
+| `RegisterBuiltins()` | Default-on tiap downstream wick app | `internal/pkg/api/server.go` + `internal/pkg/worker/server.go` (boot, sebelum `tools.All()`) | tools: `agents` · connectors: `github`, `httprest` · jobs: (kosong, deps-needing jobs di-register inline) |
+| `RegisterLabSamples()` | Lab binary saja | `cmd/lab/root.go` | tools: `convert-text`, `convert-text-alt`, `external` · connectors: `crudcrud` · jobs: `sample-post`, `sample-post-typicode` |
+
+**Konsekuensi penting buat agents tool**: `agents` modul sekarang masuk `tools.RegisterBuiltins()`. Artinya:
+
+- Setiap downstream app yang dibuat lewat `wick build` otomatis dapat tool **Agents** + halaman manager + page Settings (general/slack/workspace) tanpa harus `app.RegisterTool` manual di main.go.
+- Owner-stamping config rows (`Owner = "agents"`) tetap jalan lewat `extra` slice yg sama — pool boot di server.go terus baca `configsSvc.GetOwned("agents", …)` tanpa perubahan.
+- `cmd/lab` lab binary panggil **kedua** fungsi (lihat `cmd/lab/root.go`) supaya samples lab + builtins-nya nyala bareng.
+
+**Idempotent on `Meta.Key`**: `Register*` ketiganya pakai dedupe per-Key. Aman kalau:
+- Web server + worker masing-masing panggil `RegisterBuiltins()` di proses yang sama (system tray spawn keduanya).
+- Downstream main.go re-register key yang sama (mis. override `agents` config presets) — call kedua jadi no-op, registrasi pertama menang.
+
+**Yang tetap inline di server.go (bukan static seed)**:
+
+| Modul | Lokasi register | Alasan |
+|---|---|---|
+| `wickmanager` connector | `internal/pkg/api/server.go:494` (web) + line 969 (mcp stdio) | Butuh runtime `Deps{Configs, Connectors, Jobs, Login, Tools, AppName}` yang baru tersedia mid-boot |
+| `connector-runs-purge` job | `connectorrunspurge.Register(db)` di server.go:86 + worker.go:32 | Capture `*gorm.DB` — closure butuh handle yang sama dengan proses pemanggil |
+| `encfields` tool | `tools/registry.go::init()` | Selalu auto-load tiap binary (MCP `wick_encrypt`/`wick_decrypt` redirect ke `/tools/encfields`) — bukan default-on, tapi always-on |
 
 ---
 

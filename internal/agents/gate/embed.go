@@ -10,21 +10,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/yogasw/wick/internal/appname"
 )
 
 //go:embed all:assets
 var embeddedGateFS embed.FS
 
-// AppName is the brand prefix for the per-app gate binary. Injected
-// at link time via `-X github.com/yogasw/wick/internal/agents/gate.AppName=<name>`
-// so the parent app and its gate sidecar share the same brand. Empty
-// string falls back to "gate" for `go run` / source builds.
-//
-// Used to derive the sibling-binary lookup name (`<app>-gate[.exe]`)
-// and the PATH lookup name. The embedded asset stays generic
-// (`assets/gate-<os>-<arch>`) — branding only matters at runtime
-// resolution, not at embed time.
-var AppName = ""
+// AppName returns the active app brand via appname.Resolve() —
+// shared chain (BuildAppName ldflag → APP_NAME env → wick.yml →
+// "wick"). Both the parent app and the gate sidecar resolve through
+// the same code path, so spec/socket/log paths land under the same
+// `~/.<app>/` tree as the DB and other wick artefacts.
+func AppName() string {
+	return appname.Resolve()
+}
 
 // errNoEmbeddedGate signals that the embed is empty — typically a
 // `go run` build that skipped the build step. Caller can fall back
@@ -41,12 +41,26 @@ func embeddedGateName() string {
 	return name
 }
 
-// brandedGateName returns the per-app sibling/PATH lookup name:
-// `<AppName>-gate[.exe]`, or `gate[.exe]` when AppName is empty.
+// brandedGateName returns the sibling/PATH lookup name `<exe>-gate[.exe]`,
+// where `<exe>` is the running executable's basename minus `.exe`.
+//
+// Why exe-derived (not appname.Resolve()): sibling lookup is a *filesystem*
+// neighbor check — gate binary lives next to its parent and shares the
+// parent's filename stem. AppName (brand) is a separate concept used for
+// `~/.<app>/` paths; an operator can run `wick-lab.exe` with
+// `APP_NAME=my-app` and we still want to find `bin/wick-lab-gate.exe`,
+// not `bin/my-app-gate.exe` that doesn't exist.
+//
+// Falls back to `gate[.exe]` when os.Executable() fails so PATH-only
+// deployments still resolve.
 func brandedGateName() string {
 	base := "gate"
-	if AppName != "" {
-		base = AppName + "-gate"
+	if exe, err := os.Executable(); err == nil {
+		stem := strings.TrimSuffix(filepath.Base(exe), ".exe")
+		stem = strings.TrimSuffix(stem, "-gate")
+		if stem != "" {
+			base = stem + "-gate"
+		}
 	}
 	if runtime.GOOS == "windows" {
 		base += ".exe"
@@ -86,9 +100,9 @@ func ResolveGateBinary(sessionDir string) (string, error) {
 //  3. `<app>-gate` on PATH — last-ditch fallback for unusual setups
 //     (e.g. user installed the gate via a separate package manager).
 //
-// No env-var override anymore: post-Stage 9 the resolution chain is
-// deterministic from disk + ldflag-baked AppName, no per-environment
-// configuration knobs needed.
+// No env-var override and no ldflag injection: AppName comes from
+// the running executable's own filename, so resolution is purely a
+// function of what's on disk.
 func ResolveGateBinaryWithSource(sessionDir string) (path, source string, err error) {
 	if p := siblingGateBinary(); p != "" {
 		return p, SourceSibling, nil

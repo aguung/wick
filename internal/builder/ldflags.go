@@ -36,13 +36,11 @@ func obfuscatePAT(s string) string {
 // without breaking pipe-attached subcommands.
 func assembleLDFlags(cfg Config) []string {
 	flags := []string{
-		fmt.Sprintf("-X github.com/yogasw/wick/app.BuildAppName=%s", cfg.AppName),
+		// Single source of truth for the app brand. `app.BuildAppName`
+		// is mirrored from this in app.init() so legacy callers still
+		// work; agents/gate/Layout read appname.Resolve() directly.
+		fmt.Sprintf("-X github.com/yogasw/wick/internal/appname.BuildAppName=%s", cfg.AppName),
 		fmt.Sprintf("-X github.com/yogasw/wick/app.BuildAppVersion=%s", cfg.AppVersion),
-		// gate.AppName drives the per-app sibling/PATH lookup name
-		// (`<app>-gate[.exe]`). Without this injection the runtime
-		// falls back to the unbranded "gate" lookup, which won't
-		// match what `wick build` writes to `bin/`.
-		fmt.Sprintf("-X github.com/yogasw/wick/internal/agents/gate.AppName=%s", cfg.AppName),
 	}
 	if cfg.GitHubPAT != "" {
 		flags = append(flags, fmt.Sprintf("-X github.com/yogasw/wick/app.GitHubPATEnc=%s", obfuscatePAT(cfg.GitHubPAT)))
