@@ -10,33 +10,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/yogasw/wick/internal/appname"
 )
 
 //go:embed all:assets
 var embeddedGateFS embed.FS
 
-// AppName derives the per-app brand from the running executable's
-// own filename — no ldflag, no env var, no global state.
-//
-// Naming convention (enforced):
-//   - Parent app:  `<app>[.exe]`        → returns `<app>`
-//   - Gate sidecar: `<app>-gate[.exe]`  → returns `<app>` (strip `-gate`)
-//
-// The convention IS the contract: rename the binary and AppName
-// follows. Both processes therefore agree on the same `<app>` for
-// spec/socket/log paths without needing to share build flags.
-//
-// Returns "" if os.Executable() fails — caller should treat that as
-// "no brand resolved" and surface the error rather than silently
-// fall back to a hardcoded default.
+// AppName returns the active app brand via appname.Resolve() —
+// shared chain (BuildAppName ldflag → APP_NAME env → wick.yml →
+// "wick"). Both the parent app and the gate sidecar resolve through
+// the same code path, so spec/socket/log paths land under the same
+// `~/.<app>/` tree as the DB and other wick artefacts.
 func AppName() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	base := filepath.Base(exe)
-	base = strings.TrimSuffix(base, ".exe")
-	return strings.TrimSuffix(base, "-gate")
+	return appname.Resolve()
 }
 
 // errNoEmbeddedGate signals that the embed is empty — typically a
@@ -54,13 +41,26 @@ func embeddedGateName() string {
 	return name
 }
 
-// brandedGateName returns the sibling/PATH lookup name `<app>-gate[.exe]`,
-// using AppName() to pick the brand. Empty AppName falls back to
-// `gate[.exe]` so PATH-only deployments still resolve.
+// brandedGateName returns the sibling/PATH lookup name `<exe>-gate[.exe]`,
+// where `<exe>` is the running executable's basename minus `.exe`.
+//
+// Why exe-derived (not appname.Resolve()): sibling lookup is a *filesystem*
+// neighbor check — gate binary lives next to its parent and shares the
+// parent's filename stem. AppName (brand) is a separate concept used for
+// `~/.<app>/` paths; an operator can run `wick-lab.exe` with
+// `APP_NAME=my-app` and we still want to find `bin/wick-lab-gate.exe`,
+// not `bin/my-app-gate.exe` that doesn't exist.
+//
+// Falls back to `gate[.exe]` when os.Executable() fails so PATH-only
+// deployments still resolve.
 func brandedGateName() string {
 	base := "gate"
-	if app := AppName(); app != "" {
-		base = app + "-gate"
+	if exe, err := os.Executable(); err == nil {
+		stem := strings.TrimSuffix(filepath.Base(exe), ".exe")
+		stem = strings.TrimSuffix(stem, "-gate")
+		if stem != "" {
+			base = stem + "-gate"
+		}
 	}
 	if runtime.GOOS == "windows" {
 		base += ".exe"

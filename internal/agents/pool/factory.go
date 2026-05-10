@@ -200,8 +200,8 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 // daemon at boot and rewritten on always-allow / revoke. The gate
 // binary reads the shared spec at every invocation.
 //
-// No env vars are injected — gate derives all paths from its
-// compile-time AppName (set via -ldflags by `wick build`).
+// No env vars are injected — gate derives all paths from
+// gate.AppName() (its own exe filename, strip `-gate[.exe]`).
 func (f *ClaudeFactory) attachGateConfig(opt FactoryOptions, base provider.Spawner, cfg *GateConfig) (provider.Spawner, error) {
 	root := cfg.TempDirRoot
 	if root == "" {

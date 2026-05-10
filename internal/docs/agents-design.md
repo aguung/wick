@@ -14,11 +14,20 @@ Update terakhir: 2026-05-10.
 > di bawah masih sebut nama-nama lama. Perubahan ringkas:
 >
 > - Source rename: `cmd/wick-gate/` → `cmd/gate/`. Binary user-visible
->   `<app>-gate[.exe]`, branded by filename convention (sidecar wajib bernama
->   `<app>-gate[.exe]`). Embed asset internal tetap generic (`gate-<os>-<arch>`).
-> - Env vars dihapus seluruhnya: `WICK_GATE_SPEC` / `GATE_SPEC` /
->   `WICK_GATE_BIN` / `GATE_BIN` semua tidak ada. Gate derive `<app>` dari
->   `os.Executable()` basename (strip `-gate[.exe]`) — runtime, no ldflag.
+>   `<app>-gate[.exe]` (filename mirrors brand for UX, but resolution is
+>   not filename-driven anymore — see next bullet). Embed asset internal
+>   tetap generic (`gate-<os>-<arch>`).
+> - **AppName single source of truth** — `internal/appname.Resolve()`
+>   adalah satu-satunya derivation chain dipakai parent + Layout + gate +
+>   DB. Chain: `BuildAppName` ldflag → `APP_NAME` env → `wick.yml` name →
+>   "wick". `wick build` inject ldflag ke `internal/appname.BuildAppName`;
+>   `app.BuildAppName` jadi mirror di `app.init()`. Gate child proc inherit
+>   `APP_NAME` env dari parent → resolve ke brand sama tanpa ldflag.
+>   Hasilnya: DB di `~/.<app>/wick.db`, agents di `~/.<app>/agents/`, gate
+>   spec/socket/log di `~/.<app>/agents/gate/...` — semua satu pohon.
+> - Env vars: `WICK_GATE_SPEC` / `GATE_SPEC` / `WICK_GATE_BIN` / `GATE_BIN`
+>   tidak ada (Stage 9). `APP_NAME` tetap dipakai sebagai bagian chain
+>   `appname.Resolve()`.
 > - Spec + socket + audit log jadi **shared per-app** di
 >   `~/.<app>/agents/gate/{spec.json, gate.sock, commands.jsonl}` (bukan per-session
 >   `~/.<app>/agents/sessions/<id>/gate/...` lagi).

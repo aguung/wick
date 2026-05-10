@@ -16,16 +16,15 @@ import (
 	"github.com/yogasw/wick/internal/agents/storage"
 )
 
-// buildGate compiles cmd/gate into a temp file named `<app>-gate[.exe]`
-// so gate.AppName() (which strips `-gate` from the running exe's
-// basename) resolves to `<app>` at runtime — no ldflags, no env vars.
+// buildGate compiles cmd/gate into a temp file. AppName comes from
+// the APP_NAME env we set in setupGate, so binary name is irrelevant.
 // Skips when `go build` is unavailable.
-func buildGate(t *testing.T, app string) string {
+func buildGate(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("`go` not in PATH — can't compile gate")
 	}
-	out := filepath.Join(t.TempDir(), app+"-gate")
+	out := filepath.Join(t.TempDir(), "gate")
 	if runtime.GOOS == "windows" {
 		out += ".exe"
 	}
@@ -45,8 +44,11 @@ func setupGate(t *testing.T, rules []gate.CommandRule) (bin, app string, layout 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	// Gate child proc inherits APP_NAME → appname.Resolve() returns
+	// our test brand without needing ldflag injection.
+	t.Setenv("APP_NAME", app)
 
-	bin = buildGate(t, app)
+	bin = buildGate(t)
 	layout = config.NewLayout(t.TempDir())
 	if err := layout.EnsureLayout(); err != nil {
 		t.Fatal(err)
@@ -192,11 +194,11 @@ func TestGate_MalformedStdin(t *testing.T) {
 // every command falls through to the socket dial → no daemon →
 // fail-safe block. Confirms LoadSpec doesn't panic on missing file.
 func TestGate_MissingSharedSpecIsEmpty(t *testing.T) {
-	app := "itest-empty"
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	bin := buildGate(t, app)
+	t.Setenv("APP_NAME", "itest-empty")
+	bin := buildGate(t)
 
 	cmd := exec.Command(bin)
 	cmd.Stdin = strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
