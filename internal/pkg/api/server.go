@@ -9,7 +9,6 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,8 +29,10 @@ import (
 	agentchannels "github.com/yogasw/wick/internal/agents/channels"
 	"github.com/yogasw/wick/internal/agents/gate"
 	"github.com/yogasw/wick/internal/agents/provider"
+	agentaskuser "github.com/yogasw/wick/internal/agents/askuser"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentevent "github.com/yogasw/wick/internal/agents/event"
+	agentgate "github.com/yogasw/wick/internal/agents/gate"
 	agentpool "github.com/yogasw/wick/internal/agents/pool"
 	agentregistry "github.com/yogasw/wick/internal/agents/registry"
 	agentsession "github.com/yogasw/wick/internal/agents/session"
@@ -224,6 +225,96 @@ func NewServer() *Server {
 	}
 	agentsBcast := agentstool.NewBroadcaster()
 	agentsSpawnLogger := provider.NewSpawnLogger(agentsLayout.BaseDir)
+
+	// ── Gate (interactive command approval) ───────────────────────
+	// Resolve the gate binary up front: sibling-of-executable first
+	// (production path — installer ships <app>-gate next to the main
+	// exe), embedded extract as backup, PATH lookup as last resort.
+	// Failure here is non-fatal — gate stays disabled and the pool
+	// falls back to whitelist-only mode. Operator sees one log line.
+	//
+	// User-controlled toggle: agents.gate_enabled (default true). When
+	// false, every provider falls back to its own default permission
+	// handling (claude headless: blocks). Wick injects no --settings
+	// and no --permission-mode in that path.
+	//
+	// Stage 9 model: single shared listener at SharedSocketPath(app),
+	// single shared spec at SharedSpecPath(app). cwd→session routing
+	// scans active sessions' workspace paths; longest-prefix wins so
+	// nested workspaces resolve to the deeper session.
+	var agentsApprovals *agentgate.ApprovalManager
+	gateConfigEnabled := true
+	if v := configsSvc.GetOwned("agents", "gate_enabled"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			gateConfigEnabled = b
+		}
+	}
+	resolvedGateBin, gateSource, gateBinErr := agentgate.ResolveGateBinaryWithSource(filepath.Join(agentsLayout.BaseDir, "_gate-bin"))
+	gateStatus := agentstool.GateStatus{
+		Enabled: gateBinErr == nil && gateConfigEnabled,
+		Binary:  resolvedGateBin,
+		Source:  gateSource,
+	}
+	switch {
+	case !gateConfigEnabled:
+		gateStatus.Reason = "disabled via agents.gate_enabled"
+		log.Info().Msg("agents gate disabled via config")
+	case gateBinErr != nil:
+		gateStatus.Reason = gateBinErr.Error()
+		log.Warn().Msgf("agents gate disabled: %s", gateBinErr.Error())
+	default:
+		routeByCWD := func(cwd string) (string, bool) {
+			if cwd == "" || agentsMgr == nil {
+				return "", false
+			}
+			abs := cwd
+			if a, err := filepath.Abs(cwd); err == nil {
+				abs = a
+			}
+			abs = filepath.Clean(abs)
+			best := ""
+			bestLen := 0
+			for sid, s := range agentsMgr.Registry().Sessions() {
+				if s.Meta.Workspace == "" {
+					continue
+				}
+				p, err := agentworkspace.ResolvePath(agentsLayout, s.Meta.Workspace)
+				if err != nil {
+					continue
+				}
+				if a, err := filepath.Abs(p); err == nil {
+					p = a
+				}
+				p = filepath.Clean(p)
+				if abs == p || strings.HasPrefix(abs, p+string(filepath.Separator)) {
+					if len(p) > bestLen {
+						best = sid
+						bestLen = len(p)
+					}
+				}
+			}
+			return best, best != ""
+		}
+		agentsApprovals, _ = agentgate.NewApprovalManager(agentgate.ApprovalManagerOptions{
+			AppName:    agentgate.AppName,
+			RouteByCWD: routeByCWD,
+			OnRequest: func(sid string, r agentgate.ApprovalRequest) {
+				agentsBcast.PublishApprovalRequest(sid, r)
+			},
+			OnResolved: func(sid, requestID, decision string) {
+				agentsBcast.PublishApprovalResolved(sid, requestID, decision)
+			},
+		})
+		if agentsApprovals != nil {
+			if _, err := agentsApprovals.Start(); err != nil {
+				log.Warn().Err(err).Msg("agents gate listener start failed")
+				agentsApprovals = nil
+				gateStatus.Enabled = false
+				gateStatus.Reason = "listener start: " + err.Error()
+			}
+		}
+	}
+
 	var agentsPool *agentpool.Pool
 	var slackChan *agentchannels.SlackChannel // forward ref so factory closure can call it
 	agentsFactory := &agentpool.ClaudeFactory{
@@ -245,6 +336,11 @@ func NewServer() *Server {
 			}
 		},
 	}
+	if agentsApprovals != nil {
+		agentsFactory.Gate = &agentpool.GateConfig{
+			GateBinary: resolvedGateBin,
+		}
+	}
 	maxConc := 2
 	if n, err := strconv.Atoi(configsSvc.GetOwned("agents", "max_concurrent")); err == nil && n > 0 {
 		maxConc = n
@@ -262,26 +358,36 @@ func NewServer() *Server {
 		return configsSvc.GetOwned("agents", "bypass_permissions") == "true"
 	}
 
-	// GateLoader is evaluated on every agent spawn so UI changes to
-	// gate_enabled / allowed_cmds take effect immediately without
-	// requiring a server restart.
-	gateBin := resolveWickGateBin()
-	if gateBin == "" {
-		log.Warn().Msg("agents: wick-gate binary not found — gate will be disabled even if gate_enabled=true (build cmd/wick-gate or put it in PATH)")
+	// GateLoader is evaluated on every agent spawn. Stage 9 model:
+	// rules + auto-approved live in the shared spec.json (rewritten
+	// here on every Build so allowed_cmds edits take effect on the
+	// next spawn without a server restart). Factory only needs the
+	// binary path now — reuse the boot-time resolution.
+	syncSharedSpec := func() error {
+		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
+		// Preserve AutoApproved from disk so edits to allowed_cmds
+		// don't drop the user's "always allow" entries.
+		spec, _ := agentgate.LoadSpec(agentgate.AppName)
+		spec.Rules = rules
+		return agentgate.WriteSharedSpec(agentgate.AppName, spec)
 	}
 	agentsFactory.GateLoader = func() *agentpool.GateConfig {
 		if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
 			return nil
 		}
-		if gateBin == "" {
+		if resolvedGateBin == "" {
 			return nil
 		}
-		rules := parseGateRules(configsSvc.GetOwned("agents", "allowed_cmds"))
-		log.Debug().Int("rules", len(rules)).Msg("agents: gate active for spawn")
-		return &agentpool.GateConfig{
-			WickGateBinary: gateBin,
-			Rules:          rules,
+		if err := syncSharedSpec(); err != nil {
+			log.Warn().Err(err).Msg("agents: sync shared spec")
 		}
+		return &agentpool.GateConfig{GateBinary: resolvedGateBin}
+	}
+	// Boot-time sync so the gate works on first spawn after a fresh
+	// install (no spawn has happened yet but the user might invoke
+	// the binary via something else).
+	if err := syncSharedSpec(); err != nil {
+		log.Warn().Err(err).Msg("agents: initial shared spec write")
 	}
 	agentsPool = agentpool.New(agentpool.PoolConfig{
 		MaxConcurrent:    maxConc,
@@ -297,11 +403,34 @@ func NewServer() *Server {
 			agentsBcast.PublishLifecycle(ev.SessionID, ev.AgentName, ev.Lifecycle, ev.PID)
 		},
 	})
+	if agentsApprovals != nil {
+		agentstool.SetApprovals(agentsApprovals)
+	}
+	agentstool.SetGateStatus(gateStatus)
+
+	// ── ask_user MCP tool wiring ─────────────────────────────────
+	// One Manager per process: agents tool publishes SSE on
+	// OnRequest/OnResolved, MCP handler calls Ask() and blocks.
+	agentsAskUsers := agentaskuser.NewManager(agentaskuser.Options{
+		OnRequest: func(req agentaskuser.AskRequest) {
+			payload, err := json.Marshal(req)
+			if err != nil {
+				log.Warn().Err(err).Msg("ask_user marshal failed")
+				return
+			}
+			agentsBcast.PublishAskUser(req.SessionID, req.AgentName, payload)
+		},
+		OnResolved: func(sid, requestID string) {
+			agentsBcast.PublishAskUserResolved(sid, requestID)
+		},
+	})
+	agentstool.SetAskUsers(agentsAskUsers)
 	agentstool.SetManager(agentsMgr)
 	agentstool.SetPool(agentsPool)
 	agentstool.SetBroadcaster(agentsBcast)
 	agentstool.SetLayout(agentsLayout)
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
+	agentstool.SetConfigs(configsSvc)
 	provider.AppName = strings.TrimSpace(os.Getenv("APP_NAME"))
 
 	// ── Agents: Slack channel (optional — only starts when configured) ──
@@ -390,7 +519,9 @@ func NewServer() *Server {
 	// Bearer auth in front, connector dispatch behind. PAT and
 	// OAuth-issued tokens both flow through the same middleware —
 	// dispatch by prefix.
-	mcpHandler := mcp.NewHandler(connectorsSvc).WithAppURL(configsSvc.AppURL)
+	mcpHandler := mcp.NewHandler(connectorsSvc).
+		WithAppURL(configsSvc.AppURL).
+		WithAskUser(agentstool.AskUsers())
 	mcpAuth := mcp.NewAuthMiddleware(
 		tokensSvc,
 		authSvc,
@@ -865,25 +996,6 @@ func RunMCPStdio(version, commit, buildTime string) {
 		WithWickRoot(root).
 		WithAppURL(configsSvc.AppURL).
 		ServeStdioOS(ctx)
-}
-
-// resolveWickGateBin finds the wick-gate binary: first next to this
-// executable, then on PATH.
-func resolveWickGateBin() string {
-	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "wick-gate")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		candidate += ".exe"
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	if p, err := exec.LookPath("wick-gate"); err == nil {
-		return p
-	}
-	return ""
 }
 
 // parseGateRules decodes the kvlist JSON (pattern|scope columns) stored in

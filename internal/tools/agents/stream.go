@@ -7,6 +7,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/yogasw/wick/internal/agents/event"
+	"github.com/yogasw/wick/internal/agents/gate"
 )
 
 // subBuffer is per-subscriber channel depth. Sized for tool_use bursts
@@ -100,6 +101,68 @@ func (b *Broadcaster) PublishLifecycle(sessionID, agentName, lifecycle string, p
 		Type:      "lifecycle",
 		Lifecycle: lifecycle,
 		PID:       pid,
+	})
+}
+
+// PublishApprovalRequest fires when the gate binary dials the daemon socket
+// with an unrecognised command. Browsers render this as a modal with
+// 4 decision buttons (approve_once / approve_session / approve_always
+// / block); the user's pick rides back through POST /approve.
+//
+// Data is the JSON-encoded ApprovalRequest so the front-end can
+// decode it once and use every field (cmd, work_dir, match_key, ...).
+func (b *Broadcaster) PublishApprovalRequest(sessionID string, req gate.ApprovalRequest) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("approval request marshal failed")
+		return
+	}
+	b.fanout(sessionID, Event{
+		SessionID: sessionID,
+		AgentName: req.AgentName,
+		Type:      "approval_request",
+		Data:      string(body),
+	})
+}
+
+// PublishApprovalResolved fires once a decision is delivered (UI
+// click, timeout, or listener close). Browsers use this to dismiss
+// any open modal across all tabs subscribed to the session.
+func (b *Broadcaster) PublishApprovalResolved(sessionID, requestID, decision string) {
+	body, _ := json.Marshal(map[string]string{
+		"id":       requestID,
+		"decision": decision,
+	})
+	b.fanout(sessionID, Event{
+		SessionID: sessionID,
+		Type:      "approval_resolved",
+		Data:      string(body),
+	})
+}
+
+// PublishAskUser fires when the ask_user MCP tool is invoked by an
+// agent. Front-end renders an inline card with options + freeform
+// input; user's pick rides back through POST /answer. Data is the
+// JSON-encoded request body so every field (question, options,
+// allow_freeform, ...) round-trips exactly once.
+func (b *Broadcaster) PublishAskUser(sessionID, agentName string, payload []byte) {
+	b.fanout(sessionID, Event{
+		SessionID: sessionID,
+		AgentName: agentName,
+		Type:      "ask_user",
+		Data:      string(payload),
+	})
+}
+
+// PublishAskUserResolved fires once an ask_user request resolves
+// (UI answer or timeout). Used by the UI to dismiss the inline card
+// across all tabs subscribed to the session.
+func (b *Broadcaster) PublishAskUserResolved(sessionID, requestID string) {
+	body, _ := json.Marshal(map[string]string{"id": requestID})
+	b.fanout(sessionID, Event{
+		SessionID: sessionID,
+		Type:      "ask_user_resolved",
+		Data:      string(body),
 	})
 }
 

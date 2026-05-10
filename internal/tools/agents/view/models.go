@@ -108,6 +108,7 @@ type SessionDetailVM struct {
 	PID           int
 	LastActiveMs  int64
 	IdleTimeoutMs int64
+	Gate          GateStatusVM
 }
 
 // WorkspacesVM holds data for the Workspaces page.
@@ -144,6 +145,21 @@ type ProvidersVM struct {
 	PoolQueueLen  int
 	PoolMax       int
 	SupportedKeys []string
+	Gate          GateStatusVM
+}
+
+// GateStatusVM is the small "is the command gate alive?" card on
+// the Providers page. The fields cover the three things an operator
+// needs to glance at when claude is misbehaving:
+//   - Enabled: was the parent able to resolve a gate binary?
+//   - Binary:  which one (env override / sibling / PATH)?
+//   - Note:    one-sentence consequence text — what gets blocked.
+type GateStatusVM struct {
+	Enabled bool
+	Binary  string // absolute path (when enabled)
+	Source  string // "sibling" | "embed" | "path" — debug aid
+	Reason  string // why disabled, when Enabled=false
+	Note    string // human-readable behavior summary; rendered as-is
 }
 
 // ProviderSpawnDetailVM holds data for one spawn-log file timeline.

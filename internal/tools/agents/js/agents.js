@@ -20,6 +20,23 @@
           applyLifecycle(ev.lifecycle, ev.pid || 0);
           return;
         }
+        if (ev.type === "approval_request") {
+          showApprovalModal(JSON.parse(ev.data));
+          return;
+        }
+        if (ev.type === "approval_resolved") {
+          hideApprovalModal(JSON.parse(ev.data));
+          refreshApprovedPanel();
+          return;
+        }
+        if (ev.type === "ask_user") {
+          showAskUserCard(JSON.parse(ev.data));
+          return;
+        }
+        if (ev.type === "ask_user_resolved") {
+          hideAskUserCard(JSON.parse(ev.data));
+          return;
+        }
         if (ev.type === "text_delta") {
           appendDelta(ev.data);
         } else if (ev.type === "done") {
@@ -229,8 +246,8 @@
               'text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">' +
               (opts.cancelLabel || "Cancel") + "</button>" +
             '<button type="button" data-confirm autofocus ' +
-              'class="rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white-100 ' +
-              'hover:bg-red-600 active:bg-red-700 transition-colors">' +
+              'class="rounded-md bg-neg-400 px-2.5 py-1 text-xs font-medium text-white-100 ' +
+              'hover:bg-neg-300 active:bg-neg-300 transition-colors">' +
               (opts.confirmLabel || "Confirm") + "</button>" +
           "</div>";
         document.body.appendChild(pop);
@@ -554,6 +571,248 @@
         }
         clearCustomErr();
       });
+    }
+
+    // ── Approval modal (gate Stage 5) ─────────────────────────────────
+    // The modal is a fixed overlay rendered once per session detail
+    // page (see view/approvals.templ). We populate fields from the
+    // SSE `approval_request` payload, run a 25s countdown, and POST
+    // the user's pick to /approve. Rehydrate runs on page load so a
+    // tab opened mid-pending sees the modal immediately.
+    var approvalCountdownTimer = null;
+    var approvalCurrent = null;
+
+    function showApprovalModal(req) {
+      var modal = document.getElementById("approval-modal");
+      if (!modal || !req || !req.id) return;
+      approvalCurrent = req;
+      modal.querySelector("[data-approval-agent]").textContent = req.agent_name || "—";
+      modal.querySelector("[data-approval-tool]").textContent = req.tool || "—";
+      modal.querySelector("[data-approval-workdir]").textContent = req.work_dir || "—";
+      modal.querySelector("[data-approval-cmd]").textContent = req.cmd || "";
+      modal.classList.remove("hidden");
+      startApprovalCountdown(modal);
+    }
+
+    function hideApprovalModal(payload) {
+      var modal = document.getElementById("approval-modal");
+      if (!modal) return;
+      // Only dismiss if the resolved id matches the one currently open
+      // (or no payload — defensive close from page hide).
+      if (payload && approvalCurrent && payload.id !== approvalCurrent.id) return;
+      modal.classList.add("hidden");
+      approvalCurrent = null;
+      stopApprovalCountdown();
+    }
+
+    function startApprovalCountdown(modal) {
+      stopApprovalCountdown();
+      var el = modal.querySelector("[data-approval-countdown]");
+      if (!el) return;
+      var remaining = 25;
+      el.textContent = remaining + "s";
+      approvalCountdownTimer = setInterval(function () {
+        remaining -= 1;
+        if (remaining <= 0) {
+          el.textContent = "0s";
+          stopApprovalCountdown();
+          // Daemon side will auto-block after 25s; we just dismiss
+          // visually so the user sees the timer hit zero rather than
+          // the modal vanishing silently mid-tick.
+          return;
+        }
+        el.textContent = remaining + "s";
+      }, 1000);
+    }
+
+    function stopApprovalCountdown() {
+      if (approvalCountdownTimer) {
+        clearInterval(approvalCountdownTimer);
+        approvalCountdownTimer = null;
+      }
+    }
+
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-approval-decision]");
+      if (!btn || !approvalCurrent) return;
+      var decision = btn.dataset.approvalDecision;
+      var b = resolveBase();
+      if (!b || !sessionID) return;
+      btn.disabled = true;
+      fetch(b + "/sessions/" + encodeURIComponent(sessionID) + "/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: approvalCurrent.id,
+          decision: decision,
+          match_key: approvalCurrent.match_key || "",
+        }),
+      }).then(function (r) {
+        // approval_resolved SSE will dismiss the modal across all
+        // tabs. Re-enable the button defensively in case the SSE is
+        // slow / dropped.
+        if (!r.ok) btn.disabled = false;
+      }).catch(function () {
+        btn.disabled = false;
+      });
+    });
+
+    // Rehydrate: on session-detail page load, ask the server whether
+    // there's already a pending request and pop the modal if so. Also
+    // hydrates the Approved-commands panel.
+    if (sessionID) {
+      refreshApprovedPanel();
+    }
+
+    function refreshApprovedPanel() {
+      var b = resolveBase();
+      if (!b || !sessionID) return;
+      fetch(b + "/sessions/" + encodeURIComponent(sessionID) + "/approvals")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          if (Array.isArray(data.pending) && data.pending.length > 0 && !approvalCurrent) {
+            showApprovalModal(data.pending[0]);
+          }
+          renderApprovedPanel(data);
+        })
+        .catch(function () { /* gate disabled = silent */ });
+    }
+
+    function renderApprovedPanel(data) {
+      var panel = document.querySelector("[data-approved-panel]");
+      if (!panel) return;
+      var sessionKeys = data.session_approved || [];
+      var alwaysKeys = data.always_approved || [];
+      var total = sessionKeys.length + alwaysKeys.length;
+      var countEl = panel.querySelector("[data-approved-count]");
+      var emptyEl = panel.querySelector("[data-approved-empty]");
+      var listEl = panel.querySelector("[data-approved-list]");
+      if (countEl) countEl.textContent = total;
+      if (total === 0) {
+        if (emptyEl) emptyEl.classList.remove("hidden");
+        if (listEl) listEl.classList.add("hidden");
+        return;
+      }
+      if (emptyEl) emptyEl.classList.add("hidden");
+      if (!listEl) return;
+      listEl.classList.remove("hidden");
+      listEl.innerHTML = "";
+      sessionKeys.forEach(function (k) { listEl.appendChild(approvedRow(k, "session")); });
+      alwaysKeys.forEach(function (k) { listEl.appendChild(approvedRow(k, "always")); });
+    }
+
+    function approvedRow(matchKey, scope) {
+      var li = document.createElement("li");
+      li.className = "flex items-center justify-between gap-3 rounded-lg bg-white-200 dark:bg-navy-800 px-3 py-2";
+      var label = document.createElement("div");
+      label.className = "flex items-center gap-2 min-w-0";
+      var badge = document.createElement("span");
+      badge.className = scope === "always"
+        ? "inline-block rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100"
+        : "inline-block rounded border border-green-500 dark:border-green-600 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400";
+      badge.textContent = scope === "always" ? "always" : "session";
+      var hash = document.createElement("code");
+      hash.className = "font-mono text-xs text-black-900 dark:text-white-100 truncate";
+      hash.title = matchKey;
+      hash.textContent = matchKey.slice(0, 12) + "…";
+      label.appendChild(badge);
+      label.appendChild(hash);
+      var revoke = document.createElement("button");
+      revoke.className = "shrink-0 rounded-md border border-red-300 dark:border-red-800 px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors";
+      revoke.textContent = "Revoke";
+      revoke.addEventListener("click", function () {
+        var b = resolveBase();
+        if (!b || !sessionID) return;
+        revoke.disabled = true;
+        fetch(b + "/sessions/" + encodeURIComponent(sessionID) +
+              "/approve/" + encodeURIComponent(matchKey) +
+              "?scope=" + scope, { method: "DELETE" })
+          .then(function () { refreshApprovedPanel(); })
+          .catch(function () { revoke.disabled = false; });
+      });
+      li.appendChild(label);
+      li.appendChild(revoke);
+      return li;
+    }
+
+    // ── ask_user card (gate Stage 6) ──────────────────────────────────
+    // The card sits above the composer in the Conversation tab. Only
+    // one ask is in flight per session at a time (the MCP tool blocks
+    // the agent), so we don't queue — a new ask_user replaces the
+    // current card body.
+    var askUserCurrent = null;
+
+    function showAskUserCard(req) {
+      var card = document.getElementById("ask-user-card");
+      if (!card || !req || !req.id) return;
+      askUserCurrent = req;
+      card.querySelector("[data-ask-question]").textContent = req.question || "";
+      var optsBox = card.querySelector("[data-ask-options]");
+      optsBox.innerHTML = "";
+      (req.options || []).forEach(function (opt) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "rounded-lg border border-amber-400 dark:border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors";
+        btn.textContent = opt.label;
+        btn.addEventListener("click", function () {
+          submitAskAnswer({ id: req.id, value: opt.value });
+        });
+        optsBox.appendChild(btn);
+      });
+      var freeForm = card.querySelector("[data-ask-freeform]");
+      var textInput = card.querySelector("[data-ask-text]");
+      if (req.allow_freeform) {
+        freeForm.classList.remove("hidden");
+        if (textInput) textInput.value = "";
+      } else {
+        freeForm.classList.add("hidden");
+      }
+      card.classList.remove("hidden");
+    }
+
+    function hideAskUserCard(payload) {
+      var card = document.getElementById("ask-user-card");
+      if (!card) return;
+      if (payload && askUserCurrent && payload.id !== askUserCurrent.id) return;
+      card.classList.add("hidden");
+      askUserCurrent = null;
+    }
+
+    function submitAskAnswer(body) {
+      var b = resolveBase();
+      if (!b || !sessionID) return;
+      fetch(b + "/sessions/" + encodeURIComponent(sessionID) + "/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function () {
+        // ask_user_resolved SSE will dismiss the card across all tabs.
+      }).catch(function () {});
+    }
+
+    document.addEventListener("submit", function (e) {
+      var form = e.target.closest("[data-ask-freeform]");
+      if (!form || !askUserCurrent) return;
+      e.preventDefault();
+      var text = form.querySelector("[data-ask-text]").value.trim();
+      if (!text) return;
+      submitAskAnswer({ id: askUserCurrent.id, text: text });
+    });
+
+    // Rehydrate ask_user state on page load.
+    if (sessionID) {
+      var b0 = resolveBase();
+      if (b0) {
+        fetch(b0 + "/sessions/" + encodeURIComponent(sessionID) + "/asks")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (data && Array.isArray(data.pending) && data.pending.length > 0) {
+              showAskUserCard(data.pending[0]);
+            }
+          })
+          .catch(function () {});
+      }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ package gate_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -16,33 +17,38 @@ import (
 	"github.com/yogasw/wick/internal/agents/storage"
 )
 
-// buildWickGate compiles cmd/wick-gate to a temp file and returns
-// the absolute path. Skips the test if `go build` is unavailable.
-//
-// We build per-test (not once for the package) so each scenario has
-// a clean binary; build cost is ~1s on a warm cache.
-func buildWickGate(t *testing.T) string {
+// buildGate compiles cmd/gate to a temp file with gate.AppName
+// baked via -ldflags so the binary's shared-spec lookup lands under
+// the per-test HOME we set up. Skips when `go build` is unavailable.
+func buildGate(t *testing.T, app string) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("`go` not in PATH — can't compile wick-gate")
+		t.Skip("`go` not in PATH — can't compile gate")
 	}
-	out := filepath.Join(t.TempDir(), "wick-gate")
+	out := filepath.Join(t.TempDir(), "gate")
 	if runtime.GOOS == "windows" {
 		out += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", out, "github.com/yogasw/wick/cmd/wick-gate")
+	ldflag := fmt.Sprintf("-X github.com/yogasw/wick/internal/agents/gate.AppName=%s", app)
+	cmd := exec.Command("go", "build", "-ldflags", ldflag, "-o", out, "github.com/yogasw/wick/cmd/gate")
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build wick-gate: %v\n%s", err, buildOut)
+		t.Fatalf("go build gate: %v\n%s", err, buildOut)
 	}
 	return out
 }
 
-// setupGate creates a session, writes a Spec + settings.json under
-// gateDir, and returns (binPath, layout, gateDir).
-func setupGate(t *testing.T, rules []gate.CommandRule) (string, config.Layout, string, string) {
+// setupGate isolates HOME to a tempdir, writes the shared spec
+// (rules + auto-approved), and returns the gate binary + the appName
+// the test should pass to LoadSpec lookups.
+func setupGate(t *testing.T, rules []gate.CommandRule) (bin, app string, layout config.Layout) {
 	t.Helper()
-	bin := buildWickGate(t)
-	layout := config.NewLayout(t.TempDir())
+	app = "itest"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	bin = buildGate(t, app)
+	layout = config.NewLayout(t.TempDir())
 	if err := layout.EnsureLayout(); err != nil {
 		t.Fatal(err)
 	}
@@ -52,27 +58,18 @@ func setupGate(t *testing.T, rules []gate.CommandRule) (string, config.Layout, s
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	gateDir := filepath.Join(layout.SessionDir("S1"), "gate")
-	spec := gate.Spec{
-		SessionID: "S1",
-		AgentName: "default",
-		Layout:    gate.SpecLayout{SessionCommandsPath: layout.SessionCommands("S1")},
-		Rules:     rules,
-	}
-	_, specPath, err := gate.WriteSpawnArtifacts(gateDir, spec, bin)
-	if err != nil {
+	if err := gate.WriteSharedSpec(app, gate.Spec{Rules: rules}); err != nil {
 		t.Fatal(err)
 	}
-	return bin, layout, gateDir, specPath
+	return bin, app, layout
 }
 
-// runGate invokes the wick-gate binary with the given stdin and
-// $WICK_GATE_SPEC. Returns exit code and stderr text for assertions.
-func runGate(t *testing.T, bin, specPath, stdin string) (int, string) {
+// runGate invokes the gate binary with the given stdin. The binary
+// derives all paths from its compile-time AppName + the HOME env var
+// inherited from the test process — no GATE_* env vars needed.
+func runGate(t *testing.T, bin, stdin string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(bin)
-	cmd.Env = append([]string{}, "WICK_GATE_SPEC="+specPath, "PATH="+pathEnv())
 	cmd.Stdin = strings.NewReader(stdin)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -82,29 +79,31 @@ func runGate(t *testing.T, bin, specPath, stdin string) (int, string) {
 	if ee, ok := err.(*exec.ExitError); ok {
 		exit = ee.ExitCode()
 	} else if err != nil {
-		t.Fatalf("run wick-gate: %v", err)
+		t.Fatalf("run gate: %v", err)
 	}
 	return exit, stderr.String()
 }
 
-// TestWickGate_Allow: a "ls *" rule lets `ls -la` through.
-func TestWickGate_Allow(t *testing.T) {
-	bin, layout, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
-	exit, _ := runGate(t, bin, specPath,
+// TestGate_Allow: a "ls *" rule lets `ls -la` through.
+func TestGate_Allow(t *testing.T) {
+	bin, app, _ := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+	exit, _ := runGate(t, bin,
 		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"}}`)
 	if exit != 0 {
 		t.Fatalf("exit: got %d, want 0 (allow)", exit)
 	}
-	entries := readCommands(t, layout, "S1")
+	entries := terminalOnly(readSharedCommands(t, app))
 	if len(entries) != 1 || entries[0].Status != "allowed" || entries[0].Cmd != "ls -la" {
 		t.Fatalf("commands.jsonl: %+v", entries)
 	}
 }
 
-// TestWickGate_BlockUnlistedCommand: `rm -rf .` is not whitelisted.
-func TestWickGate_BlockUnlistedCommand(t *testing.T) {
-	bin, layout, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
-	exit, stderr := runGate(t, bin, specPath,
+// TestGate_BlockUnlistedCommand: `rm -rf .` is not whitelisted →
+// gate dials the shared socket; with no daemon listening, fail-safe
+// kicks in and terminal entry is "blocked".
+func TestGate_BlockUnlistedCommand(t *testing.T) {
+	bin, app, _ := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+	exit, stderr := runGate(t, bin,
 		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf ."}}`)
 	if exit != 2 {
 		t.Fatalf("exit: got %d, want 2 (block)", exit)
@@ -112,41 +111,95 @@ func TestWickGate_BlockUnlistedCommand(t *testing.T) {
 	if !strings.Contains(stderr, "blocked") {
 		t.Errorf("stderr should mention block: %q", stderr)
 	}
-	entries := readCommands(t, layout, "S1")
+	entries := terminalOnly(readSharedCommands(t, app))
 	if len(entries) != 1 || entries[0].Status != "blocked" || entries[0].Cmd != "rm -rf ." {
 		t.Fatalf("commands.jsonl: %+v", entries)
 	}
 }
 
-// TestWickGate_BlockShellMetacharOnAllowedRule: even a "git *"
-// match must not let a piped command through.
-func TestWickGate_BlockShellMetacharOnAllowedRule(t *testing.T) {
-	bin, layout, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "git *"}})
-	exit, _ := runGate(t, bin, specPath,
+// TestGate_BlockShellMetacharOnAllowedRule: even a "git *" match
+// must not let a piped command through. The matcher rejects with a
+// "metacharacter" reason before any socket dial happens.
+func TestGate_BlockShellMetacharOnAllowedRule(t *testing.T) {
+	bin, app, _ := setupGate(t, []gate.CommandRule{{Pattern: "git *"}})
+	exit, _ := runGate(t, bin,
 		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status; rm -rf ."}}`)
 	if exit != 2 {
 		t.Fatalf("metachar should block: exit %d", exit)
 	}
-	entries := readCommands(t, layout, "S1")
-	if len(entries) != 1 || !strings.Contains(entries[0].Reason, "metacharacter") {
-		t.Fatalf("entry: %+v", entries)
+	// Metachar block goes through the socket dial path now (matcher
+	// returns false → fall through to interactive approval → no
+	// daemon → fail-safe block). Confirm a terminal blocked row exists.
+	entries := terminalOnly(readSharedCommands(t, app))
+	if len(entries) == 0 {
+		t.Fatalf("expected at least one terminal entry, got none")
+	}
+	last := entries[len(entries)-1]
+	if last.Status != "blocked" {
+		t.Errorf("expected blocked, got %q", last.Status)
 	}
 }
 
-// TestWickGate_MalformedStdin: garbage input fails safe (block).
-func TestWickGate_MalformedStdin(t *testing.T) {
-	bin, _, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
-	exit, _ := runGate(t, bin, specPath, "not json")
+// TestGate_AuditTrailLogged: every invocation must emit a
+// "received" stage + a terminal status row, tied by the same
+// RequestID.
+func TestGate_AuditTrailLogged(t *testing.T) {
+	bin, app, _ := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+	exit, _ := runGate(t, bin,
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"}}`)
+	if exit != 0 {
+		t.Fatalf("exit: got %d", exit)
+	}
+
+	all := readSharedCommands(t, app)
+	var sawReceived, sawTerminal bool
+	var requestID string
+	for _, e := range all {
+		if e.Stage == "received" {
+			sawReceived = true
+			requestID = e.RequestID
+		}
+		if e.Status == "allowed" {
+			sawTerminal = true
+			if e.RequestID != requestID && requestID != "" {
+				t.Errorf("RequestID mismatch: stage=%q terminal=%q", requestID, e.RequestID)
+			}
+			if e.MatchKey == "" {
+				t.Errorf("terminal entry missing MatchKey")
+			}
+			if e.Tool != "Bash" {
+				t.Errorf("terminal entry tool: %q", e.Tool)
+			}
+		}
+	}
+	if !sawReceived {
+		t.Errorf("expected at least one stage=received entry, got: %+v", all)
+	}
+	if !sawTerminal {
+		t.Errorf("expected at least one terminal status=allowed entry, got: %+v", all)
+	}
+}
+
+// TestGate_MalformedStdin: garbage input fails safe (block).
+func TestGate_MalformedStdin(t *testing.T) {
+	bin, _, _ := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+	exit, _ := runGate(t, bin, "not json")
 	if exit != 2 {
 		t.Fatalf("malformed should block: exit %d", exit)
 	}
 }
 
-// TestWickGate_MissingSpecEnvFailsSafe: no env var → block.
-func TestWickGate_MissingSpecEnvFailsSafe(t *testing.T) {
-	bin := buildWickGate(t)
+// TestGate_MissingSharedSpecIsEmpty: no spec file → empty rules →
+// every command falls through to the socket dial → no daemon →
+// fail-safe block. Confirms LoadSpec doesn't panic on missing file.
+func TestGate_MissingSharedSpecIsEmpty(t *testing.T) {
+	app := "itest-empty"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	bin := buildGate(t, app)
+
 	cmd := exec.Command(bin)
-	// Empty env — no WICK_GATE_SPEC.
 	cmd.Stdin = strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -160,14 +213,11 @@ func TestWickGate_MissingSpecEnvFailsSafe(t *testing.T) {
 	}
 }
 
-// TestWickGate_TimeoutOnHangingStdin: if stdin never delivers, the
-// 3s read timeout fires + binary blocks.
-func TestWickGate_TimeoutOnHangingStdin(t *testing.T) {
-	bin, _, _, specPath := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
+// TestGate_TimeoutOnHangingStdin: if stdin never delivers, the 3s
+// read timeout fires + binary blocks.
+func TestGate_TimeoutOnHangingStdin(t *testing.T) {
+	bin, _, _ := setupGate(t, []gate.CommandRule{{Pattern: "ls *"}})
 	cmd := exec.Command(bin)
-	cmd.Env = append([]string{}, "WICK_GATE_SPEC="+specPath, "PATH="+pathEnv())
-	// Pipe with no writer — Read blocks forever, but binary should
-	// time out on its own and exit 2.
 	stdinR, stdinW, _ := pipePair()
 	cmd.Stdin = stdinR
 	defer stdinW.Close()
@@ -189,11 +239,12 @@ func TestWickGate_TimeoutOnHangingStdin(t *testing.T) {
 	}
 }
 
-// readCommands reads commands.jsonl into a slice of gate.Entry.
-func readCommands(t *testing.T, layout config.Layout, sessionID string) []gate.Entry {
+// readSharedCommands reads the shared commands.jsonl for appName
+// into a slice of gate.Entry.
+func readSharedCommands(t *testing.T, app string) []gate.Entry {
 	t.Helper()
 	var out []gate.Entry
-	err := storage.ReadJSONL(layout.SessionCommands(sessionID), func(line []byte) bool {
+	err := storage.ReadJSONL(gate.SharedCommandsPath(app), func(line []byte) bool {
 		var e gate.Entry
 		if err := json.Unmarshal(line, &e); err != nil {
 			t.Fatal(err)
@@ -203,6 +254,18 @@ func readCommands(t *testing.T, layout config.Layout, sessionID string) []gate.E
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+// terminalOnly drops audit-trail "stage=..." entries so tests can
+// assert just the user-visible decision row.
+func terminalOnly(entries []gate.Entry) []gate.Entry {
+	out := make([]gate.Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Stage == "" && e.Status != "" {
+			out = append(out, e)
+		}
 	}
 	return out
 }
