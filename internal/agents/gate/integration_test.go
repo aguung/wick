@@ -56,15 +56,16 @@ func buildGate(t *testing.T) string {
 func setupGate(t *testing.T, rules []gate.CommandRule) (bin, app string, layout config.Layout) {
 	t.Helper()
 	app = "itest"
+
+	// Build BEFORE swapping HOME — otherwise `go build` populates
+	// $TempDir/go/pkg/mod with read-only module-cache files, and
+	// t.TempDir cleanup fails with "permission denied" on Linux.
+	bin = buildGate(t)
+
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	// Build BEFORE chdir — `go build` needs repo cwd to find go.mod.
-	bin = buildGate(t)
-	// Now chdir into a tempdir holding our minimal wick.yml. Gate
-	// child proc inherits cwd → appname.Resolve() picks up our test
-	// brand from `name:` without ldflags or env wiring.
 	writeTestWickYML(t, app)
 	layout = config.NewLayout(t.TempDir())
 	if err := layout.EnsureLayout(); err != nil {
@@ -212,10 +213,10 @@ func TestGate_MalformedStdin(t *testing.T) {
 // fail-OPEN allow. Confirms LoadSpec doesn't panic on missing file
 // and the no-socket path returns exit 0.
 func TestGate_MissingSharedSpecIsEmpty(t *testing.T) {
+	bin := buildGate(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	bin := buildGate(t)
 	writeTestWickYML(t, "itest-empty")
 
 	cmd := exec.Command(bin)
