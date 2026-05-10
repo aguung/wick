@@ -28,6 +28,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -201,7 +202,9 @@ func runPathGate(requestID string, spec gate.Spec, in hookInput) int {
 	tool := in.ToolName
 
 	// No path extracted or relative path — safe (CWD = workspace).
-	if path == "" || !strings.HasPrefix(path, "/") {
+	// Use filepath.IsAbs for cross-platform: Windows paths (C:\...) are
+	// absolute but don't start with "/", so HasPrefix alone misses them.
+	if path == "" || (!strings.HasPrefix(path, "/") && !filepath.IsAbs(path)) {
 		logTerminalEntry(requestID, tool, path, in.CWD, "allowed", "relative_path", "")
 		return 0
 	}
