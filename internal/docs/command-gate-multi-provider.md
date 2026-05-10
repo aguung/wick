@@ -1,0 +1,539 @@
+# Command Gate — Multi-Provider Design
+
+Status: **proposal**.
+Update terakhir: 2026-05-11.
+
+Doc ini supersede arsitektur lama yang Claude-only ([command-gate-architecture.md](command-gate-architecture.md)). Tujuan: gate jadi generic, per-provider hook contract di-translate sama adapter, capability dicek runtime jadi user gak nyalain gate di provider yang gak support hook.
+
+## TODO — Provider hook detection (priority 0)
+
+Tujuan: implement capability detection **dulu**, terisolasi dari spawn/chat path. Begitu ini hijau, kita punya integration test yang reproducible tanpa harus jalanin full agent session. Chat-level test nyusul setelah detection stabil.
+
+Urutan task — tiap step bisa landed independent, gak block phase berikutnya.
+
+```
+[ ] D1. Capability registry skeleton
+    - internal/agents/capability/capability.go (separate package — hindari circular
+      import dari spawner subpackages yang juga butuh baca Capability)
+    - Capability struct + HookSupported static map
+    - Initial values: claude=true (scope=bash+edit+mcp), codex=true (scope=shell-only),
+      gemini=true (scope=untested — adapter shipped but runtime unverified)
+    - Self-registration pattern: tiap provider sub-package (claude/codex/gemini)
+      manggil capability.Register("claude", Capability{...}) di init() — central map
+      gak perlu di-edit tiap nambah provider
+    - Unit test: registry lookup per Type returns expected struct
+
+[ ] D2. Hook config writer per provider (project-scoped, dry-run mode)
+    - internal/agents/provider/claude/hookconfig.go: WriteHookConfig + RemoveHookConfig
+    - Same untuk codex/, gemini/ (gemini bisa stub return ErrUnsupported)
+    - Dry-run flag: write ke temp dir, return path, jangan touch real config
+    - Unit test: assert JSON shape match expected per provider docs
+
+[ ] D2b. Spawner sub-package per provider (all 3: claude, codex, gemini)
+    Scope: ship spawn.go untuk ketiga provider supaya factory bisa dispatch
+    uniform. Test coverage realistis:
+      - claude: full test (user punya install)
+      - codex: full test (user punya install — codex 0.129.0)
+      - gemini: ship code lengkap tapi runtime test deferred — user belum bisa
+        verify. Tandai test gemini sebagai `t.Skip("requires gemini install, manual verify")`
+        sampai ada yang bisa run end-to-end.
+
+    Tasks:
+    - internal/agents/provider/claude/spawn.go: existing, no behavior change.
+      Audit BypassPermissions wiring vs gate-active conflict guard (sudah ada di factory).
+    - internal/agents/provider/codex/spawn.go (new): Spawner struct impl provider.Spawner
+        - Fields: Binary, AskForApproval (codex equivalent dari BypassPermissions), ExtraArgs
+        - Argv: codex headless flags. Verify dari `codex --help` binary terinstall (jangan trust doc)
+        - Conflict: gate active → skip --ask-for-approval=never (atau apapun bypass equivalent)
+    - internal/agents/provider/gemini/spawn.go (new): Spawner struct impl provider.Spawner
+        - Fields: Binary, YoloMode (atau apapun gemini equivalent), ExtraArgs
+        - Argv: gemini headless flags. Best-effort dari docs — TODO comment "verify saat ada akses gemini"
+        - Conflict guard placeholder, sama pattern
+    - spawner.go interface tetap unchanged (already generic)
+    - pool/factory.go: dispatch by opt.ProviderType ganti hardcode claude.Spawner
+        - switch case 3 way: claude / codex / gemini → instantiate Spawner respective
+        - Factory tetap pegang rule "gate active → skip provider's bypass flag", translate per-provider
+    - Unit test:
+        - claude: argv shape with + without gate (existing pattern)
+        - codex: argv shape with + without gate (user bisa verify lokal)
+        - gemini: argv shape test only, skip integration (TBD)
+
+[ ] D3. Gate probe mode (--probe)
+    - cmd/gate: tambah --probe flag
+    - Behavior: parse stdin, kirim canonical Decision ke daemon dgn ProbeRequest=true
+    - Daemon: route ke probe handler (lihat D4), bukan ke session
+    - Adapter emit canned deny output, exit sesuai provider quirks
+    - Unit test: golden file stdin → stdout per adapter
+
+[ ] D4. Daemon probe handler
+    - internal/agents/gate/daemon: handle ProbeRequest tanpa SSE broadcast
+    - Reply Result{Allow:false, Reason:"capability probe"}
+    - Log probe event ke commands.jsonl dgn stage=probe
+    - Integration test: dial socket, kirim probe, assert reply shape
+
+[ ] D5. HookCapabilityCheck function
+    - internal/agents/capability/check.go: HookCapabilityCheck(ctx, ins) Capability
+      (same package as D1's registry; check func reads registry + invokes per-provider Prober)
+    - Spawn provider dgn project-scoped hook config (D2) pointing ke gate --probe (D3)
+    - Send minimal "run a sentinel shell command" prompt via provider stdin
+    - Verify provider honors deny: sentinel file should NOT exist after spawn exits
+    - Timeout 10s, cleanup temp workspace
+    - HookVerified=true kalau sentinel absent, false kalau ada
+    - Integration test per provider:
+        - claude: full integration test (user bisa verify)
+        - codex: full integration test (user bisa verify)
+        - gemini: code path exist, runtime test t.Skip dgn note "needs gemini install"
+    - Skip kalau binary gak install di CI runner
+
+[ ] D6. Capability cache + invalidation
+    - probeCache di provider.go diperluas: simpan Capability bareng Status
+    - Cache key: Type + ResolvedPath + Version (re-probe saat version berubah)
+    - InvalidateProbeCache juga drop capability entry
+    - Unit test: cache hit returns cached, version change forces re-probe
+
+[ ] D7. CLI subcommand untuk manual probe (debugging)
+    - `wick agents capability <type>` → run HookCapabilityCheck, print result
+    - Useful buat reproduce CI failure di local
+    - Help text jelasin "this spawns the provider with a sentinel; expect a deny"
+
+[ ] D8. Integration test harness
+    - test/integration/gate_capability_test.go
+    - Spin up daemon socket, fake provider binary (shell script yg simulate hook call)
+    - Walk through full D3→D4→D5 flow tanpa real claude/codex
+    - Run di CI di setiap PR (cheap, no external deps)
+```
+
+**Exit criteria Priority 0**:
+- D1–D8 hijau di CI (unit tests, harness)
+- Manual `wick agents capability claude` lokal → `HookVerified=true` (user verify)
+- Manual `wick agents capability codex` lokal → `HookVerified=true` (user verify)
+- Manual `wick agents capability gemini` → ship code, expected `HookError=untested`
+  sampai ada akses gemini install. Field `HookSupported=true` (adapter ada di code)
+  tapi `HookVerified=false` sampai diverifikasi manual oleh kontributor yang punya gemini.
+
+Setelah claude+codex verified, boleh lanjut ke Phase 1 (refactor existing claude spawn jadi adapter-based). Gemini stays "shipped but unverified" status — di UI tampil banner "experimental, please report".
+
+## Ringkasan keputusan
+
+- **Gate = binary decision protocol**: stdout cuma allow/deny. Gak ada `approve_once / session / always` di level gate.
+- **Adapter per provider** di dalam gate binary: parse stdin shape provider → canonical → daemon → format stdout sesuai provider quirks (exit code, envelope shape, stderr).
+- **Daemon hold all state**: whitelist, auto-approved (persistent), session cache (in-memory). Gate stateless.
+- **Gate config per-provider, bukan global**: `GateEnabled` di-rename jadi opt-in flag per-instance. Provider yang gak support hook → gate option disabled di UI + spawn gak inject hook config sama sekali.
+- **Default OFF**: gate disable by default untuk semua provider instance. User harus eksplisit aktifin lewat UI toggle. Alasannya: hook = intercept tiap shell call agent, ada overhead + butuh user paham tradeoff. UI kasih explainer singkat di atas toggle.
+- **Capability probe**: saat user toggle gate ON di Providers UI, jalanin `HookCapabilityCheck` per provider. Hasil cached bareng `Status.Version`. Gagal → gate option locked off, banner "hook not supported in <provider> <version>".
+
+## Kenapa pindah dari design lama
+
+1. **Spec.json race di gate** — sekarang gate baca spec setiap call. Pindah eval ke daemon = single writer, no race.
+2. **Approval modes 4 (once/session/always/block)** = kebijakan daemon, bukan kontrak gate. Gate cuma butuh tau "boleh atau nggak". Logika expand session cache, persist `auto_approved`, hidup di daemon.
+3. **Multi-provider**: Claude bukan satu-satunya. Codex 0.129 punya `PreToolUse` (mirip Claude tapi flat envelope). Gemini punya `BeforeTool`. Tiap provider bisa ubah kontrak kapanpun (Claude udah dua kali). Adapter pattern isolate drift.
+4. **Heterogen support**: Codex baru intercept "simple shell only". Gemini hooks masih maturing. Provider yang gak punya hook sama sekali (atau kontrak gak compatible) gak boleh diam-diam bypass gate — user harus tau, dan toggle harus reflect realitas.
+
+## Arsitektur
+
+```
+Provider subprocess (claude / codex / gemini)
+  │
+  │ provider-specific PreToolUse / BeforeTool fires
+  ▼
+<app>-gate --provider=<name>  (stateless, short-lived)
+  │
+  ├─ stdin: provider payload shape
+  ├─ adapter.Parse → canonical Decision
+  ├─ dial daemon socket (Unix domain, raw JSON)
+  ├─ daemon evaluates:
+  │     1. auto_approved (persistent) hit?  → allow
+  │     2. session_approve cache hit?       → allow
+  │     3. whitelist rule glob match?       → allow
+  │     4. else broadcast SSE → user modal → reply
+  │
+  ├─ receive canonical Result {Allow, Reason}
+  └─ adapter.Emit → provider-specific stdout/exit
+```
+
+Daemon side gak peduli provider. Whitelist match, audit log, SSE event, semua canonical.
+
+## Kontrak canonical (gate ↔ daemon)
+
+Internal only. Gak pernah lewat boundary provider.
+
+```go
+// Sent gate → daemon
+type Decision struct {
+    Tool      string `json:"tool"`        // "Bash" | "Edit" | "MCP:<name>"
+    Cmd       string `json:"cmd"`         // shell line, empty for non-shell
+    Cwd       string `json:"cwd"`
+    RequestID string `json:"request_id"`
+    Provider  string `json:"provider"`    // for audit only
+    Raw       json.RawMessage `json:"raw,omitempty"` // original payload preserved
+}
+
+// Sent daemon → gate
+type Result struct {
+    Allow  bool   `json:"allow"`
+    Reason string `json:"reason,omitempty"`
+}
+```
+
+Itu doang. Binary decision. Tiga session-scope ada di daemon, gak boncor ke gate.
+
+## Adapter interface
+
+```go
+package adapter
+
+type Adapter interface {
+    // Name returns the provider identifier as used in --provider flag.
+    Name() string
+
+    // Parse converts provider-specific hook stdin into canonical Decision.
+    Parse(stdin []byte) (Decision, error)
+
+    // Emit writes the provider-specific stdout envelope and returns the
+    // exit code the gate process must use. Exit code semantics differ
+    // by provider (Claude >= 2.1.138 forces exit 0 for deny, Codex
+    // accepts exit 2, Gemini prefers exit 2 + stderr).
+    Emit(w io.Writer, result Result) (exitCode int, err error)
+}
+```
+
+Lokasi: `internal/agents/gate/adapter/<provider>/adapter.go`. Satu file per provider, lengkap dengan unit test stdin/stdout golden.
+
+### Adapter registry — dispatch by --provider flag
+
+`cmd/gate` parse flag `--provider=<name>`, lookup adapter dari registry:
+
+```go
+package adapter
+
+var registry = map[string]Adapter{}
+
+func Register(a Adapter) { registry[a.Name()] = a }
+func Lookup(name string) (Adapter, error) { ... }
+```
+
+Tiap adapter sub-package (`adapter/claude`, `adapter/codex`, dst) panggil `adapter.Register(&adapter{})` di `init()`. Gate binary blank-import semua adapter di `cmd/gate/main.go`:
+
+```go
+import (
+    _ "github.com/yogasw/wick/internal/agents/gate/adapter/claude"
+    _ "github.com/yogasw/wick/internal/agents/gate/adapter/codex"
+    _ "github.com/yogasw/wick/internal/agents/gate/adapter/gemini"
+)
+```
+
+Tambah provider baru = bikin folder adapter + 1 baris blank import. Gak ada central switch.
+
+### Bypass flag translation per provider
+
+Factory translate intent "bypass approval prompt" jadi flag CLI-specific:
+
+| Provider | Bypass flag | Behavior saat gate active |
+|---|---|---|
+| claude | `--permission-mode bypassPermissions` | **SKIP** — claude 2.1.138+ bypass = PreToolUse di-skip → gate mati |
+| codex | `--ask-for-approval=never` | **SKIP** — bypass mode kemungkinan skip PreToolUse juga (verify saat impl) |
+| gemini | TBD (`--yolo`?) | **SKIP** — defensive, sama pattern |
+
+Aturan universal: **gate active ⇒ JANGAN set bypass flag manapun**. Tiap Spawner sub-package punya field bypass sendiri (claude.Spawner.BypassPermissions, codex.Spawner.AskForApproval=never, dst), factory yang decide set atau gak.
+
+### Per-provider quirks (initial mapping)
+
+| Provider | stdin path | Allow output | Deny output | Exit (deny) |
+|---|---|---|---|---|
+| claude | `tool_name`, `tool_input.command`, `cwd` | `{"hookSpecificOutput":{"permissionDecision":"allow"}}` | `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}` | **0** (≥2.1.138) |
+| codex | TBD — cek `codex/codex 0.129.0` schema | `{"permissionDecision":"allow"}` | `{"permissionDecision":"deny","reason":"..."}` atau exit 2 + stderr | 0 atau 2 |
+| gemini | TBD — cek `BeforeTool` schema | empty stdout, exit 0 | `{"decision":"deny","reason":"..."}` | 2 |
+
+TBD = belum diverifikasi langsung dari binary terinstall; lookup contract saat implement adapter (jangan trust docs blindly, version drift).
+
+## Provider capability — hook support detection
+
+**Inti perubahan**: gate jadi per-provider feature, bukan global.
+
+### Capability flags
+
+Per `provider.Type` declare capability statis + runtime probe:
+
+```go
+package capability  // separate package biar spawner subpackages bisa import
+
+type Capability struct {
+    HookSupported   bool   // structurally — adapter exists in code
+    HookVerified    bool   // runtime probe passed
+    HookProbedAt    time.Time
+    HookError       string // why probe failed (version too old, schema mismatch)
+    InterceptScope  string // "bash+edit+mcp" (claude) | "shell-only" (codex) | "untested" (gemini)
+}
+
+// Self-registration: each provider sub-package calls this in init()
+func Register(name string, cap Capability) { ... }
+func Lookup(name string) (Capability, bool) { ... }
+```
+
+Lokasi: `internal/agents/capability/` — package terpisah dari `provider/` biar `provider/claude/`, `provider/codex/` dst bisa import tanpa circular dependency.
+
+`HookSupported` derived dari registry: provider yang ada adapter file + manggil `capability.Register` di init = true. Saat ini:
+- claude → true, scope=bash+edit+mcp (existing adapter)
+- codex → true, scope=shell-only (new adapter, partial intercept per OpenAI docs)
+- gemini → true, scope=untested (adapter shipped, runtime test deferred sampai ada akses)
+
+`InterceptScope` dipake:
+- **UI**: tampilin badge "Bash, Edit, MCP" vs "Shell only" vs "Untested" di Providers card biar user tau coverage
+- **Audit log**: prefix entry di `commands.jsonl` biar bisa filter "command yang ke-skip karena di luar scope"
+- **Daemon**: gak peduli (binary allow/deny tetap)
+
+### Runtime probe (`HookCapabilityCheck`)
+
+Saat user toggle gate ON di Providers UI per-instance, panggil:
+
+```go
+func HookCapabilityCheck(ctx context.Context, ins Instance) Capability
+```
+
+Tahapan:
+1. Cek `HookSupported` dari registry. False → return early, UI lock toggle off.
+2. Spawn provider dengan minimal hook config pointing ke `<app>-gate --provider=<name> --probe`. Mode `--probe` di gate: balas immediately dengan canned deny, log probe event, exit. Daemon route ke probe handler, gak ke session.
+3. Provider proses dispatch shell command sentinel. Kalau dispatch ke-block sesuai expected → `HookVerified = true`.
+4. Timeout 10s. Gagal apapun → `HookError`.
+
+### Sentinel mechanism per provider
+
+Provider beda cara terima prompt. Probe runner punya per-provider plugin:
+
+```go
+type Prober interface {
+    // SendSentinel spawns provider with hook config + workspace, sends prompt
+    // asking provider to `touch sentinel.txt`, waits for exit/timeout.
+    // Returns nil if sentinel file absent (deny honored), error otherwise.
+    SendSentinel(ctx context.Context, ins Instance, workspace string) error
+}
+```
+
+Per provider implementation:
+- **claude**: pakai stream-json input (`{"type":"user","message":{"role":"user","content":"run: touch sentinel.txt"}}`) via stdin headless mode
+- **codex**: `codex exec --sandbox workspace-write "touch sentinel.txt"` (one-shot mode, gak perlu interactive)
+- **gemini**: TBD — kemungkinan `gemini -p "touch sentinel.txt"` headless
+
+Tiap Prober ada di `provider/<name>/prober.go`, register ke `capability` package via init.
+
+Result di-cache bareng `Status` (probeCacheTTL same as version). User klik Rescan = re-probe.
+
+### UI behavior
+
+Per-instance Providers card tambah section:
+
+```
+┌─ Command Gate ────────────────────────────────────────────┐
+│ ⓘ What's this?                                            │
+│   Every shell command the agent runs goes through wick    │
+│   first. You approve / block from the web UI before it    │
+│   executes. Without gate, the provider's own permission   │
+│   flow applies (usually a terminal prompt or auto-allow). │
+│                                                            │
+│ Status: [supported, verified ✓]                           │
+│         [supported — click Test to verify]                │
+│         [not supported in this provider]                  │
+│         [not supported in version <x>]                    │
+│                                                            │
+│ [Toggle: OFF]   ← default off, user enables explicitly    │
+│ [Test capability]                                         │
+└────────────────────────────────────────────────────────────┘
+```
+
+Toggle disabled kalau capability negative. Tooltip jelasin alasan. Explainer copy diatas itu wajib — user gak boleh nyalain tanpa tau dia ngapain.
+
+### Per-instance gate flag (config schema change)
+
+`userconfig.ProviderInstance` tambah:
+
+```go
+type ProviderInstance struct {
+    // existing fields...
+    GateEnabled bool `json:"gate_enabled,omitempty"`
+}
+```
+
+Default `false` untuk **semua** instance, termasuk migrasi dari user lama. Alasan: walau ada global `GateConfig.GateEnabled=true` di config lama, kontrak baru = explicit opt-in per provider. User yang sebelumnya pakai gate Claude harus toggle ulang di UI sekali — trade-off untuk semantic clarity. Banner one-time di UI: "Gate is now per-provider — re-enable for Claude if you want it back."
+
+Global `GateConfig.GateEnabled` di [internal/agents/config/gate.go](../agents/config/gate.go) dihapus di Phase 2 (gak ada fallback path). Capability + per-instance flag = single source of truth.
+
+## Spawn-time wiring
+
+`provider.Spawn` (atau gateAwareSpawner equivalent) saat ini Claude-only wire gate config. Refactor jadi:
+
+```go
+if ins.GateEnabled && capability.HookSupported {
+    cfg := buildHookConfig(ins.Type, gateBinaryPath)
+    writeHookConfig(ins.Type, cfg)
+} else {
+    removeHookConfig(ins.Type)   // hapus stale config dari run sebelumnya
+}
+```
+
+`removeHookConfig` penting — kalau user toggle OFF gate di provider yang sebelumnya ON, hook config harus dibersihin biar provider gak masih panggil gate binary yang kemungkinan bisa fail-open allow tapi tetap pollute audit log.
+
+### Per-provider hook config writer
+
+Lokasi: `internal/agents/provider/<name>/hookconfig.go`. Satu fungsi:
+
+```go
+func WriteHookConfig(gateBin string, scope HookScope) error
+func RemoveHookConfig() error
+```
+
+Scope = path config file (per-instance via env var? per-project via `.claude/settings.json`?). Untuk Phase 1, project-scoped lebih aman (gak nyentuh user-global config). Detailnya per provider:
+
+- **Claude**: `<sessionDir>/.claude/settings.json` — sudah ada mekanisme di repo
+- **Codex**: `<sessionDir>/.codex/hooks.json` — verify path saat impl
+- **Gemini**: `<sessionDir>/.gemini/settings.json` — verify path saat impl
+
+Project-scoped artinya hook cuma aktif untuk session ini. Mati = config terhapus sama session cleanup.
+
+## Daemon changes
+
+### State pindah dari gate
+
+Daemon `internal/agents/gate/daemon.go` (TBD jika belum ada) handle:
+
+```go
+type Daemon struct {
+    autoApproved   *autoApprovedStore   // persistent, file-backed
+    sessionApprove map[SessionID]map[MatchKey]bool  // in-memory
+    rules          []Rule               // glob whitelist
+    pending        sync.Map             // RequestID → chan Result
+}
+
+func (d *Daemon) Decide(req Decision) Result {
+    // 1. auto_approved hit?
+    // 2. session cache hit (lookup session by cwd → sessionID)?
+    // 3. rule glob match?
+    // 4. broadcast SSE, wait pending channel
+}
+```
+
+Existing logic di gate side (`LoadSpec`, `MatchRule`, `AutoApprovedHit`) di-port ke daemon. Gate side jadi dumb pipe.
+
+### Approval response wider
+
+Modal masih 4 options (`approve_once / session / always / block`), tapi cuma daemon yang interpret. Web UI POST `/api/agents/sessions/{id}/approve` payload tetap sama. Daemon translate:
+- `approve_once` → reply current Result{Allow:true}
+- `approve_session` → reply + add ke sessionApprove cache
+- `approve_always` → reply + persist ke auto_approved + save spec.json
+- `block` → reply Result{Allow:false}
+
+Gate gak tau bedanya, dia cuma terima Result.
+
+## File layout (perubahan minimal)
+
+```
+~/.<app>/agents/gate/
+├── spec.json          ← daemon-owned (was: gate read, daemon write)
+├── gate.sock          ← unchanged
+└── commands.jsonl     ← daemon writes (was: gate writes)
+```
+
+Daily tail log unchanged.
+
+## Failure modes (updated)
+
+| Situation | Behavior | Catatan |
+|---|---|---|
+| Daemon mati / socket absent | Gate fail-open allow | sama seperti sekarang |
+| Adapter Parse error | Gate fail-closed deny + log | provider kirim payload aneh |
+| Provider gak support hook + GateEnabled=true | Spawn refuse, return error to caller | shouldn't happen (UI block toggle) tapi defensive |
+| Capability probe timeout 10s | `HookError=timeout`, toggle locked off | retry via Rescan |
+| Hook config write fail | Spawn error, abort | gak boleh spawn tanpa gate kalau user opt-in |
+
+## Migration / rollout
+
+1. **Phase 1**: refactor existing claude path jadi adapter-based, no behavior change. Daemon hold whitelist. Existing users gak ngerasain apa-apa.
+2. **Phase 2**: per-instance `GateEnabled` flag, capability registry (self-registering), UI toggle. Default OFF for all instances — banner "Gate is now per-provider, re-enable if needed".
+3. **Phase 3**: codex adapter + Spawner + Prober + capability probe. User verify locally, ship opt-in beta.
+4. **Phase 4**: gemini adapter + Spawner + Prober shipped at same time as codex (D2b says ship code untuk ketiganya bersamaan). Tampil di UI dengan badge "experimental, untested" sampai ada kontributor yang verify.
+5. **Phase 5**: hapus `GateConfig.GateEnabled` global (deprecated path), full per-instance. Cleanup `attachGateConfig` Claude-only di pool/factory.go.
+
+Tiap phase shippable independen.
+
+## Adding a new provider — contributor checklist
+
+Tujuan: tambah provider keempat (mis. Aider) tanpa harus baca semua doc. Self-registering pattern bikin step ini lokal di satu folder, bukan tersebar.
+
+```
+[ ] 1. Constant
+    - provider/provider.go: tambah `TypeAider Type = "aider"`
+    - SupportedTypes() append TypeAider
+
+[ ] 2. Spawner sub-package
+    - provider/aider/spawn.go: impl provider.Spawner
+    - Fields: Binary, <bypass-equivalent>, ExtraArgs
+    - Argv verified dari `aider --help` binary terinstall
+    - init() bisa Register ke factory dispatch (lihat step 5)
+
+[ ] 3. Adapter
+    - gate/adapter/aider/adapter.go: impl adapter.Adapter
+    - Parse stdin shape Aider's hook payload → canonical Decision
+    - Emit canonical Result → Aider's expected stdout + exit code
+    - init() panggil adapter.Register(&adapter{})
+    - Unit test golden stdin → stdout
+
+[ ] 4. Hook config writer
+    - provider/aider/hookconfig.go: WriteHookConfig + RemoveHookConfig
+    - Path: `<sessionDir>/.aider/<hooks-file>` (verify lokasi konvensi Aider)
+    - Unit test JSON shape
+
+[ ] 5. Capability registration
+    - provider/aider/capability_init.go:
+        ```go
+        func init() {
+            capability.Register("aider", capability.Capability{
+                HookSupported:  true,
+                InterceptScope: "...", // depends on Aider docs
+            })
+        }
+        ```
+
+[ ] 6. Prober
+    - provider/aider/prober.go: impl capability.Prober
+    - SendSentinel: cara Aider terima prompt one-shot
+    - init() register prober ke capability package
+
+[ ] 7. Factory dispatch
+    - Saat ini pool/factory.go switch by ProviderType. Idealnya factory baca
+      dari spawner-registry juga (provider package register spawner factory di init),
+      tapi sampai refactor itu landed, tambah case "aider" di switch.
+
+[ ] 8. Gate binary blank-import
+    - cmd/gate/main.go: tambah `_ "github.com/.../gate/adapter/aider"`
+    - Tanpa ini adapter gak ke-register di binary final
+
+[ ] 9. Test
+    - argv shape test (unit)
+    - capability probe test (integration, skip kalau binary gak install)
+    - end-to-end smoke: deny envelope honored
+```
+
+**3 file central yang tetap harus disentuh** (sampai refactor self-registering spawner factory landed):
+- `provider/provider.go` (constant)
+- `pool/factory.go` (switch — bisa di-refactor jadi map lookup)
+- `cmd/gate/main.go` (blank import)
+
+Sisanya semua lokal di `provider/<name>/` + `gate/adapter/<name>/`. Aman buat scale 5–10 providers tanpa file-touching ledakan.
+
+## Decided / open questions
+
+**Decided:**
+1. **Capability probe overhead** → cache by `Type + Path + Version`. Re-probe cuma kalau version berubah.
+2. **`approve_always` lintas provider** → adapter **normalize tool name ke canonical** (`shell` → `Bash`, `apply_patch` → `Edit`). Match key seragam, user approve sekali apply ke semua provider. Trade-off: kalau user mau scope per-provider, harus bedain manual via UI nanti.
+3. **Adapter registry** → self-registering via init() + blank import (lihat section "Adapter registry").
+4. **Capability registry** → self-registering juga (lihat D1).
+
+**Open:**
+1. **`approve_session` saat dua session share cwd** — routing daemon by cwd ambigu. Tunda (jarang terjadi). Workaround: pindah ke session-ID injection lewat env var saat masalah jadi nyata.
+2. **Hook config conflict dgn user-managed settings** — kalau user udah punya `.claude/settings.json` manual, write kita harus merge bukan overwrite. Verify saat refactor Phase 1. Saat ini repo udah tulis ke `.claude/settings.local.json` (lihat `attachGateConfig` di factory.go) — itu udah aman buat claude, tapi codex/gemini equivalent harus dicari.
+3. **Spawner factory registry** — sekarang masih switch di `pool/factory.go`. Untuk full self-registering, butuh `spawnerFactory.Register("aider", func() Spawner { ... })` pattern. Tunda sampai providers > 4 (premature buat sekarang).
+
+## See also
+
+- [command-gate-architecture.md](command-gate-architecture.md) — design lama Claude-only (akan di-supersede setelah Phase 1 merge)
+- [command-gate-claude-2.1-fix.md](command-gate-claude-2.1-fix.md) — incident report Claude contract change, motivasi adapter pattern
+- [docs/guide/command-gate.md](../../docs/guide/command-gate.md) — user-facing guide
