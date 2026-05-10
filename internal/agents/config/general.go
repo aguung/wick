@@ -23,8 +23,6 @@ func DefaultGeneralConfig() GeneralConfig {
 		MaxConcurrent:   2,
 		IdleTimeoutSec:  120,
 		DefaultProvider: "claude",
-		GateEnabled:     false,
-		AllowedCmds:     `[{"pattern":"git status"},{"pattern":"git diff *"},{"pattern":"git log *"},{"pattern":"ls *"},{"pattern":"cat *"}]`,
 		AutoRescan:      true,
 	}
 }
