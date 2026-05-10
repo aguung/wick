@@ -182,15 +182,6 @@ templ providerCard(base string, st provider.Status) {
 				<form method="POST" action={ templ.SafeURL(base + "/providers/rescan/" + string(st.Instance.Type) + "/" + st.Instance.Name) } class="text-xs">
 					<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Re-probe this provider's binary + version">Rescan</button>
 				</form>
-				if st.Instance.Type == "claude" {
-					<button
-						type="button"
-						class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-						title="Spawn this claude with a force-deny hook and check whether the deny envelope was honored. Takes 5–30s."
-						data-probe-gate
-						data-probe-url={ base + "/providers/probe-gate/" + string(st.Instance.Type) + "/" + st.Instance.Name }
-					>Test gate</button>
-				}
 				<form method="POST" action={ templ.SafeURL(base + "/providers") } class="text-xs">
 					<input type="hidden" name="type" value={ string(st.Instance.Type) }/>
 					<input type="hidden" name="name" value={ st.Instance.Name }/>
@@ -247,6 +238,7 @@ templ providerCard(base string, st provider.Status) {
 				</div>
 			}
 		</dl>
+		@hookCapabilitySection(base, st)
 		if st.Instance.Name != string(st.Instance.Type) {
 			<div class="pt-2 border-t border-white-300 dark:border-navy-600">
 				<button
@@ -256,6 +248,48 @@ templ providerCard(base string, st provider.Status) {
 					class="text-xs text-red-600 dark:text-red-400 hover:underline"
 				>Delete instance</button>
 			</div>
+		}
+	</div>
+}
+
+// hookCapabilitySection renders the per-instance Command Gate status:
+// what scope this provider's hook covers (bash+edit+mcp / shell-only /
+// untested), whether wick has verified the deny envelope is honored,
+// and a Test button to re-run the capability probe. Default off — the
+// user explicitly opts in by clicking Test before enabling gate flow.
+templ hookCapabilitySection(base string, st provider.Status) {
+	{{ hc, has := st.Hooks[provider.HookEventPreToolUse] }}
+	<div class="pt-3 border-t border-white-300 dark:border-navy-600 space-y-2">
+		<div class="flex items-center justify-between gap-2">
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-semibold text-black-900 dark:text-white-100">Command Gate</span>
+				if has && hc.Verified {
+					<span class="rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100" title="Capability probe confirmed this provider honors the deny envelope">verified ✓</span>
+				} else if has && hc.Supported {
+					<span class="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-white-100" title="Adapter exists but runtime probe has not confirmed deny is honored">unverified</span>
+				} else {
+					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600">not probed</span>
+				}
+				if has && hc.Scope != "" {
+					<span class="text-xs text-black-700 dark:text-black-600">scope: { hc.Scope }</span>
+				}
+			</div>
+			<button
+				type="button"
+				class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
+				title="Spawn this provider with a force-deny hook and check whether the deny envelope is honored. Takes 5–30s."
+				data-check-hook
+				data-check-url={ base + "/providers/" + string(st.Instance.Type) + "/" + st.Instance.Name + "/hooks/" + provider.HookEventPreToolUse + "/check" }
+			>Test</button>
+		</div>
+		<p class="text-xs text-black-700 dark:text-black-600 leading-relaxed">
+			Every shell command this provider runs goes through wick first — you approve or block from the web UI before it executes. Without gate, the provider's own permission flow applies (terminal prompt or auto-allow).
+		</p>
+		if has && hc.Error != "" {
+			<p class="font-mono text-xs text-red-600 dark:text-red-400 break-all">{ hc.Error }</p>
+		}
+		if has && !hc.ProbedAt.IsZero() {
+			<p class="font-mono text-xs text-black-700 dark:text-black-600">last probed: { hc.ProbedAt.Local().Format("2006-01-02 15:04:05") }</p>
 		}
 	</div>
 }
