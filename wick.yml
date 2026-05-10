@@ -29,7 +29,7 @@ tasks:
           cmd: templ
         run: go install github.com/a-h/templ/cmd/templ@latest
       - go mod tidy
-      - go build -o bin/wick-gate ./cmd/gate/
+      - go build -ldflags "-X github.com/yogasw/wick/internal/appname.BuildAppName=wick-lab" -o bin/lab-gate ./cmd/gate/
     done: |
       Setup complete!
       Run: wick dev
@@ -42,7 +42,9 @@ tasks:
     cmds:
       - templ generate ./...
       - "{{.TAILWIND_BIN}} -i web/src/input.css -o web/public/css/app.css"
-      - go run main.go server
+      - go build -ldflags "-X github.com/yogasw/wick/internal/appname.BuildAppName=wick-lab" -o lab-gate ./cmd/gate/
+      - go build -o lab ./cmd/lab/
+      - ./lab server
 
   generate:
     cmds:
