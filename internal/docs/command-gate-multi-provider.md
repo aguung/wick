@@ -1,7 +1,11 @@
 # Command Gate — Multi-Provider Design
 
-Status: **Priority 0 done** — capability detection landed end-to-end. Phase 1+ pending.
+Status: **Priority 0 + UI landed**. Phase 1 (refactor claude path) pending.
 Update terakhir: 2026-05-11.
+
+Commits di branch `improve-gate2`:
+- `d5d467c` feat(gate): multi-provider capability detection (Priority 0)
+- `a53b648` feat(ui): per-provider Command Gate section in Providers card
 
 Doc ini supersede arsitektur lama yang Claude-only ([command-gate-architecture.md](command-gate-architecture.md)). Tujuan: gate jadi generic, per-provider hook contract di-translate sama adapter, capability dicek runtime jadi user gak nyalain gate di provider yang gak support hook.
 
@@ -189,11 +193,18 @@ Urutan task — tiap step bisa landed independent, gak block phase berikutnya.
   scope tetap "untested" di registry sampai ada kontributor yang verify
 
 **Next (Phase 1+):**
-- HTTP handler `POST /api/agents/providers/{type}/{name}/hooks/{event}/check`
-  → call `capability.HookCapabilityCheck` + `provider.MergeHookCapability`
-- UI Command Gate section per provider card (default OFF, status badge, Test button)
-- Phase 1 refactor existing claude spawn jadi adapter-based (drop attachGateConfig
-  dispatch, route lewat capability writers)
+- ✅ HTTP handler `POST /providers/{type}/{name}/hooks/{event}/check` —
+  shipped di `internal/tools/agents/providers.go` (`checkProviderHook`)
+- ✅ UI Command Gate section per provider card — `hookCapabilitySection`
+  templ helper + `data-check-hook` JS handler, badge baca dari
+  `ProviderStatus.Hooks["PreToolUse"]`, Test button + auto-reload
+- ⏳ Phase 1 refactor existing claude spawn jadi adapter-based:
+  - Replace `factory.attachGateConfig` dispatch dgn capability writer lookup
+  - Remove paralel `gate.ProbeGateSupport` + `probeProviderGate` route
+  - Route gate-toggle ON via per-instance `GateEnabled` flag instead of global config
+- ⏳ Per-instance `GateEnabled bool` field di `userconfig.ProviderInstance`
+- ⏳ Wire `MergeHookCapability` result ke spawn-time enforcement (block spawn
+  kalau user toggle ON tapi capability gak verified)
 
 ## Ringkasan keputusan
 
