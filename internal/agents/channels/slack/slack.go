@@ -38,9 +38,13 @@ const (
 
 	// reactions used for the agent lifecycle
 	reactionQueued  = "hourglass_flowing_sand" // ⏳
-	reactionRunning = "gear"                   // ⚙️
 	reactionBlocked = "no_entry_sign"          // 🚫
 	reactionError   = "x"                      // ❌
+
+	// queueReactionDelay suppresses the ⏳ reaction when the pool dispatches
+	// fast enough that the operator wouldn't see it anyway. Only sessions
+	// that are still waiting after this delay get the queue indicator.
+	queueReactionDelay = 3 * time.Second
 )
 
 // turn holds the per-turn state for a Slack session (thread). A new turn
@@ -54,7 +58,14 @@ type turn struct {
 	channelID  string
 	msgTS      string // ts of the user message — used for reactions
 	buf        strings.Builder
-	hasStarted bool // true after first TextDelta (⚙️ already set)
+	hasStarted bool // true after first TextDelta (banner already set)
+	// queueTimer fires after queueReactionDelay if the pool hasn't accepted
+	// the message yet. Cancelled (and set to nil) on successful dispatch
+	// so a fast-path send never flashes the ⏳ reaction.
+	queueTimer *time.Timer
+	// queueShown is set when queueTimer actually fired and added ⏳, so
+	// downstream cleanup knows to remove it.
+	queueShown bool
 	// approval tracking
 	pendingApprovalID    string // gate request UUID while waiting for decision
 	pendingApprovalMsgTS string // ts of the Slack approval message (for update)
@@ -436,18 +447,36 @@ func (s *Channel) handleMessage(ctx context.Context, ev *slackevents.MessageEven
 	s.turns[threadTS] = t
 	s.mu.Unlock()
 
-	if old != nil && old.msgTS != "" {
-		s.cfgMu.Lock()
-		api := s.api
-		s.cfgMu.Unlock()
-		oldReaction := reactionQueued
-		if old.hasStarted {
-			oldReaction = reactionRunning
+	if old != nil {
+		if old.queueTimer != nil {
+			old.queueTimer.Stop()
 		}
-		_ = api.RemoveReaction(oldReaction, slackgo.ItemRef{Channel: old.channelID, Timestamp: old.msgTS})
+		if old.msgTS != "" && old.queueShown {
+			s.cfgMu.Lock()
+			api := s.api
+			s.cfgMu.Unlock()
+			_ = api.RemoveReaction(reactionQueued, slackgo.ItemRef{Channel: old.channelID, Timestamp: old.msgTS})
+		}
 	}
 
-	s.setReaction(reactionQueued, ev.Channel, ev.TimeStamp, "")
+	// Defer the ⏳ reaction: only show it when the pool is genuinely slow
+	// to dispatch (>3s). Fast-path turns never flash the queue emoji.
+	chID := ev.Channel
+	msgTS := ev.TimeStamp
+	t.queueTimer = time.AfterFunc(queueReactionDelay, func() {
+		s.mu.Lock()
+		cur := s.turns[threadTS]
+		// Only mark/show if this turn is still current.
+		stillCurrent := cur != nil && cur.msgTS == msgTS
+		if stillCurrent {
+			cur.queueShown = true
+		}
+		s.mu.Unlock()
+		if !stillCurrent {
+			return
+		}
+		s.setReaction(reactionQueued, chID, msgTS, "")
+	})
 
 	if !s.sessionOnDisk(threadTS) {
 		ctxText := s.buildSessionContext(ev, threadTS)
@@ -463,15 +492,48 @@ func (s *Channel) handleMessage(ctx context.Context, ev *slackevents.MessageEven
 
 	if err := s.sendFn(context.Background(), threadTS, "main", "slack", "user", ev.Text); err != nil {
 		log.Error().Str("channel", "slack").Str("session", threadTS).Err(err).Msg("pool send failed")
-		s.setReaction(reactionError, ev.Channel, ev.TimeStamp, reactionQueued)
+		old := s.cancelQueueTimer(threadTS, ev.Channel, ev.TimeStamp)
+		_ = old
+		s.setReaction(reactionError, ev.Channel, ev.TimeStamp, "")
 		s.postReply(ev.Channel, threadTS, "Agent error: could not queue message. Check the dashboard for details.")
 		return
 	}
-	// Message accepted by the pool: flip queued → running + status banner
-	// immediately so the operator sees a "working" signal even while the
-	// agent is still thinking (no TextDelta yet).
-	s.setReaction(reactionRunning, ev.Channel, ev.TimeStamp, reactionQueued)
+	// Message accepted by the pool: cancel pending queue timer (and remove
+	// ⏳ if it had already fired), then surface the "thinking" banner so
+	// the operator sees a working signal even while the agent is still
+	// thinking. No "running" emoji — agent status lives in Wick's web UI
+	// and the assistant thread banner.
+	s.cancelQueueTimer(threadTS, ev.Channel, ev.TimeStamp)
 	s.setAssistantStatus(ev.Channel, threadTS, "is thinking…")
+}
+
+// cancelQueueTimer stops the pending queue-reaction timer for the named
+// turn. If the timer already fired and the ⏳ reaction was added, it is
+// removed too. Returns true when the reaction was visible at call time.
+func (s *Channel) cancelQueueTimer(threadTS, channelID, msgTS string) bool {
+	s.mu.Lock()
+	t := s.turns[threadTS]
+	var wasShown bool
+	if t != nil {
+		if t.queueTimer != nil {
+			t.queueTimer.Stop()
+			t.queueTimer = nil
+		}
+		wasShown = t.queueShown
+		t.queueShown = false
+	}
+	s.mu.Unlock()
+	if !wasShown {
+		return false
+	}
+	s.cfgMu.Lock()
+	api := s.api
+	s.cfgMu.Unlock()
+	if api == nil {
+		return wasShown
+	}
+	_ = api.RemoveReaction(reactionQueued, slackgo.ItemRef{Channel: channelID, Timestamp: msgTS})
+	return wasShown
 }
 
 // NotifyState updates reaction + posts reply for the latest turn of sessionKey.
@@ -490,16 +552,15 @@ func (s *Channel) NotifyState(sessionKey, state, text string) {
 
 	switch state {
 	case "running":
-		s.setReaction(reactionRunning, channelID, msgTS, reactionQueued)
+		// Reaction already cleared at dispatch; just refresh the banner.
 		s.setAssistantStatus(channelID, sessionKey, "is thinking…")
 	case "done":
-		s.setReaction("", channelID, msgTS, reactionRunning)
 		s.setAssistantStatus(channelID, sessionKey, "")
 		if text != "" {
 			s.postChunked(channelID, sessionKey, text)
 		}
 	case "blocked":
-		s.setReaction(reactionBlocked, channelID, msgTS, reactionRunning)
+		s.setReaction(reactionBlocked, channelID, msgTS, "")
 		s.setAssistantStatus(channelID, sessionKey, "")
 		note := text
 		if note == "" {
@@ -509,7 +570,7 @@ func (s *Channel) NotifyState(sessionKey, state, text string) {
 		}
 		s.postChunked(channelID, sessionKey, note)
 	case "error":
-		s.setReaction(reactionError, channelID, msgTS, reactionRunning)
+		s.setReaction(reactionError, channelID, msgTS, "")
 		s.setAssistantStatus(channelID, sessionKey, "")
 		msg := "Agent error."
 		if text != "" {

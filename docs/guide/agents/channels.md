@@ -101,13 +101,12 @@ The agent's progress is mirrored on the user's message ([slack.go:34-39](https:/
 
 | Reaction | Stage |
 |---|---|
-| ⏳ `hourglass_flowing_sand` | Queued (no slot yet, FIFO waiting) |
-| ⚙️ `gear` | Running — message accepted by the pool, agent thinking |
-| _(cleared)_ | Done — reaction removed, final reply posted in-thread |
+| ⏳ `hourglass_flowing_sand` | Queued (no slot yet) — only added when the pool hasn't dispatched within 3 seconds, so fast-path turns never flash it |
+| _(cleared)_ | Accepted by the pool — queue emoji removed; the assistant banner takes over |
 | 🚫 `no_entry_sign` | Blocked — gate or access control rejected |
 | ❌ `x` | Error — exception during the turn |
 
-The `running` reaction is set immediately after the pool accepts the message (not on first text delta) so the operator sees activity even while the agent is still thinking. On a successful `done`, the running reaction is cleared rather than replaced by a success emoji — the reply itself is the signal.
+The bot uses reactions only for states the operator can't see anywhere else. Queue state lives only on the message until the pool takes it; once accepted, the queue reaction is cleared and the assistant banner (`is thinking…`) carries progress. On a successful `done` the banner is cleared too — the reply itself is the signal. Blocked / error remain as reactions so the post-mortem state is visible at a glance.
 
 ### Progress banner (assistant threads)
 
