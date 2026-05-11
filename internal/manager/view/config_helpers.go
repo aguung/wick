@@ -11,11 +11,11 @@ import (
 // text-like inputs (text, email, url, number, date, etc.).
 const cfgInputClass = "w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2.5 text-sm font-mono text-black-900 dark:text-white-100 placeholder:text-black-700 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 transition-colors"
 
-// splitSimple returns configs whose Type is not "kvlist".
+// splitSimple returns configs whose Type is neither "kvlist" nor "picker".
 func splitSimple(rows []entity.Config) []entity.Config {
 	out := make([]entity.Config, 0, len(rows))
 	for _, r := range rows {
-		if r.Type != "kvlist" {
+		if r.Type != "kvlist" && r.Type != "picker" {
 			out = append(out, r)
 		}
 	}
@@ -31,6 +31,30 @@ func splitKVList(rows []entity.Config) []entity.Config {
 		}
 	}
 	return out
+}
+
+// splitPicker returns only configs with Type == "picker".
+func splitPicker(rows []entity.Config) []entity.Config {
+	out := make([]entity.Config, 0)
+	for _, r := range rows {
+		if r.Type == "picker" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// pickerRows parses the JSON-array Value of a picker config into
+// [{id,name},...] entries. Returns nil on empty or malformed input.
+func pickerRows(row entity.Config) []map[string]string {
+	if row.Value == "" {
+		return nil
+	}
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(row.Value), &rows); err != nil {
+		return nil
+	}
+	return rows
 }
 
 // cfgKVCols returns the column names for a kvlist config (from Options).

@@ -341,6 +341,7 @@ func NewServer() *Server {
 	agentstool.SetSpawnLogger(agentsSpawnLogger)
 	agentstool.SetConfigs(configsSvc)
 	agentstool.SetDB(db)
+	agentstool.SetChannelRegistry(channelReg)
 	provider.AppName = appname.Resolve()
 	// Wire the auto-rescan toggle: provider package consults this
 	// before triggering background stale-version re-probes. Defaults

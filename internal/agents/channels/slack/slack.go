@@ -416,8 +416,8 @@ func (s *Channel) handleMessage(ctx context.Context, ev *slackevents.MessageEven
 	if err != nil {
 		log.Warn().Str("channel", "slack").Str("user", ev.User).Err(err).Msg("resolve groups failed; falling back to empty")
 	}
-	if !s.allowedCfg(cfg, ev.User, groupIDs) {
-		log.Debug().Str("channel", "slack").Str("user", ev.User).Msg("access denied, ignoring message")
+	if !s.allowedCfg(cfg, ev.User, groupIDs, ev.Channel) {
+		log.Debug().Str("channel", "slack").Str("user", ev.User).Str("slack_channel", ev.Channel).Msg("access denied, ignoring message")
 		return
 	}
 
@@ -766,6 +766,24 @@ func (s *Channel) handleInteraction(_ context.Context, cb slackgo.InteractionCal
 	}
 	decision, requestID, sessionID, matchKey := parts[0], parts[1], parts[2], parts[3]
 
+	cfg := s.snapshot()
+	if !s.approverAllowed(cfg, cb.User.ID) {
+		s.cfgMu.Lock()
+		api := s.api
+		s.cfgMu.Unlock()
+		if api != nil {
+			_, err := api.PostEphemeral(cb.Channel.ID, cb.User.ID,
+				slackgo.MsgOptionText("Not authorized to approve this action.", false),
+				slackgo.MsgOptionTS(sessionID),
+			)
+			if err != nil {
+				log.Debug().Str("channel", "slack").Err(err).Msg("post unauthorized ephemeral failed")
+			}
+		}
+		log.Info().Str("channel", "slack").Str("user", cb.User.ID).Msg("approval denied: not in approver set")
+		return
+	}
+
 	s.mu.Lock()
 	fn := s.approveFn
 	s.mu.Unlock()
@@ -775,6 +793,45 @@ func (s *Channel) handleInteraction(_ context.Context, cb slackgo.InteractionCal
 	if err := fn(sessionID, requestID, decision, matchKey); err != nil {
 		log.Warn().Str("channel", "slack").Err(err).Msg("gate approval resolve failed")
 	}
+}
+
+// approverAllowed decides whether userID may resolve a gate button.
+//   - trigger_users (default): anyone who passes the normal access checks
+//     (users + groups whitelists); channel check is skipped because the
+//     approver may be clicking from a different surface than the trigger.
+//   - admins: workspace admins / owners (via users.info).
+//   - custom: GateApproverUsers list OR a user group in GateApproverGroups.
+func (s *Channel) approverAllowed(cfg agentconfig.SlackChannelConfig, userID string) bool {
+	switch cfg.GateApprovers {
+	case "trigger_users", "":
+		groupIDs, _ := s.resolveUserGroups(userID)
+		return s.allowedCfg(cfg, userID, groupIDs, "")
+	case "admins":
+		s.cfgMu.Lock()
+		api := s.api
+		s.cfgMu.Unlock()
+		if api == nil {
+			return false
+		}
+		info, err := api.GetUserInfo(userID)
+		if err != nil {
+			log.Debug().Str("channel", "slack").Err(err).Msg("users.info failed during approver check")
+			return false
+		}
+		return info.IsAdmin || info.IsOwner || info.IsPrimaryOwner
+	case "custom":
+		if pickerHas(cfg.GateApproverUsers, userID) {
+			return true
+		}
+		groupIDs, _ := s.resolveUserGroups(userID)
+		for _, g := range groupIDs {
+			if pickerHas(cfg.GateApproverGroups, g) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func (s *Channel) setReaction(newReaction, channelID, msgTS, oldReaction string) {
@@ -865,25 +922,52 @@ func isRateLimit(err error) bool {
 		strings.Contains(err.Error(), "ratelimited")
 }
 
-func (s *Channel) allowedCfg(cfg agentconfig.SlackChannelConfig, userID string, groupIDs []string) bool {
-	switch cfg.AccessMode {
-	case "everyone", "":
-		return true
-	case "users":
-		return s.inList(cfg.AllowedUsers, userID)
-	case "groups":
+// allowedCfg ANDs three per-list whitelist checks. Modes other than
+// "whitelist" (default "all") short-circuit that list to pass.
+// channelID may be empty for callers that don't have a channel context
+// (e.g. approver checks); the channels list is then skipped.
+func (s *Channel) allowedCfg(cfg agentconfig.SlackChannelConfig, userID string, groupIDs []string, channelID string) bool {
+	if cfg.UsersMode == "whitelist" && !pickerHas(cfg.AllowedUsers, userID) {
+		return false
+	}
+	if cfg.GroupsMode == "whitelist" {
+		ok := false
 		for _, gid := range groupIDs {
-			if s.inList(cfg.AllowedGroups, gid) {
+			if pickerHas(cfg.AllowedGroups, gid) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if channelID != "" && cfg.ChannelsMode == "whitelist" && !pickerHas(cfg.AllowedChannels, channelID) {
+		return false
+	}
+	return true
+}
+
+// pickerHas reports whether jsonList (a JSON array of {id,name} entries
+// as written by the picker widget) contains id. Empty / malformed lists
+// return false. A bare-string list (legacy kvlist) is also accepted by
+// falling back to substring scan over the raw bytes.
+func pickerHas(jsonList, id string) bool {
+	if jsonList == "" || id == "" {
+		return false
+	}
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(jsonList), &rows); err == nil {
+		for _, r := range rows {
+			if r.ID == id {
 				return true
 			}
 		}
 		return false
 	}
-	return false
-}
-
-func (s *Channel) inList(list, id string) bool {
-	for _, entry := range strings.FieldsFunc(list, func(r rune) bool {
+	for _, entry := range strings.FieldsFunc(jsonList, func(r rune) bool {
 		return r == '\n' || r == ',' || r == ' '
 	}) {
 		if strings.TrimSpace(entry) == id {

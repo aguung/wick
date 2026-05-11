@@ -111,6 +111,15 @@ func SetChannelConfigKey(db *gorm.DB, channelType, key, value string) error {
 	}).Error
 }
 
+// firstNonEmpty returns v when non-empty, otherwise fallback. Used to
+// supply per-list mode defaults on legacy rows that pre-date the new keys.
+func firstNonEmpty(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
 // LoadSlackConfig reads the Slack channel config from agent_channels.
 // Returns zero value + empty pubURL when no row exists.
 func LoadSlackConfig(db *gorm.DB) (cfg agentconfig.SlackChannelConfig, pubURL string, err error) {
@@ -119,14 +128,20 @@ func LoadSlackConfig(db *gorm.DB) (cfg agentconfig.SlackChannelConfig, pubURL st
 		return
 	}
 	cfg = agentconfig.SlackChannelConfig{
-		Mode:          m["mode"],
-		BotToken:      m["bot_token"],
-		AppToken:      m["app_token"],
-		SigningSecret: m["signing_secret"],
-		AccessMode:    m["access_mode"],
-		AllowedUsers:  m["allowed_users"],
-		AllowedGroups: m["allowed_groups"],
-		Workspace:     m["workspace"],
+		Mode:               m["mode"],
+		BotToken:           m["bot_token"],
+		AppToken:           m["app_token"],
+		SigningSecret:      m["signing_secret"],
+		UsersMode:          firstNonEmpty(m["users_mode"], "all"),
+		AllowedUsers:       m["allowed_users"],
+		GroupsMode:         firstNonEmpty(m["groups_mode"], "all"),
+		AllowedGroups:      m["allowed_groups"],
+		ChannelsMode:       firstNonEmpty(m["channels_mode"], "all"),
+		AllowedChannels:    m["allowed_channels"],
+		GateApprovers:      firstNonEmpty(m["gate_approvers"], "trigger_users"),
+		GateApproverUsers:  m["gate_approver_users"],
+		GateApproverGroups: m["gate_approver_groups"],
+		Workspace:          m["workspace"],
 	}
 	pubURL = m["public_url"]
 	return

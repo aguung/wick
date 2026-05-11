@@ -100,6 +100,22 @@ type ApprovalReceiver interface {
 	OnApprovalResolved(sessionID, requestID, decision string)
 }
 
+// LookupItem is one row returned by a picker lookup. ID is the stable
+// identifier stored in the config; Name is the human label shown to the
+// operator.
+type LookupItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// LookupProvider lets a channel back picker fields with a live search
+// against its upstream. Source is the registered key from the wick tag
+// (e.g. "slack.users"). Implementations should cap results and skip
+// deleted/bot entries.
+type LookupProvider interface {
+	Lookup(source, query string) ([]LookupItem, error)
+}
+
 // ── HTTP webhook + hot reload (opt-in) ────────────────────────────────
 
 // HTTPHandlerProvider exposes a webhook handler the registry mounts on

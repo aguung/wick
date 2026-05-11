@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
+	agentchannels "github.com/yogasw/wick/internal/agents/channels"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/askuser"
 	"github.com/yogasw/wick/internal/agents/gate"
@@ -42,6 +43,7 @@ var (
 	globalGateStatus GateStatus
 	globalConfigs    *configs.Service
 	globalDB         *gorm.DB
+	globalChannels   *agentchannels.Registry
 )
 
 // GateStatus is the boot-time snapshot of the command gate. Populated
@@ -96,6 +98,11 @@ func SetConfigs(c *configs.Service) { globalConfigs = c }
 // SetDB wires the shared GORM DB so channel handlers can read/write
 // agent_channels rows. Without this, channel config endpoints 503.
 func SetDB(db *gorm.DB) { globalDB = db }
+
+// SetChannelRegistry wires the live channel registry so picker fields
+// can issue lookup queries against each channel's upstream (Slack API,
+// etc.). Without this, /channels/{slug}/lookup returns 503.
+func SetChannelRegistry(r *agentchannels.Registry) { globalChannels = r }
 
 // GetGateStatus is the read side. Returns a zero value when boot
 // hasn't reached SetGateStatus yet.
@@ -166,6 +173,7 @@ func Register(r tool.Router) {
 	r.POST("/channels/telegram/{key}", makeChannelSaveHandler("telegram"))
 	r.GET("/channels/rest", restChannelPage)
 	r.POST("/channels/rest/{key}", makeChannelSaveHandler("rest"))
+	r.GET("/channels/{slug}/lookup", channelLookupHandler)
 
 	r.GET("/settings", settingsPage)
 

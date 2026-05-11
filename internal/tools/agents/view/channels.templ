@@ -89,7 +89,7 @@ templ ChannelConfigPage(vm ChannelConfigVM) {
 			<p class="text-sm text-black-700 dark:text-black-600 mb-2">
 				Configure credentials and access control for the { vm.ChannelName } channel.
 			</p>
-			@managerview.ConfigsTable(vm.Rows, vm.ActionBase, "", "")
+			@managerview.ConfigsTableFull(vm.Rows, vm.ActionBase)
 			if vm.Docs != nil {
 				<div class="mt-8">
 					@vm.Docs

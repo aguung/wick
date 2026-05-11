@@ -137,6 +137,45 @@ func telegramChannelPage(c *tool.Ctx) {
 	}))
 }
 
+// channelLookupHandler routes a picker search to the named channel's
+// LookupProvider. URL: GET /channels/{slug}/lookup?source=<src>&q=<query>.
+// Returns JSON array of {id,name}.
+func channelLookupHandler(c *tool.Ctx) {
+	if notReady(c) {
+		return
+	}
+	if globalChannels == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "channel registry not ready"})
+		return
+	}
+	slug := c.PathValue("slug")
+	source := c.Query("source")
+	query := c.Query("q")
+	if slug == "" || source == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "slug and source required"})
+		return
+	}
+	ch := globalChannels.ChannelByName(slug)
+	if ch == nil {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "channel not registered"})
+		return
+	}
+	lp, ok := ch.(agentchannels.LookupProvider)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, map[string]string{"error": "channel does not support lookup"})
+		return
+	}
+	items, err := lp.Lookup(source, query)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if items == nil {
+		items = []agentchannels.LookupItem{}
+	}
+	c.JSON(http.StatusOK, items)
+}
+
 // makeChannelSaveHandler returns a POST handler for /channels/{channelType}/{key}
 // that saves one config value for channelType in the agent_channels table.
 func makeChannelSaveHandler(channelType string) func(*tool.Ctx) {

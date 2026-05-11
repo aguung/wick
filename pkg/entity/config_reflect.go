@@ -107,7 +107,7 @@ func parseWickTag(raw string) map[string]string {
 // widgetFor picks the admin UI widget from the Go type + tag flags.
 // Explicit widget flags in the tag win over the type-derived default.
 func widgetFor(k reflect.Kind, tag map[string]string) (widget, options string) {
-	for _, flag := range []string{"textarea", "dropdown", "kvlist", "email", "url", "color", "date", "datetime", "number", "checkbox", "secret"} {
+	for _, flag := range []string{"textarea", "dropdown", "kvlist", "picker", "email", "url", "color", "date", "datetime", "number", "checkbox", "secret"} {
 		if v, ok := tag[flag]; ok {
 			if flag == "dropdown" {
 				return "dropdown", v
@@ -118,6 +118,14 @@ func widgetFor(k reflect.Kind, tag map[string]string) (widget, options string) {
 					cols = "value"
 				}
 				return "kvlist", cols
+			}
+			if flag == "picker" {
+				// Options carry the lookup source key (e.g. "slack.users").
+				// Bare `picker` flag with no value is invalid — render plain text.
+				if v == "true" || v == "" {
+					return "text", ""
+				}
+				return "picker", v
 			}
 			return flag, ""
 		}
