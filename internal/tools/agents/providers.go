@@ -12,6 +12,16 @@ import (
 	"github.com/yogasw/wick/internal/agents/capability"
 	"github.com/yogasw/wick/internal/agents/gate"
 	"github.com/yogasw/wick/internal/agents/provider"
+
+	// Blank-import each provider sub-package so its init() fires when
+	// the agents UI module loads. Without this, capability.Lookup
+	// returns (zero, false) for codex/gemini and the Test button
+	// errors with "provider not registered" even though the adapter
+	// code exists. Mirrors the cmd/gate/main.go pattern.
+	_ "github.com/yogasw/wick/internal/agents/provider/claude"
+	_ "github.com/yogasw/wick/internal/agents/provider/codex"
+	_ "github.com/yogasw/wick/internal/agents/provider/gemini"
+
 	"github.com/yogasw/wick/internal/tools/agents/view"
 	"github.com/yogasw/wick/pkg/tool"
 )

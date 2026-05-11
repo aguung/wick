@@ -18,9 +18,9 @@ templ ProvidersPage(vm ProvidersVM) {
 				<div class="flex items-center gap-2">
 					<form method="POST" action={ templ.SafeURL(vm.Base + "/providers/auto-rescan/toggle") }>
 						if vm.AutoRescan {
-							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Auto-rescan stale entries every 24h. Click to disable.">Auto-rescan: on</button>
+							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" data-tooltip="Auto-rescan stale entries every 24h. Click to disable.">Auto-rescan: on</button>
 						} else {
-							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Auto-rescan disabled — refresh manually only. Click to enable.">Auto-rescan: off</button>
+							<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-3 py-2 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" data-tooltip="Auto-rescan disabled — refresh manually only. Click to enable.">Auto-rescan: off</button>
 						}
 					</form>
 					<form method="POST" action={ templ.SafeURL(vm.Base + "/providers/rescan") }>
@@ -180,7 +180,7 @@ templ providerCard(base string, st provider.Status) {
 			</div>
 			<div class="flex items-center gap-2">
 				<form method="POST" action={ templ.SafeURL(base + "/providers/rescan/" + string(st.Instance.Type) + "/" + st.Instance.Name) } class="text-xs">
-					<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" title="Re-probe this provider's binary + version">Rescan</button>
+					<button type="submit" class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800" data-tooltip="Re-probe this provider's binary + version">Rescan</button>
 				</form>
 				<form method="POST" action={ templ.SafeURL(base + "/providers") } class="text-xs">
 					<input type="hidden" name="type" value={ string(st.Instance.Type) }/>
@@ -264,9 +264,9 @@ templ hookCapabilitySection(base string, st provider.Status) {
 			<div class="flex items-center gap-2">
 				<span class="text-xs font-semibold text-black-900 dark:text-white-100">Command Gate</span>
 				if has && hc.Verified {
-					<span class="rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100" title="Capability probe confirmed this provider honors the deny envelope">verified ✓</span>
+					<span class="rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Capability probe confirmed this provider honors the deny envelope">verified ✓</span>
 				} else if has && hc.Supported {
-					<span class="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-white-100" title="Adapter exists but runtime probe has not confirmed deny is honored">unverified</span>
+					<span class="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Adapter exists but runtime probe has not confirmed deny is honored">unverified</span>
 				} else {
 					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600">not probed</span>
 				}
@@ -277,14 +277,12 @@ templ hookCapabilitySection(base string, st provider.Status) {
 			<button
 				type="button"
 				class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-				title="Spawn this provider with a force-deny hook and check whether the deny envelope is honored. Takes 5–30s."
+				data-tooltip="Spawn this provider with a force-deny hook and check whether the deny envelope is honored. Takes 5–30s."
+			data-tooltip-pos="bottom"
 				data-check-hook
 				data-check-url={ base + "/providers/" + string(st.Instance.Type) + "/" + st.Instance.Name + "/hooks/" + provider.HookEventPreToolUse + "/check" }
 			>Test</button>
 		</div>
-		<p class="text-xs text-black-700 dark:text-black-600 leading-relaxed">
-			Every shell command this provider runs goes through wick first — you approve or block from the web UI before it executes. Without gate, the provider's own permission flow applies (terminal prompt or auto-allow).
-		</p>
 		if has && hc.Error != "" {
 			<p class="font-mono text-xs text-red-600 dark:text-red-400 break-all">{ hc.Error }</p>
 		}
