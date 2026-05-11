@@ -421,15 +421,35 @@ func (s *Channel) handleMessage(ctx context.Context, ev *slackevents.MessageEven
 		threadTS = ev.TimeStamp
 	}
 
+	log.Info().Str("channel", "slack").
+		Str("slack_channel", ev.Channel).
+		Str("channel_type", ev.ChannelType).
+		Str("user", ev.User).
+		Str("thread_ts", threadTS).
+		Str("msg_ts", ev.TimeStamp).
+		Int("text_len", len(ev.Text)).
+		Msg("incoming message")
+
 	cfg := s.snapshot()
 	groupIDs, err := s.resolveUserGroups(ev.User)
 	if err != nil {
 		log.Warn().Str("channel", "slack").Str("user", ev.User).Err(err).Msg("resolve groups failed; falling back to empty")
 	}
 	if !s.allowedCfg(cfg, ev.User, groupIDs, ev.Channel) {
-		log.Debug().Str("channel", "slack").Str("user", ev.User).Str("slack_channel", ev.Channel).Msg("access denied, ignoring message")
+		log.Warn().Str("channel", "slack").
+			Str("user", ev.User).
+			Str("slack_channel", ev.Channel).
+			Str("channel_type", ev.ChannelType).
+			Strs("groups", groupIDs).
+			Msg("access denied, ignoring message")
+		s.setReaction(reactionBlocked, ev.Channel, ev.TimeStamp, "")
 		return
 	}
+	log.Info().Str("channel", "slack").
+		Str("user", ev.User).
+		Str("slack_channel", ev.Channel).
+		Str("channel_type", ev.ChannelType).
+		Msg("access allowed")
 
 	meta := agentchannels.ParseMeta(ev.Text)
 	if meta.IsMeta {
