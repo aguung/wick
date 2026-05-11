@@ -411,16 +411,6 @@ func NewServer() *Server {
 		}
 		agentstool.SetApprovals(approvalMgr)
 		log.Info().Str("socket", approvalMgr.SocketPath()).Msg("agents: gate socket ready")
-		// Inject gate hook into ~/.claude/settings.json so headless
-		// `claude -p` sessions pick it up regardless of working directory.
-		// Project-scoped settings.local.json is unreliable in -p mode.
-		if resolvedGateBin != "" {
-			if hErr := agentgate.MergeUserHooks(resolvedGateBin); hErr != nil {
-				log.Warn().Err(hErr).Msg("agents: write user hooks failed")
-			} else {
-				log.Info().Msg("agents: gate hook written to ~/.claude/settings.json")
-			}
-		}
 	}
 	agentstool.SetGateStatus(gateStatus)
 
@@ -860,9 +850,6 @@ func (s *Server) Run(ctx context.Context, port int) error {
 		logger.Info().Msg("server is shutting down...")
 		if s.agentsPool != nil {
 			s.agentsPool.Stop()
-		}
-		if s.gateBin != "" {
-			_ = agentgate.RemoveUserHooks(s.gateBin)
 		}
 		sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
