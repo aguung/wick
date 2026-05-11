@@ -139,6 +139,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     renderExistingMarkdown();
 
+
     // ── Session search (All chats page) ──────────────────────────────
     var searchInput = document.querySelector("[data-session-search]");
     if (searchInput) {
@@ -604,12 +605,75 @@
           });
       });
 
-      // Ctrl+Enter submits
+      // Enter = send, Shift+Enter = newline
       sendForm.querySelector("textarea").addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
           e.preventDefault();
           sendForm.dispatchEvent(new Event("submit"));
         }
+      });
+    }
+
+    // ── Provider switcher (creates new session, redirects) ───────────
+    var providerMenuToggle = document.querySelector("[data-provider-menu-toggle]");
+    var providerMenu = document.querySelector("[data-provider-menu]");
+    if (providerMenuToggle && providerMenu) {
+      providerMenuToggle.addEventListener("click", function (e) {
+        e.stopPropagation();
+        providerMenu.classList.toggle("hidden");
+      });
+      document.addEventListener("click", function () {
+        providerMenu.classList.add("hidden");
+      });
+      providerMenu.querySelectorAll("[data-provider-choice]").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          providerMenu.classList.add("hidden");
+          var prov = btn.dataset.providerChoice;
+          var b = base || resolveBase();
+          if (!b || !sessionID) return;
+          btn.disabled = true;
+          fetch(b + "/sessions/" + encodeURIComponent(sessionID) + "/provider", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: prov }),
+          }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.redirect) window.location.href = res.redirect;
+          }).catch(function () { btn.disabled = false; });
+        });
+      });
+    }
+
+    // ── Workspace switcher (in-place, kills subprocess) ───────────────
+    var workspaceMenuToggle = document.querySelector("[data-workspace-menu-toggle]");
+    var workspaceMenu = document.querySelector("[data-workspace-menu]");
+    if (workspaceMenuToggle && workspaceMenu) {
+      workspaceMenuToggle.addEventListener("click", function (e) {
+        e.stopPropagation();
+        workspaceMenu.classList.toggle("hidden");
+      });
+      document.addEventListener("click", function () {
+        workspaceMenu.classList.add("hidden");
+      });
+      workspaceMenu.querySelectorAll("[data-workspace-choice]").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          workspaceMenu.classList.add("hidden");
+          var ws = btn.dataset.workspaceChoice;
+          var b = base || resolveBase();
+          if (!b || !sessionID) return;
+          btn.disabled = true;
+          fetch(b + "/sessions/" + encodeURIComponent(sessionID) + "/workspace", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspace: ws }),
+          }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.status === "switched") {
+              var label = document.querySelector("[data-active-workspace-label]");
+              if (label) label.textContent = res.workspace || "default";
+            }
+          }).catch(function () {}).finally(function () { btn.disabled = false; });
+        });
       });
     }
 

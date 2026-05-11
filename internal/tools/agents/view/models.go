@@ -114,17 +114,21 @@ type TurnVM struct {
 // status badge: the server emits the snapshot at render time and JS
 // updates it from SSE events thereafter.
 type SessionDetailVM struct {
-	Layout        AgentsLayoutVM
-	Base          string
-	Session       session.Session
-	Tab           string // "conversation" | "commands" | "raw"
-	Turns         []TurnVM
-	CmdLines      []string
-	Lifecycle     string
-	PID           int
-	LastActiveMs  int64
-	IdleTimeoutMs int64
-	Gate          GateStatusVM
+	Layout         AgentsLayoutVM
+	Base           string
+	Session        session.Session
+	Tab            string // "conversation" | "commands" | "raw"
+	Turns          []TurnVM
+	CmdLines       []string
+	Lifecycle      string
+	PID            int
+	LastActiveMs   int64
+	IdleTimeoutMs  int64
+	Gate           GateStatusVM
+	Providers       []ProviderChoiceVM
+	ActiveProvider  string
+	WorkspaceList   []string
+	ActiveWorkspace string
 }
 
 // WorkspacesVM holds data for the Workspaces page.

@@ -118,6 +118,8 @@ func Register(r tool.Router) {
 	r.POST("/sessions/quick", createSessionQuick)
 	r.GET("/sessions/{id}", sessionDetail)
 	r.POST("/sessions/{id}/send", sendMessage)
+	r.POST("/sessions/{id}/provider", switchProvider)
+	r.POST("/sessions/{id}/workspace", switchWorkspace)
 	r.POST("/sessions/{id}/kill", killAgent)
 	r.POST("/sessions/{id}/dequeue", dequeueAgent)
 	r.DELETE("/sessions/{id}", deleteSession)
@@ -427,14 +429,22 @@ func sessionDetail(c *tool.Ctx) {
 		cmdLines = lines
 	}
 	gs := GetGateStatus()
+	activeProv := ""
+	if len(sess.Agents) > 0 {
+		activeProv = sess.Agents[0].Provider
+	}
 	vm := view.SessionDetailVM{
-		Layout:        sidebarVM(c, "sessions", id),
-		Base:          c.Base(),
-		Session:       sess,
-		Tab:           tab,
-		Turns:         turns,
-		CmdLines:      cmdLines,
-		IdleTimeoutMs: globalPool.IdleTimeout().Milliseconds(),
+		Layout:          sidebarVM(c, "sessions", id),
+		Base:            c.Base(),
+		Session:         sess,
+		Tab:             tab,
+		Turns:           turns,
+		CmdLines:        cmdLines,
+		IdleTimeoutMs:   globalPool.IdleTimeout().Milliseconds(),
+		Providers:       providerChoicesCached(c.Context()),
+		ActiveProvider:  activeProv,
+		WorkspaceList:   globalMgr.Registry().WorkspaceNames(),
+		ActiveWorkspace: sess.Meta.Workspace,
 		Gate: view.GateStatusVM{
 			Enabled: gs.Enabled,
 			Binary:  gs.Binary,
@@ -454,6 +464,87 @@ func sessionDetail(c *tool.Ctx) {
 		break
 	}
 	c.HTML(view.SessionDetail(vm))
+}
+
+type switchProviderReq struct {
+	Provider string `json:"provider"`
+}
+
+// switchProvider creates a new session with the same workspace but a
+// different provider. Provider sessions cannot be resumed across CLI
+// implementations (ResumeID is provider-specific), so a fresh session
+// is always the right call. Returns the new session URL for redirect.
+func switchProvider(c *tool.Ctx) {
+	if notReady(c) {
+		return
+	}
+	id := c.PathValue("id")
+	var req switchProviderReq
+	if err := c.BindJSON(&req); err != nil || req.Provider == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "provider required"})
+		return
+	}
+	sess, ok := globalMgr.Registry().Session(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	newID := uuid.New().String()
+	_, err := globalMgr.CreateSession(c.Context(), session.CreateOptions{
+		ID:        newID,
+		Workspace: sess.Meta.Workspace,
+		Origin:    session.OriginUI,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := globalMgr.AddAgent(newID, "main", req.Provider); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, map[string]string{
+		"status":   "switched",
+		"provider": req.Provider,
+		"redirect": c.Base() + "/sessions/" + newID,
+	})
+}
+
+type switchWorkspaceReq struct {
+	Workspace string `json:"workspace"`
+}
+
+// switchWorkspace updates the session's workspace in-place and kills
+// any running subprocess so it respawns with the new folder on the
+// next message.
+func switchWorkspace(c *tool.Ctx) {
+	if notReady(c) {
+		return
+	}
+	id := c.PathValue("id")
+	var req switchWorkspaceReq
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "workspace required"})
+		return
+	}
+	sess, ok := globalMgr.Registry().Session(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if err := globalMgr.SwitchWorkspace(c.Context(), id, req.Workspace); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Kill running subprocess so next Send respawns in the new workspace.
+	agentName := sess.Meta.ActiveAgent
+	if agentName == "" && len(sess.Agents) > 0 {
+		agentName = sess.Agents[0].Name
+	}
+	if agentName != "" {
+		_ = globalPool.Kill(id, agentName)
+	}
+	c.JSON(http.StatusOK, map[string]string{"status": "switched", "workspace": req.Workspace})
 }
 
 type sendReq struct {

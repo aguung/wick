@@ -352,7 +352,8 @@ templ sessionDetailTabs(vm SessionDetailVM) {
 templ sessionDetailContent(vm SessionDetailVM) {
 	<div
 		class="rounded-2xl border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-700 shadow-sm overflow-hidden flex flex-col"
-		style="height:calc(100vh - 4rem - 180px)"
+		data-chat-panel
+		style="height:calc(100dvh - 4rem - 200px); min-height:320px"
 	>
 		if vm.Tab == "conversation" {
 			@sessionConversationTab(vm)
@@ -365,19 +366,18 @@ templ sessionDetailContent(vm SessionDetailVM) {
 }
 
 templ sessionConversationTab(vm SessionDetailVM) {
-	<div class="flex-1 overflow-y-auto px-4 py-5 space-y-5" data-turns id="chat-turns">
+	<div class="flex-1 overflow-y-auto px-4 py-5 space-y-5 scrollbar-thin" data-turns id="chat-turns">
 		if len(vm.Turns) == 0 {
 			@chatEmptyState()
 		}
 		for _, t := range vm.Turns {
 			@conversationTurn(t)
 		}
-		<!-- sentinel: JS scrolls this into view on new messages -->
 		<div id="chat-bottom"></div>
 	</div>
-	<div class="shrink-0 border-t border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-700 px-4 py-3 space-y-2">
+	<div class="shrink-0 px-4 pb-4 pt-2">
 		@AskUserCard(vm.Base)
-		@chatComposer()
+		@chatComposer(vm)
 	</div>
 }
 
@@ -389,32 +389,96 @@ templ chatEmptyState() {
 			</svg>
 		</div>
 		<p class="text-sm font-medium text-black-800 dark:text-black-600">No messages yet</p>
-		<p class="mt-1 text-xs text-black-600 dark:text-black-700">Send a message to the agent below.</p>
+		<p class="mt-1 text-xs text-black-600 dark:text-black-700">Send a message to start.</p>
 	</div>
 }
 
-templ chatComposer() {
-	<form data-send-form class="flex items-end gap-2">
-		<div class="flex-1 relative">
+templ chatComposer(vm SessionDetailVM) {
+	<div class="rounded-2xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 shadow-md">
+		<form data-send-form>
 			<textarea
 				name="text"
 				rows="1"
-				placeholder="Message the agent… (Ctrl+Enter to submit)"
-				class="w-full resize-none rounded-xl border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-4 py-3 text-sm text-black-900 dark:text-white-100 placeholder-black-600 dark:placeholder-black-700 focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 focus:outline-none leading-relaxed shadow-sm"
+				placeholder="Message the agent…"
+				class="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-black-900 dark:text-white-100 placeholder-black-600 dark:placeholder-black-700 focus:outline-none leading-relaxed"
 				style="max-height:160px; overflow-y:auto"
 				data-auto-resize
 			></textarea>
-		</div>
-		<button
-			type="submit"
-			class="shrink-0 flex items-center justify-center h-10 w-10 rounded-xl bg-green-500 text-white-100 hover:bg-green-600 active:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-			title="Send (Ctrl+Enter)"
-		>
-			<svg viewBox="0 0 16 16" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M13 8L3 3l2.5 5L3 13l10-5z" stroke-linecap="round" stroke-linejoin="round"></path>
-			</svg>
-		</button>
-	</form>
+			<div class="flex items-center justify-between px-3 pb-3 pt-1">
+				<div class="flex items-center gap-2">
+					if len(vm.Providers) > 0 {
+						<div class="relative" data-row-action="">
+							<button
+								type="button"
+								data-provider-menu-toggle
+								class="inline-flex items-center gap-1.5 rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-700 px-2.5 py-1.5 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600 transition-colors"
+							>
+								<svg viewBox="0 0 12 12" class="h-3 w-3 text-green-500" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="4.5" r="2"></circle><path d="M2 10c0-2.21 1.79-4 4-4s4 1.79 4 4" stroke-linecap="round"></path></svg>
+								<span data-active-provider-label>{ vm.ActiveProvider }</span>
+								<svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5l3 3 3-3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+							</button>
+							<div data-provider-menu class="hidden absolute bottom-full left-0 mb-1 z-20 min-w-[140px] rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 shadow-lg py-1">
+								for _, p := range vm.Providers {
+									<button
+										type="button"
+										data-provider-choice={ p.Type }
+										class="w-full text-left px-3 py-2 text-xs text-black-900 dark:text-white-100 hover:bg-white-200 dark:hover:bg-navy-700 transition-colors flex items-center justify-between gap-2"
+									>
+										{ p.Type }
+										if p.Name != "" && p.Name != p.Type {
+											<span class="text-black-600 dark:text-black-700">{ p.Name }</span>
+										}
+									</button>
+								}
+							</div>
+						</div>
+					}
+					if len(vm.WorkspaceList) > 0 {
+						<div class="relative" data-row-action="">
+							<button
+								type="button"
+								data-workspace-menu-toggle
+								class="inline-flex items-center gap-1.5 rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-700 px-2.5 py-1.5 text-xs font-medium text-black-800 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600 transition-colors"
+							>
+								<svg viewBox="0 0 12 12" class="h-3 w-3 text-black-600 dark:text-black-700" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="10" height="8" rx="1"></rect><path d="M4 3V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V3" stroke-linecap="round"></path></svg>
+								<span data-active-workspace-label>
+									if vm.ActiveWorkspace != "" {
+										{ vm.ActiveWorkspace }
+									} else {
+										default
+									}
+								</span>
+								<svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5l3 3 3-3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+							</button>
+							<div data-workspace-menu class="hidden absolute bottom-full left-0 mb-1 z-20 min-w-[140px] rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 shadow-lg py-1">
+								for _, ws := range vm.WorkspaceList {
+									<button
+										type="button"
+										data-workspace-choice={ ws }
+										class="w-full text-left px-3 py-2 text-xs text-black-900 dark:text-white-100 hover:bg-white-200 dark:hover:bg-navy-700 transition-colors"
+									>
+										{ ws }
+									</button>
+								}
+							</div>
+						</div>
+					}
+				</div>
+				<div class="flex items-center gap-2">
+					<span class="text-[10px] text-black-600 dark:text-black-700 hidden sm:block">Shift+Enter for newline</span>
+					<button
+						type="submit"
+						class="flex items-center justify-center h-8 w-8 rounded-xl bg-green-500 text-white-100 hover:bg-green-600 active:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						title="Send (Enter)"
+					>
+						<svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M13 8L3 3l2.5 5L3 13l10-5z" stroke-linecap="round" stroke-linejoin="round"></path>
+						</svg>
+					</button>
+				</div>
+			</div>
+		</form>
+	</div>
 }
 
 templ sessionCommandsTab(vm SessionDetailVM) {
