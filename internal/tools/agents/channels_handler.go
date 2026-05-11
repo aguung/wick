@@ -176,6 +176,35 @@ func channelLookupHandler(c *tool.Ctx) {
 	c.JSON(http.StatusOK, items)
 }
 
+// channelHealthHandler runs the channel's self-test probes (auth, list,
+// search, write) so the operator can verify scopes/credentials from the
+// admin UI without booting the agent loop. Returns JSON array of checks.
+func channelHealthHandler(c *tool.Ctx) {
+	if notReady(c) {
+		return
+	}
+	if globalChannels == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "channel registry not ready"})
+		return
+	}
+	slug := c.PathValue("slug")
+	ch := globalChannels.ChannelByName(slug)
+	if ch == nil {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "channel not registered"})
+		return
+	}
+	hc, ok := ch.(agentchannels.HealthChecker)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, map[string]string{"error": "channel does not support health check"})
+		return
+	}
+	checks := hc.HealthCheck()
+	if checks == nil {
+		checks = []agentchannels.HealthCheck{}
+	}
+	c.JSON(http.StatusOK, checks)
+}
+
 // makeChannelSaveHandler returns a POST handler for /channels/{channelType}/{key}
 // that saves one config value for channelType in the agent_channels table.
 func makeChannelSaveHandler(channelType string) func(*tool.Ctx) {

@@ -108,6 +108,25 @@ type LookupItem struct {
 	Name string `json:"name"`
 }
 
+// HealthCheck is one row of an integration self-test (e.g. "auth.test ok",
+// "users.list missing scope"). OK=true means the upstream call succeeded
+// with the result the operator expects; Detail is a short human-readable
+// note (scope hint, count, etc.).
+type HealthCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// HealthChecker lets a channel expose a "Test Integration" probe that
+// runs from the admin UI. Implementations should cover the API calls
+// the channel relies on (auth, listing, search, write) so missing scopes
+// surface before runtime.
+type HealthChecker interface {
+	HealthCheck() []HealthCheck
+}
+
 // LookupProvider lets a channel back picker fields with a live search
 // against its upstream. Source is the registered key from the wick tag
 // (e.g. "slack.users"). Implementations should cap results and skip

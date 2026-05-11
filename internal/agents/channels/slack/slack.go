@@ -39,7 +39,6 @@ const (
 	// reactions used for the agent lifecycle
 	reactionQueued  = "hourglass_flowing_sand" // ⏳
 	reactionRunning = "gear"                   // ⚙️
-	reactionDone    = "white_check_mark"       // ✅
 	reactionBlocked = "no_entry_sign"          // 🚫
 	reactionError   = "x"                      // ❌
 )
@@ -466,7 +465,13 @@ func (s *Channel) handleMessage(ctx context.Context, ev *slackevents.MessageEven
 		log.Error().Str("channel", "slack").Str("session", threadTS).Err(err).Msg("pool send failed")
 		s.setReaction(reactionError, ev.Channel, ev.TimeStamp, reactionQueued)
 		s.postReply(ev.Channel, threadTS, "Agent error: could not queue message. Check the dashboard for details.")
+		return
 	}
+	// Message accepted by the pool: flip queued → running + status banner
+	// immediately so the operator sees a "working" signal even while the
+	// agent is still thinking (no TextDelta yet).
+	s.setReaction(reactionRunning, ev.Channel, ev.TimeStamp, reactionQueued)
+	s.setAssistantStatus(ev.Channel, threadTS, "is thinking…")
 }
 
 // NotifyState updates reaction + posts reply for the latest turn of sessionKey.
@@ -486,13 +491,16 @@ func (s *Channel) NotifyState(sessionKey, state, text string) {
 	switch state {
 	case "running":
 		s.setReaction(reactionRunning, channelID, msgTS, reactionQueued)
+		s.setAssistantStatus(channelID, sessionKey, "is thinking…")
 	case "done":
-		s.setReaction(reactionDone, channelID, msgTS, reactionRunning)
+		s.setReaction("", channelID, msgTS, reactionRunning)
+		s.setAssistantStatus(channelID, sessionKey, "")
 		if text != "" {
 			s.postChunked(channelID, sessionKey, text)
 		}
 	case "blocked":
 		s.setReaction(reactionBlocked, channelID, msgTS, reactionRunning)
+		s.setAssistantStatus(channelID, sessionKey, "")
 		note := text
 		if note == "" {
 			note = "Agent turn completed with blocked commands. See the dashboard for details."
@@ -502,11 +510,34 @@ func (s *Channel) NotifyState(sessionKey, state, text string) {
 		s.postChunked(channelID, sessionKey, note)
 	case "error":
 		s.setReaction(reactionError, channelID, msgTS, reactionRunning)
+		s.setAssistantStatus(channelID, sessionKey, "")
 		msg := "Agent error."
 		if text != "" {
 			msg = fmt.Sprintf("Agent error: %s", text)
 		}
 		s.postReply(channelID, sessionKey, msg+"\n\nSee the dashboard for details.")
+	}
+}
+
+// setAssistantStatus updates the Slack AI thread status banner via
+// assistant.threads.setStatus. status="" clears the banner. Errors are
+// logged at debug only — the workspace may not have Slack AI enabled
+// or the bot may lack the assistant:write/chat:write scope; reaction
+// emojis remain as the primary progress signal.
+func (s *Channel) setAssistantStatus(channelID, threadTS, status string) {
+	s.cfgMu.Lock()
+	api := s.api
+	s.cfgMu.Unlock()
+	if api == nil || channelID == "" || threadTS == "" {
+		return
+	}
+	err := api.SetAssistantThreadsStatus(slackgo.AssistantThreadsSetStatusParameters{
+		ChannelID: channelID,
+		ThreadTS:  threadTS,
+		Status:    status,
+	})
+	if err != nil {
+		log.Info().Str("channel", "slack").Str("slack_channel", channelID).Str("thread_ts", threadTS).Str("status", status).Err(err).Msg("assistant.threads.setStatus failed")
 	}
 }
 
@@ -705,8 +736,12 @@ func (s *Channel) OnApprovalRequest(sessionID string, req gate.ApprovalRequest) 
 	s.mu.Unlock()
 }
 
-// OnApprovalResolved satisfies channels.ApprovalReceiver.
+// OnApprovalResolved satisfies channels.ApprovalReceiver. Decision /
+// expiry / revoke all funnel here — in every case we delete the prompt
+// so the thread stays clean (no permanent "Approved" / "Blocked" /
+// "Expired" residue).
 func (s *Channel) OnApprovalResolved(sessionID, requestID, decision string) {
+	_ = decision
 	s.mu.Lock()
 	t := s.turns[sessionID]
 	if t == nil || t.pendingApprovalID != requestID {
@@ -729,26 +764,9 @@ func (s *Channel) OnApprovalResolved(sessionID, requestID, decision string) {
 		return
 	}
 
-	label := "✅ Approved"
-	switch decision {
-	case gate.DecisionBlock:
-		label = "🚫 Blocked"
-	case gate.DecisionApproveSession:
-		label = "✅ Approved for session"
-	case gate.DecisionApproveAll:
-		label = "✅ All commands allowed for session"
-	case gate.DecisionApproveAlways:
-		label = "✅ Always allowed"
-	}
-	_, _, _, err := api.UpdateMessage(channelID, approvalMsgTS,
-		slackgo.MsgOptionBlocks(
-			slackgo.NewSectionBlock(
-				slackgo.NewTextBlockObject("mrkdwn", label, false, false),
-				nil, nil),
-		),
-	)
+	_, _, err := api.DeleteMessage(channelID, approvalMsgTS)
 	if err != nil {
-		log.Debug().Str("channel", "slack").Err(err).Msg("update approval message failed")
+		log.Debug().Str("channel", "slack").Err(err).Msg("delete approval message failed")
 	}
 }
 
@@ -844,6 +862,9 @@ func (s *Channel) setReaction(newReaction, channelID, msgTS, oldReaction string)
 			return api.RemoveReaction(oldReaction, ref)
 		})
 	}
+	if newReaction == "" {
+		return
+	}
 	s.withBackoff(func() error {
 		return api.AddReaction(newReaction, ref)
 	})
@@ -926,23 +947,48 @@ func isRateLimit(err error) bool {
 // "whitelist" (default "all") short-circuit that list to pass.
 // channelID may be empty for callers that don't have a channel context
 // (e.g. approver checks); the channels list is then skipped.
+// allowedCfg combines per-list checks. Semantics:
+//   - if BOTH users and groups whitelists are active → OR (match either)
+//   - if only ONE is active → it gates alone
+//   - if NEITHER is active → pass
+//   - channels whitelist is AND'd on top (independent dimension)
 func (s *Channel) allowedCfg(cfg agentconfig.SlackChannelConfig, userID string, groupIDs []string, channelID string) bool {
-	if cfg.UsersMode == "whitelist" && !pickerHas(cfg.AllowedUsers, userID) {
-		return false
-	}
-	if cfg.GroupsMode == "whitelist" {
-		ok := false
+	usersActive := cfg.UsersMode == "whitelist"
+	groupsActive := cfg.GroupsMode == "whitelist"
+
+	identityOK := true
+	switch {
+	case usersActive && groupsActive:
+		userMatch := pickerHas(cfg.AllowedUsers, userID)
+		groupMatch := false
 		for _, gid := range groupIDs {
 			if pickerHas(cfg.AllowedGroups, gid) {
-				ok = true
+				groupMatch = true
 				break
 			}
 		}
-		if !ok {
-			return false
+		identityOK = userMatch || groupMatch
+	case usersActive:
+		identityOK = pickerHas(cfg.AllowedUsers, userID)
+	case groupsActive:
+		identityOK = false
+		for _, gid := range groupIDs {
+			if pickerHas(cfg.AllowedGroups, gid) {
+				identityOK = true
+				break
+			}
 		}
 	}
+
+	if !identityOK {
+		log.Debug().Str("channel", "slack").Str("reject", "identity").
+			Str("user", userID).Strs("groups", groupIDs).
+			Bool("users_active", usersActive).Bool("groups_active", groupsActive).
+			Msg("denied by identity whitelists")
+		return false
+	}
 	if channelID != "" && cfg.ChannelsMode == "whitelist" && !pickerHas(cfg.AllowedChannels, channelID) {
+		log.Debug().Str("channel", "slack").Str("reject", "channels").Str("slack_channel", channelID).Msg("denied by channels whitelist")
 		return false
 	}
 	return true

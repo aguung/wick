@@ -8,11 +8,13 @@
 package slack
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	slackgo "github.com/slack-go/slack"
 
 	agentchannels "github.com/yogasw/wick/internal/agents/channels"
@@ -58,11 +60,23 @@ func (s *Channel) Lookup(source, query string) ([]agentchannels.LookupItem, erro
 	var err error
 	switch source {
 	case "slack.users":
-		items, err = lookupSlackUsers(api, q)
+		items, err = lookupSlackUsersAssistant(api, q)
+		if err != nil || len(items) == 0 {
+			if err != nil {
+				log.Debug().Str("channel", "slack").Err(err).Msg("assistant.search.context users failed, falling back to users.list")
+			}
+			items, err = lookupSlackUsers(api, q)
+		}
 	case "slack.usergroups":
 		items, err = lookupSlackUserGroups(api, q)
 	case "slack.channels":
-		items, err = lookupSlackChannels(api, q)
+		items, err = lookupSlackChannelsAssistant(api, q)
+		if err != nil || len(items) == 0 {
+			if err != nil {
+				log.Debug().Str("channel", "slack").Err(err).Msg("assistant.search.context channels failed, falling back to conversations.list")
+			}
+			items, err = lookupSlackChannels(api, q)
+		}
 	default:
 		return nil, fmt.Errorf("unknown source %q", source)
 	}
@@ -74,6 +88,98 @@ func (s *Channel) Lookup(source, query string) ([]agentchannels.LookupItem, erro
 	lookupCache[cacheKey] = lookupCacheEntry{at: time.Now(), items: items}
 	lookupCacheMu.Unlock()
 	return items, nil
+}
+
+// lookupSlackUsersAssistant queries assistant.search.context for messages
+// matching q across all surfaces, then de-dupes by AuthorUserID to surface
+// users who recently posted relevant content. Requires Slack AI features
+// + chat:write (or assistant:write) scope.
+func lookupSlackUsersAssistant(api *slackgo.Client, q string) ([]agentchannels.LookupItem, error) {
+	if q == "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := api.SearchAssistantContextContext(ctx, slackgo.AssistantSearchContextParameters{
+		Query:        q,
+		ChannelTypes: []string{"public_channel", "private_channel", "im", "mpim"},
+		ContentTypes: []string{"messages"},
+		IncludeBots:  false,
+		Limit:        50,
+	})
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]agentchannels.LookupItem, 0, lookupMaxResults)
+	for _, m := range resp.Results.Messages {
+		if m.AuthorUserID == "" || seen[m.AuthorUserID] {
+			continue
+		}
+		seen[m.AuthorUserID] = true
+		name := m.AuthorName
+		if name == "" {
+			name = m.AuthorUserID
+		}
+		out = append(out, agentchannels.LookupItem{ID: m.AuthorUserID, Name: name})
+		if len(out) >= lookupMaxResults {
+			break
+		}
+	}
+	return out, nil
+}
+
+// lookupSlackChannelsAssistant queries assistant.search.context for channel
+// entities matching q. The Slack response carries no channel ID, only a
+// permalink (…/archives/<channel_id>) — parse it back out.
+func lookupSlackChannelsAssistant(api *slackgo.Client, q string) ([]agentchannels.LookupItem, error) {
+	if q == "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := api.SearchAssistantContextContext(ctx, slackgo.AssistantSearchContextParameters{
+		Query:        q,
+		ChannelTypes: []string{"public_channel", "private_channel"},
+		ContentTypes: []string{"channels"},
+		Limit:        50,
+	})
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]agentchannels.LookupItem, 0, lookupMaxResults)
+	for _, ch := range resp.Results.Channels {
+		id := channelIDFromPermalink(ch.Permalink)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, agentchannels.LookupItem{ID: id, Name: "#" + ch.Name})
+		if len(out) >= lookupMaxResults {
+			break
+		}
+	}
+	return out, nil
+}
+
+// channelIDFromPermalink extracts the channel ID from a Slack archive
+// permalink like https://team.slack.com/archives/C0123ABC or
+// .../archives/C0123ABC/p1234567890. Returns empty when unparseable.
+func channelIDFromPermalink(permalink string) string {
+	const marker = "/archives/"
+	i := strings.Index(permalink, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := permalink[i+len(marker):]
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		rest = rest[:j]
+	}
+	if q := strings.IndexByte(rest, '?'); q >= 0 {
+		rest = rest[:q]
+	}
+	return rest
 }
 
 func lookupSlackUsers(api *slackgo.Client, q string) ([]agentchannels.LookupItem, error) {

@@ -84,7 +84,25 @@ func TestAllowed(t *testing.T) {
 		t.Error("groups whitelist: no groups should be denied")
 	}
 
+	// users + groups whitelist (OR): pass via users
+	s.cfg.UsersMode = "whitelist"
+	s.cfg.AllowedUsers = `[{"id":"U001","name":"a"}]`
+	s.cfg.GroupsMode = "whitelist"
+	s.cfg.AllowedGroups = `[{"id":"G001","name":"g1"}]`
+	if !s.allowedCfg(s.cfg, "U001", nil, "C1") {
+		t.Error("OR semantic: U001 in users whitelist should pass even with no group")
+	}
+	// pass via groups
+	if !s.allowedCfg(s.cfg, "U999", []string{"G001"}, "C1") {
+		t.Error("OR semantic: member of G001 should pass even when not in users whitelist")
+	}
+	// neither matches
+	if s.allowedCfg(s.cfg, "U999", []string{"G999"}, "C1") {
+		t.Error("OR semantic: no match in users or groups should be denied")
+	}
+
 	// channels whitelist
+	s.cfg.UsersMode = "all"
 	s.cfg.GroupsMode = "all"
 	s.cfg.ChannelsMode = "whitelist"
 	s.cfg.AllowedChannels = `[{"id":"CABC","name":"#general"}]`

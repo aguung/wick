@@ -71,11 +71,11 @@ templ configsFormFull(simpleRows []entity.Config, kvRows []entity.Config, picker
 // simpleField wraps the field div; textarea gets full-width.
 templ simpleField(row entity.Config) {
 	if row.Type == "textarea" {
-		<div class="col-span-full">
+		<div class="col-span-full" data-cfg-key={ row.Key } data-cfg-visible-when={ row.VisibleWhen }>
 			@simpleFieldInner(row)
 		</div>
 	} else {
-		<div>
+		<div data-cfg-key={ row.Key } data-cfg-visible-when={ row.VisibleWhen }>
 			@simpleFieldInner(row)
 		</div>
 	}
@@ -265,6 +265,8 @@ templ kvlistBlock(row entity.Config, cols []string, data []map[string]string) {
 		class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden"
 		data-kvlist-key={ row.Key }
 		data-kv-cols={ strings.Join(cols, "|") }
+		data-cfg-key={ row.Key }
+		data-cfg-visible-when={ row.VisibleWhen }
 		if len(row.ColOptions) > 0 {
 			data-col-opts={ colOptsJSON(row.ColOptions) }
 		}
@@ -366,6 +368,8 @@ templ pickerBlock(row entity.Config, chips []map[string]string) {
 		class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden"
 		data-picker-key={ row.Key }
 		data-picker-source={ row.Options }
+		data-cfg-key={ row.Key }
+		data-cfg-visible-when={ row.VisibleWhen }
 	>
 		<div class="px-5 py-3 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
 			<div class="flex items-center gap-2">
@@ -505,11 +509,18 @@ templ pickerScript() {
 			box.classList.remove('hidden');
 		}
 
+		function showLoading(section){
+			var box=section.querySelector('[data-picker-results]');
+			box.innerHTML='<div class="px-3 py-2 text-xs text-black-700 dark:text-black-600 font-mono">Searching…</div>';
+			box.classList.remove('hidden');
+		}
+
 		function doLookup(section,query,base){
 			var source=section.getAttribute('data-picker-source');
 			var slug=base.split('/').filter(Boolean).pop();
 			var lookupBase=base.replace(/\/[^/]+$/,'/'+slug+'/lookup');
 			var url=lookupBase+'?source='+encodeURIComponent(source)+'&q='+encodeURIComponent(query);
+			showLoading(section);
 			fetch(url,{credentials:'same-origin'})
 				.then(function(r){return r.ok?r.json():[];})
 				.then(function(items){renderResults(section,items,base);})
@@ -711,6 +722,27 @@ templ configsSaveScript() {
 			if(form)saveKVBlock(section,form.getAttribute('data-action-base'));
 		}
 
+		function currentFieldValue(form, key){
+			// dropdown / text / checkbox carry data-field-key directly
+			var el=form.querySelector('[data-field-key="'+key.replace(/"/g,'\\"')+'"]');
+			if(!el)return '';
+			if(el.type==='checkbox')return el.checked?'true':'false';
+			return el.value||'';
+		}
+
+		function applyVisibility(form){
+			form.querySelectorAll('[data-cfg-visible-when]').forEach(function(el){
+				var rule=el.getAttribute('data-cfg-visible-when')||'';
+				if(rule===''){el.style.display='';return;}
+				var idx=rule.indexOf(':');
+				if(idx<0){el.style.display='';return;}
+				var key=rule.slice(0,idx).trim();
+				var want=rule.slice(idx+1).trim();
+				var have=currentFieldValue(form,key);
+				el.style.display=(have===want)?'':'none';
+			});
+		}
+
 		function attachAutoSave(form){
 			var base=form.getAttribute('data-action-base');
 			// Restore server-side value for dropdowns to override browser form-state cache.
@@ -726,9 +758,10 @@ templ configsSaveScript() {
 			// simple fields
 			form.querySelectorAll('[data-field-key]').forEach(function(el){
 				var immediate=el.tagName==='SELECT'||el.type==='checkbox'||el.type==='color'||el.type==='date'||el.type==='datetime-local';
-				var handler=function(){saveField(el,base);};
+				var handler=function(){saveField(el,base);applyVisibility(form);};
 				el.addEventListener(immediate?'change':'input',immediate?handler:debounce(handler,800));
 			});
+			applyVisibility(form);
 			// kvlist blocks — delegate on the rows container for both input
 			// (text fields) and change (select dropdowns).
 			form.querySelectorAll('[data-kvlist-key]').forEach(function(section){

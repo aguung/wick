@@ -89,6 +89,7 @@ templ ChannelConfigPage(vm ChannelConfigVM) {
 			<p class="text-sm text-black-700 dark:text-black-600 mb-2">
 				Configure credentials and access control for the { vm.ChannelName } channel.
 			</p>
+			@integrationTestPanel(vm.Base + "/channels/test/" + vm.ChannelSlug)
 			@managerview.ConfigsTableFull(vm.Rows, vm.ActionBase)
 			if vm.Docs != nil {
 				<div class="mt-8">
@@ -97,6 +98,92 @@ templ ChannelConfigPage(vm ChannelConfigVM) {
 			}
 		</div>
 	}
+}
+
+// integrationTestPanel renders the "Test Integration" button + an empty
+// results container. JS attached at the bottom POSTs to testURL and fills
+// in per-check rows.
+templ integrationTestPanel(testURL string) {
+	<div class="mt-4 rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden" data-integration-test data-test-url={ testURL }>
+		<div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
+			<div>
+				<h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Integration health</h3>
+				<p class="text-xs text-black-700 dark:text-black-600">Verify credentials and required Slack scopes.</p>
+			</div>
+			<button
+				type="button"
+				data-test-run
+				class="rounded-lg bg-green-500 hover:bg-green-600 text-white-100 text-xs font-medium px-3 py-2 transition-colors"
+			>Test Integration</button>
+		</div>
+		<div data-test-results class="hidden p-5 flex flex-col gap-2"></div>
+		<script>
+		(function(){
+			var panel=document.currentScript.closest('[data-integration-test]');
+			var url=panel.getAttribute('data-test-url');
+			var btn=panel.querySelector('[data-test-run]');
+			var box=panel.querySelector('[data-test-results]');
+			function render(items,err){
+				box.innerHTML='';
+				box.classList.remove('hidden');
+				if(err){
+					var e=document.createElement('div');
+					e.className='text-xs text-neg-400 font-mono';
+					e.textContent='Request failed: '+err;
+					box.appendChild(e);
+					return;
+				}
+				if(!items||items.length===0){
+					box.innerHTML='<div class="text-xs text-pos-400 font-mono">✓ All checks passed</div>';
+					return;
+				}
+				items.forEach(function(it){
+					var row=document.createElement('div');
+					row.className='flex items-start gap-2 text-xs';
+					var icon=document.createElement('span');
+					icon.className='shrink-0 mt-0.5 font-mono '+(it.ok?'text-pos-400':'text-neg-400');
+					icon.textContent=it.ok?'✓':'✗';
+					var body=document.createElement('div');
+					body.className='flex-1 min-w-0';
+					var name=document.createElement('div');
+					name.className='font-mono text-black-900 dark:text-white-100';
+					name.textContent=it.name;
+					body.appendChild(name);
+					if(it.detail){
+						var d=document.createElement('div');
+						d.className='text-[11px] text-black-700 dark:text-black-600 break-words';
+						d.textContent=it.detail;
+						body.appendChild(d);
+					}
+					if(it.error){
+						var er=document.createElement('div');
+						er.className='text-[11px] text-neg-400 font-mono break-words';
+						er.textContent=it.error;
+						body.appendChild(er);
+					}
+					row.appendChild(icon);
+					row.appendChild(body);
+					box.appendChild(row);
+				});
+			}
+			btn.addEventListener('click',function(){
+				btn.disabled=true;
+				var orig=btn.textContent;
+				btn.textContent='Running…';
+				box.classList.remove('hidden');
+				box.innerHTML='<div class="text-xs text-black-700 dark:text-black-600">Running probes…</div>';
+				fetch(url,{method:'POST',credentials:'same-origin'})
+					.then(function(r){return r.json().then(function(b){return{ok:r.ok,body:b};});})
+					.then(function(res){
+						if(!res.ok){render(null,(res.body&&res.body.error)||'HTTP '+res.body);return;}
+						render(res.body,null);
+					})
+					.catch(function(e){render(null,e.message||String(e));})
+					.then(function(){btn.disabled=false;btn.textContent=orig;});
+			});
+		})();
+		</script>
+	</div>
 }
 
 // RestDocsVM is the view model for the REST channel's docs panel.
