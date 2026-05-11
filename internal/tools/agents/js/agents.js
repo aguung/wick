@@ -841,6 +841,37 @@
       setTimeout(function () { el.classList.add("hidden"); }, 5000);
     }
 
+    // ── Hook enable/disable button (Providers page) ───────────────────
+    // Universal handler for the Enable / Disable per-card buttons.
+    // POSTs to the data-action-url, disables the button while the
+    // request runs (Enable can take 5–30s because it includes a probe),
+    // and reloads the page on completion so the persisted badge + button
+    // trio reflect the new state from disk.
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-hook-action]");
+      if (!btn) return;
+      var url = btn.dataset.actionUrl;
+      if (!url) return;
+      var origLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Working…";
+
+      fetch(url, { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (res.error && !res.enabled) {
+            alert("Hook action failed: " + res.error);
+          }
+        })
+        .catch(function (err) {
+          alert("Request failed: " + err);
+        })
+        .finally(function () {
+          // Always reload — persisted state on disk is the source of truth.
+          window.location.reload();
+        });
+    });
+
     // ── Hook capability check button (Providers page) ──────────────────
     // Single delegated click handler for every per-card Command Gate
     // Test button. Disables the button while the spawn runs (5–30s)

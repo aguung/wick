@@ -6,8 +6,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
+
+// probeInflight tracks active HookCapabilityCheck runs keyed by
+// "<provider>". Used by IsProbing + the inflight guard inside
+// HookCapabilityCheck to short-circuit concurrent probes for the same
+// provider. A second caller while one is still running gets
+// ErrProbeInflight back instead of spawning a duplicate provider
+// process — important because the writer/prober pair touch shared
+// workspace files and concurrent probes race on the sentinel.
+var probeInflight sync.Map
+
+// ErrProbeInflight is returned by HookCapabilityCheck when a probe
+// is already running for the same provider name. UI surfaces this as
+// "another probe in flight" rather than retrying.
+var ErrProbeInflight = errors.New("probe already in flight for this provider")
+
+// IsProbing reports whether a HookCapabilityCheck is currently running
+// for the named provider. Used by the HTTP layer / templ to disable
+// the Test / Enable buttons while a probe is in flight.
+func IsProbing(providerName string) bool {
+	_, ok := probeInflight.Load(providerName)
+	return ok
+}
 
 // CheckResult is what HookCapabilityCheck returns. It mirrors the
 // Capability registry entry but with the runtime-probe fields filled
@@ -69,6 +92,17 @@ type CheckInput struct {
 //  7. Cleanup workspace.
 func HookCapabilityCheck(ctx context.Context, in CheckInput) CheckResult {
 	res := CheckResult{}
+
+	// Single-flight guard per provider name. LoadOrStore returns
+	// loaded=true when another goroutine already claimed the slot —
+	// we bail with a typed error so the caller can render "another
+	// probe in flight" without retrying.
+	if _, loaded := probeInflight.LoadOrStore(in.ProviderName, struct{}{}); loaded {
+		res.HookError = ErrProbeInflight.Error()
+		return res
+	}
+	defer probeInflight.Delete(in.ProviderName)
+
 	cap, ok := Lookup(in.ProviderName)
 	if !ok {
 		res.HookError = "provider not registered: " + in.ProviderName

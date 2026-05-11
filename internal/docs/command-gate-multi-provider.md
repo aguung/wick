@@ -1,11 +1,13 @@
 # Command Gate — Multi-Provider Design
 
-Status: **Priority 0 + UI landed**. Phase 1 (refactor claude path) pending.
+Status: **Phase 1 landed** — spawn-time gating refactored ke per-instance intent + master switch cascade. Tooltip-theme, codex/gemini wiring, fail-safe sync UI shipped.
 Update terakhir: 2026-05-11.
 
 Commits di branch `improve-gate2`:
 - `d5d467c` feat(gate): multi-provider capability detection (Priority 0)
 - `a53b648` feat(ui): per-provider Command Gate section in Providers card
+- `aa86220` fix(ui): theme-aware tooltip + register codex/gemini for capability lookup
+- (current) feat(gate): per-instance Hooks intent + master switch cascade + spawner refactor
 
 Doc ini supersede arsitektur lama yang Claude-only ([command-gate-architecture.md](command-gate-architecture.md)). Tujuan: gate jadi generic, per-provider hook contract di-translate sama adapter, capability dicek runtime jadi user gak nyalain gate di provider yang gak support hook.
 
@@ -441,35 +443,99 @@ Per-instance Providers card tambah section:
 
 Toggle disabled kalau capability negative. Tooltip jelasin alasan. Explainer copy diatas itu wajib — user gak boleh nyalain tanpa tau dia ngapain.
 
-### Per-instance gate flag (config schema change)
+### Per-instance gate flag (config schema)
 
-`userconfig.ProviderInstance` tambah:
+`userconfig.ProviderInstance` punya `Hooks` map (nested shape Opsi B —
+extensible buat hook event lain):
 
 ```go
 type ProviderInstance struct {
     // existing fields...
-    GateEnabled bool `json:"gate_enabled,omitempty"`
+    Hooks map[string]HookInstanceConfig `json:"hooks,omitempty"`
+}
+
+type HookInstanceConfig struct {
+    Enabled bool `json:"enabled,omitempty"`
+    // Future: Mode, AllowList, ChannelOverride
 }
 ```
 
-Default `false` untuk **semua** instance, termasuk migrasi dari user lama. Alasan: walau ada global `GateConfig.GateEnabled=true` di config lama, kontrak baru = explicit opt-in per provider. User yang sebelumnya pakai gate Claude harus toggle ulang di UI sekali — trade-off untuk semantic clarity. Banner one-time di UI: "Gate is now per-provider — re-enable for Claude if you want it back."
+Key map = event name (`"PreToolUse"`, future `"SessionStart"` dst).
+Provider-level constant: `provider.HookEventPreToolUse`.
 
-Global `GateConfig.GateEnabled` di [internal/agents/config/gate.go](../agents/config/gate.go) dihapus di Phase 2 (gak ada fallback path). Capability + per-instance flag = single source of truth.
+### Master switch + cascade
+
+`config.GateConfig.GateEnabled` tetap ada sebagai **master switch**, tapi
+behaviornya bukan independent gate — dia **fan-out command**:
+
+- **OFF → ON**: handler `toggleGate` flip semua `Hooks[event].Enabled = true`
+  per instance, lalu spawn goroutine background per provider yang jalanin
+  `HookCapabilityCheck`. Provider yang verified tetep enabled; provider yang
+  fail di-rollback ke `Enabled=false`. Capability state persist ke
+  `ProviderStatus.Hooks[event]`.
+- **ON → OFF**: flip semua `Hooks[event].Enabled = false`. Capability state
+  preserved jadi re-enable later gak ilang last probe result.
+
+**Single source of truth**: `Instance.Hooks[event].Enabled` di disk. Spawner
+gak peduli master state — cuma baca per-instance flag. Master cuma trigger
+mass-update.
+
+Defensive guard: `enableProviderHook` HTTP handler refuse dgn 409 kalau
+master off (handle stale tab / direct curl).
+
+### Inflight probe single-flight
+
+`capability.probeInflight sync.Map` lock per provider name. Concurrent
+`HookCapabilityCheck` untuk provider sama → second caller dapat
+`ErrProbeInflight`. UI surface lewat `provider.Status.Probing` (set di
+`providersPage` via `capability.IsProbing`). Badge "testing…" + button
+disabled saat probe in-flight. Probe survive page refresh karena goroutine
+detached dari request.
 
 ## Spawn-time wiring
 
-`provider.Spawn` (atau gateAwareSpawner equivalent) saat ini Claude-only wire gate config. Refactor jadi:
+Spawner per-provider implement `applyHookConfig(opt)` yang:
 
 ```go
-if ins.GateEnabled && capability.HookSupported {
-    cfg := buildHookConfig(ins.Type, gateBinaryPath)
-    writeHookConfig(ins.Type, cfg)
-} else {
-    removeHookConfig(ins.Type)   // hapus stale config dari run sebelumnya
+enabled := opt.Instance != nil && opt.Instance.HookEnabled(provider.HookEventPreToolUse)
+if !enabled {
+    writer.Remove(opt.Workspace) // cleanup stale config
+    return false
 }
+writer.Write(opt.Workspace, opt.GateBinary)
+return true
 ```
 
-`removeHookConfig` penting — kalau user toggle OFF gate di provider yang sebelumnya ON, hook config harus dibersihin biar provider gak masih panggil gate binary yang kemungkinan bisa fail-open allow tapi tetap pollute audit log.
+Saat returnnya true:
+- **claude**: tambah `--permission-mode bypassPermissions` (claude 2.1.138+ deny
+  via hook envelope, bukan via permission prompt)
+- **codex**: skip `--ask-for-approval=never` (biar PreToolUse fire)
+- **gemini**: skip `--yolo` (sama)
+
+`Remove` penting — toggle OFF harus bersihin hook config workspace yang
+sebelumnya ON, biar provider gak still panggil gate binary stale.
+
+### Factory dispatch
+
+`pool/factory.go` resolve `Instance` once per Build via `provider.Find()`
+(hits in-memory cache, gak file IO setiap spawn), forward ke `provider.Options`:
+
+```go
+provider.New(provider.Options{
+    Instance:   &resolvedIns,
+    GateBinary: gateBin,
+    // ...
+})
+```
+
+`agent.Start` forward ke `SpawnOptions`. Spawner sub-package consume
+`opt.Instance.HookEnabled(event)`.
+
+### Instance cache
+
+`provider.instanceCache` in-memory map keyed by AppName. Invalidate di
+Save/Delete/SetHookEnabled. `Find()` consult cache; miss → reload.
+Spawn path gak hit userconfig file lagi.
 
 ### Per-provider hook config writer
 
@@ -522,6 +588,32 @@ Modal masih 4 options (`approve_once / session / always / block`), tapi cuma dae
 
 Gate gak tau bedanya, dia cuma terima Result.
 
+## UI conventions
+
+### Theme-aware tooltip
+
+Native `title=` attribute pakai OS chrome (white-on-black di Windows) yang
+tabrakan sama dark theme. Solusi: helper `tooltipStyles()` di
+`view/layout.templ` — pure CSS via `[data-tooltip="..."]` + pseudo-elements
+yang respect `.dark` selector. Pakai `data-tooltip="..."` (optional
+`data-tooltip-pos="bottom"`) di mana saja, gak butuh JS.
+
+Migration: replace semua `title="..."` di providers card ke `data-tooltip="..."`.
+
+### Per-card status badge
+
+| State | Badge | Button |
+|---|---|---|
+| master OFF | `locked` (abu) | tersembunyi |
+| master ON + probe inflight | `testing…` (biru pulse) | "Testing…" disabled |
+| master ON + intent ON + verified | `enabled ✓` (hijau) | Test + Disable |
+| master ON + intent ON + verify failed | `enabled (unverified)` (kuning) | Test + Disable |
+| master ON + intent OFF + probe pass | `ready` (abu) | Enable |
+| master ON + intent OFF | `disabled` (abu) | Enable |
+
+`hookCapabilitySection` templ helper take `masterOn bool` param dan render
+button trio cuma kalau masterOn=true.
+
 ## File layout (perubahan minimal)
 
 ```
@@ -558,11 +650,11 @@ Phase 3 (codex) ready saat semua D-task hijau + codex adapter shipped.
 
 Phase 1 (refactor claude) bisa start paralel dengan D-tasks selama gak break existing whitelist behavior.
 
-1. **Phase 1**: refactor existing claude path jadi adapter-based, no behavior change. Daemon hold whitelist. Existing users gak ngerasain apa-apa.
-2. **Phase 2**: per-instance `GateEnabled` flag, capability registry (self-registering), UI toggle. Default OFF for all instances — banner "Gate is now per-provider, re-enable if needed".
-3. **Phase 3**: codex adapter + Spawner + Prober + capability probe. User verify locally, ship opt-in beta.
-4. **Phase 4**: gemini adapter + Spawner + Prober shipped at same time as codex (D2b says ship code untuk ketiganya bersamaan). Tampil di UI dengan badge "experimental, untested" sampai ada kontributor yang verify.
-5. **Phase 5**: hapus `GateConfig.GateEnabled` global (deprecated path), full per-instance. Cleanup `attachGateConfig` Claude-only di pool/factory.go.
+1. ✅ **Phase 1**: per-instance `Hooks` flag di userconfig, capability registry self-registering, master switch cascade, spawner consume per-instance intent. Existing claude path tetap jalan — `attachGateConfig` di factory now coexist sama new path (writer registries take precedence di Spawner.applyHookConfig).
+2. ✅ **Phase 2**: UI Command Gate section per-card (Enable/Disable/Test), badge state machine (locked/testing/enabled/ready/disabled), theme-aware tooltip.
+3. ✅ **Phase 3**: codex adapter + Spawner + Prober + capability probe shipped. User verifies via UI Test.
+4. ✅ **Phase 4**: gemini adapter + Spawner + Prober shipped together. Badge `untested` scope sampai verified.
+5. ⏳ **Phase 5**: hapus `attachGateConfig` legacy path di pool/factory.go (sekarang masih dipanggil untuk refresh spec.json AllowedCmds — perlu split jadi separate function biar gak nyentuh hook config).
 
 Tiap phase shippable independen.
 

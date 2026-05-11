@@ -55,6 +55,27 @@ type Instance struct {
 	ExtraArgs []string
 	Env       []string
 	Disabled  bool
+
+	// Hooks holds the user's enable/disable intent per hook event
+	// (PreToolUse, SessionStart, …). Spawners read this on every
+	// Spawn to decide whether to install / remove the per-workspace
+	// hook config.
+	Hooks map[string]HookInstanceConfig
+}
+
+// HookInstanceConfig mirrors userconfig.HookInstanceConfig in-memory.
+// Per-event user intent; not capability state (that lives on Status).
+type HookInstanceConfig struct {
+	Enabled bool
+}
+
+// HookEnabled reports whether the user has opted this instance into
+// the named hook event. Missing key = false (default off).
+func (i Instance) HookEnabled(event string) bool {
+	if i.Hooks == nil {
+		return false
+	}
+	return i.Hooks[event].Enabled
 }
 
 // Bin returns the binary the spawner should execute: override path
@@ -81,6 +102,12 @@ type Status struct {
 	VersionErr string // error message when version probe failed
 
 	Hooks map[string]HookCapability
+
+	// Probing is a render-time hint set by the HTTP layer when a
+	// capability probe is currently in flight for this instance. UI
+	// disables the Test / Enable buttons so the user can't double-fire.
+	// Not persisted — pure in-memory state.
+	Probing bool
 }
 
 // HookCapability is the in-memory mirror of userconfig.HookCapability
@@ -107,6 +134,39 @@ const HookEventPreToolUse = "PreToolUse"
 // agents config in ~/.foo/config.json.
 var AppName = ""
 
+// instanceCache holds the resolved per-instance config in memory so
+// every spawn doesn't hit the userconfig file. Invalidated on Save /
+// Delete / SetHookEnabled. Read by Find via FindCached.
+var (
+	instanceCacheMu sync.RWMutex
+	instanceCache   map[string][]Instance // keyed by AppName; nil = uncached
+)
+
+// reloadInstanceCache pulls a fresh snapshot from userconfig under the
+// caller-supplied lock contract. Called by FindCached on a miss and
+// by mutating ops (Save/Delete/SetHookEnabled) after writing.
+func reloadInstanceCacheLocked() {
+	cfg, err := userconfig.Load(AppName)
+	if err != nil {
+		// Fail-soft: leave cache as-is. Callers will fall back to the
+		// uncached Load path on miss.
+		log.Warn().Err(err).Msg("agents.instance-cache: reload failed")
+		return
+	}
+	if instanceCache == nil {
+		instanceCache = map[string][]Instance{}
+	}
+	instanceCache[AppName] = mergeWithDefaults(cfg.Providers)
+}
+
+// invalidateInstanceCache forces the next FindCached / LoadCachedInstances
+// to re-read userconfig. Triggered by mutating ops.
+func invalidateInstanceCache() {
+	instanceCacheMu.Lock()
+	defer instanceCacheMu.Unlock()
+	delete(instanceCache, AppName)
+}
+
 // Load returns every configured instance across all supported types,
 // auto-seeding the per-type default entry when its list is empty so
 // the UI always has at least one row per supported runtime.
@@ -119,11 +179,31 @@ func Load() ([]Instance, error) {
 }
 
 // Find resolves an instance by {type, name}. Empty name resolves to
-// the per-type default whose Name equals the type itself.
+// the per-type default whose Name equals the type itself. Uses the
+// in-memory cache so the hot Spawn path doesn't re-read userconfig.
 func Find(t Type, name string) (Instance, error) {
 	if name == "" {
 		name = string(t)
 	}
+	instanceCacheMu.RLock()
+	cached, ok := instanceCache[AppName]
+	instanceCacheMu.RUnlock()
+	if !ok {
+		instanceCacheMu.Lock()
+		if _, stillMiss := instanceCache[AppName]; stillMiss {
+			reloadInstanceCacheLocked()
+		}
+		cached = instanceCache[AppName]
+		instanceCacheMu.Unlock()
+	}
+	for _, ins := range cached {
+		if ins.Type == t && ins.Name == name {
+			return ins, nil
+		}
+	}
+	// Cache miss after reload — fall through to the uncached path for
+	// the error message. Should never happen in practice but keeps
+	// behavior identical to the old API.
 	all, err := Load()
 	if err != nil {
 		return Instance{}, err
@@ -164,6 +244,7 @@ func Save(ins Instance) error {
 	if err := userconfig.Save(AppName, cfg); err != nil {
 		return err
 	}
+	invalidateInstanceCache()
 	InvalidateProbeCache(ins.Type, ins.Name)
 	// Persist a fresh probe in the background — user just changed
 	// Binary/ExtraArgs, the previous cached Status is now stale.
@@ -173,6 +254,57 @@ func Save(ins Instance) error {
 		_ = RescanOne(ctx, ins.Type, ins.Name)
 	}()
 	return nil
+}
+
+// SetHookEnabled flips the user's enable/disable intent for one hook
+// event on one instance, persisting through userconfig. Used by the
+// per-card Enable/Disable button on the Providers page after a
+// successful (or failed) capability probe.
+func SetHookEnabled(t Type, name, event string, enabled bool) error {
+	if name == "" || event == "" {
+		return errors.New("instance name and event required")
+	}
+	cfg, err := userconfig.Load(AppName)
+	if err != nil {
+		return err
+	}
+	list := pickList(&cfg.Providers, t)
+	if list == nil {
+		return fmt.Errorf("unsupported runtime type %q", t)
+	}
+	for i := range *list {
+		if (*list)[i].Name != name {
+			continue
+		}
+		if (*list)[i].Hooks == nil {
+			(*list)[i].Hooks = map[string]userconfig.HookInstanceConfig{}
+		}
+		(*list)[i].Hooks[event] = userconfig.HookInstanceConfig{Enabled: enabled}
+		if err := userconfig.Save(AppName, cfg); err != nil {
+			return err
+		}
+		invalidateInstanceCache()
+		InvalidateProbeCache(t, name)
+		return nil
+	}
+
+	// Instance not persisted yet — auto-seeded defaults (Name == type
+	// string) only live in memory until the user explicitly edits or
+	// (here) toggles a hook flag. Materialize the default row so the
+	// intent has somewhere to land.
+	if name == string(t) {
+		*list = append(*list, userconfig.ProviderInstance{
+			Name:  name,
+			Hooks: map[string]userconfig.HookInstanceConfig{event: {Enabled: enabled}},
+		})
+		if err := userconfig.Save(AppName, cfg); err != nil {
+			return err
+		}
+		invalidateInstanceCache()
+		InvalidateProbeCache(t, name)
+		return nil
+	}
+	return fmt.Errorf("instance %s/%s not found", t, name)
 }
 
 // Delete removes an instance. Removing the last instance for a type
@@ -192,7 +324,8 @@ func Delete(t Type, name string) error {
 			if err := userconfig.Save(AppName, cfg); err != nil {
 				return err
 			}
-			InvalidateProbeCache(t, name)
+			invalidateInstanceCache()
+		InvalidateProbeCache(t, name)
 			return nil
 		}
 	}
@@ -381,6 +514,7 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 				ExtraArgs: raw.ExtraArgs,
 				Env:       raw.Env,
 				Disabled:  raw.Disabled,
+				Hooks:     hooksFromUser(raw.Hooks),
 			})
 		}
 	}
@@ -418,7 +552,33 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 		Disabled:   ins.Disabled,
 		ExtraArgs:  ins.ExtraArgs,
 		Env:        ins.Env,
+		Hooks:      hooksToUser(ins.Hooks),
 	}
+}
+
+// hooksFromUser converts the persisted shape into the in-memory map.
+// Nil-in → nil-out so callers see "no hook intent recorded" via the
+// same zero value pattern as a fresh Instance.
+func hooksFromUser(in map[string]userconfig.HookInstanceConfig) map[string]HookInstanceConfig {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]HookInstanceConfig, len(in))
+	for k, v := range in {
+		out[k] = HookInstanceConfig{Enabled: v.Enabled}
+	}
+	return out
+}
+
+func hooksToUser(in map[string]HookInstanceConfig) map[string]userconfig.HookInstanceConfig {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]userconfig.HookInstanceConfig, len(in))
+	for k, v := range in {
+		out[k] = userconfig.HookInstanceConfig{Enabled: v.Enabled}
+	}
+	return out
 }
 
 func isSupported(t Type) bool {

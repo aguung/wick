@@ -19,6 +19,7 @@ import (
 	"os/exec"
 
 	"github.com/rs/zerolog/log"
+	"github.com/yogasw/wick/internal/agents/capability"
 	provider "github.com/yogasw/wick/internal/agents/provider"
 )
 
@@ -69,11 +70,21 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if bin == "" {
 		bin = "codex"
 	}
+
+	// Install / remove per-workspace hook config based on the user's
+	// per-instance intent. See claude/spawn.go applyHookConfig for the
+	// fail-soft rationale.
+	gateActive := s.applyHookConfig(opt)
+
 	args := []string{
 		"exec",
 		"--sandbox", "workspace-write",
 	}
-	if s.AskForApproval != "" {
+	// When gate is active for this instance, do NOT set
+	// --ask-for-approval to a bypass value — codex's approval flag
+	// generally skips PreToolUse under bypass modes, which would
+	// disable the gate. Defer to the hook envelope instead.
+	if !gateActive && s.AskForApproval != "" {
 		args = append(args, "--ask-for-approval", s.AskForApproval)
 	}
 	args = append(args, s.ExtraArgs...)
@@ -110,6 +121,36 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	}
 	log.Info().Int("pid", cmd.Process.Pid).Str("bin", bin).Msg("agents.spawn: started (codex)")
 	return &process{cmd: cmd, stdin: stdin, stdout: stdout}, nil
+}
+
+// applyHookConfig installs / removes the per-workspace hook config
+// based on the user's per-instance intent for PreToolUse. Returns
+// true when the hook is installed for this spawn. See the claude
+// equivalent for the fail-soft rationale.
+func (s Spawner) applyHookConfig(opt provider.SpawnOptions) bool {
+	if opt.Workspace == "" {
+		return false
+	}
+	writer, ok := capability.LookupHookConfigWriter("codex")
+	if !ok {
+		return false
+	}
+	enabled := opt.Instance != nil && opt.Instance.HookEnabled(provider.HookEventPreToolUse)
+	if !enabled {
+		if err := writer.Remove(opt.Workspace); err != nil {
+			log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: codex hook config remove failed")
+		}
+		return false
+	}
+	if opt.GateBinary == "" {
+		log.Warn().Str("workspace", opt.Workspace).Msg("agents.spawn: codex hook requested but gate binary path empty")
+		return false
+	}
+	if err := writer.Write(opt.Workspace, opt.GateBinary); err != nil {
+		log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: codex hook config write failed")
+		return false
+	}
+	return true
 }
 
 // process implements provider.Process for a started codex subprocess.

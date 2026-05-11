@@ -28,6 +28,7 @@ import (
 	"os/exec"
 
 	"github.com/rs/zerolog/log"
+	"github.com/yogasw/wick/internal/agents/capability"
 	provider "github.com/yogasw/wick/internal/agents/provider"
 )
 
@@ -75,6 +76,14 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if bin == "" {
 		bin = "claude"
 	}
+
+	// Install / remove the per-workspace hook config from the user's
+	// per-instance intent. We do this every Spawn (not just the first)
+	// so toggling Enabled in the UI takes effect on the next spawn
+	// without restart, and toggling OFF correctly cleans up the stale
+	// hook config from the previous run.
+	gateActive := s.applyHookConfig(opt)
+
 	args := []string{
 		"-p",
 		"--verbose",
@@ -88,11 +97,15 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if opt.Workspace != "" {
 		args = append(args, "--add-dir", opt.Workspace)
 	}
-	if s.BypassPermissions {
-		// Gate is active (hook written to workspace .claude/settings.local.json)
-		// or operator requested bypass for non-interactive channel. Skip
-		// Claude's own permission UI; the gate PreToolUse hook is the
-		// sole allow/block authority.
+	// bypassPermissions semantic: skip claude's own permission UI so
+	// the gate hook is the sole authority. Set when gate is active
+	// for this instance, OR when the caller explicitly opted in
+	// (non-interactive channels like Slack/HTTP where no human can
+	// answer a prompt). Never both: claude 2.1.138+ skips PreToolUse
+	// hooks under bypassPermissions, so if gate is meant to enforce
+	// we want the hook fire path, which is exactly what the gate
+	// hook config achieves on its own — no extra flag needed.
+	if gateActive || s.BypassPermissions {
 		args = append(args, "--permission-mode", "bypassPermissions")
 	}
 	args = append(args, s.ExtraArgs...)
@@ -155,6 +168,51 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		Str("bin", bin).
 		Msg("agents.spawn: started")
 	return &process{cmd: cmd, stdin: stdin, stdout: stdout}, nil
+}
+
+// applyHookConfig installs or removes the per-workspace hook config
+// based on the per-instance user intent for the PreToolUse event.
+// Returns true when the hook was (or already is) installed for this
+// spawn — the caller uses that signal to flip --permission-mode
+// bypassPermissions so claude defers all gating to the hook.
+//
+// Failure to install is a hard error in spirit but a soft one in
+// practice: we log and return false so the spawn still proceeds
+// without the gate rather than refusing to start the provider. The
+// alternative (fail spawn) would block every session whenever the
+// gate binary moved or .claude/ became unwritable, which is worse UX
+// than degraded enforcement that's visible in logs.
+func (s Spawner) applyHookConfig(opt provider.SpawnOptions) bool {
+	if opt.Workspace == "" {
+		return false
+	}
+	writer, ok := capability.LookupHookConfigWriter("claude")
+	if !ok {
+		// Adapter not registered — should never happen since
+		// claude/capability_init.go registers in init(). Defensive
+		// branch so a bad import graph degrades gracefully.
+		return false
+	}
+	// Hook install gated solely on the per-instance flag. The master
+	// switch (when present) materialises into per-instance flags at
+	// toggle time — spawner stays simple, single source of truth lives
+	// in Instance.Hooks.
+	enabled := opt.Instance != nil && opt.Instance.HookEnabled(provider.HookEventPreToolUse)
+	if !enabled {
+		if err := writer.Remove(opt.Workspace); err != nil {
+			log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: claude hook config remove failed")
+		}
+		return false
+	}
+	if opt.GateBinary == "" {
+		log.Warn().Str("workspace", opt.Workspace).Msg("agents.spawn: claude hook requested but gate binary path empty — running without gate")
+		return false
+	}
+	if err := writer.Write(opt.Workspace, opt.GateBinary); err != nil {
+		log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: claude hook config write failed")
+		return false
+	}
+	return true
 }
 
 // tee returns a wrapped ReadCloser that mirrors all bytes into

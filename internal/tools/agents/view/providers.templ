@@ -38,12 +38,12 @@ templ ProvidersPage(vm ProvidersVM) {
 				@statCard("Queued", fmt.Sprintf("%d", vm.PoolQueueLen), "amber")
 				@statCard("Configured", fmt.Sprintf("%d", len(vm.Statuses)), "default")
 			</div>
-			<!-- Command Gate status -->
+			<!-- Command Gate master switch -->
 			@gateStatusCard(vm.Gate, vm.Base)
 			<!-- Provider cards -->
 			<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
 				for _, st := range vm.Statuses {
-					@providerCard(vm.Base, st)
+					@providerCard(vm.Base, st, vm.Gate.Enabled)
 				}
 			</div>
 			<!-- Recent spawns -->
@@ -114,11 +114,10 @@ templ ProvidersPage(vm ProvidersVM) {
 	}
 }
 
-// gateStatusCard renders the "Command Gate" health card. Two
-// states: enabled (green dot, binary path + source label) or
-// disabled (amber dot, reason + behavior fallback). Either way the
-// Note field carries the user-facing payoff so operators don't
-// have to guess what's allowed and what's blocked right now.
+// gateStatusCard renders the global Command Gate master switch. ON
+// means per-provider Hooks intents take effect; OFF disables every
+// hook installation regardless of per-instance state. The Note field
+// carries the operator-facing behavior summary.
 templ gateStatusCard(g GateStatusVM, base string) {
 	<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
 		<div class="border-b border-white-300 dark:border-navy-600 px-5 py-3 flex items-center justify-between gap-3">
@@ -163,7 +162,7 @@ templ gateStatusCard(g GateStatusVM, base string) {
 	</div>
 }
 
-templ providerCard(base string, st provider.Status) {
+templ providerCard(base string, st provider.Status, masterOn bool) {
 	<div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-3">
 		<div class="flex items-start justify-between gap-3">
 			<div>
@@ -238,7 +237,7 @@ templ providerCard(base string, st provider.Status) {
 				</div>
 			}
 		</dl>
-		@hookCapabilitySection(base, st)
+		@hookCapabilitySection(base, st, masterOn)
 		if st.Instance.Name != string(st.Instance.Type) {
 			<div class="pt-2 border-t border-white-300 dark:border-navy-600">
 				<button
@@ -252,41 +251,80 @@ templ providerCard(base string, st provider.Status) {
 	</div>
 }
 
-// hookCapabilitySection renders the per-instance Command Gate status:
-// what scope this provider's hook covers (bash+edit+mcp / shell-only /
-// untested), whether wick has verified the deny envelope is honored,
-// and a Test button to re-run the capability probe. Default off — the
-// user explicitly opts in by clicking Test before enabling gate flow.
-templ hookCapabilitySection(base string, st provider.Status) {
-	{{ hc, has := st.Hooks[provider.HookEventPreToolUse] }}
+// hookCapabilitySection renders the per-instance Command Gate
+// controls: status badge from the persisted capability probe + an
+// Enable / Disable / Test button trio. Enable runs the probe and
+// flips the user's intent in one click. Disable just flips intent
+// off. Test re-runs the probe without touching intent.
+templ hookCapabilitySection(base string, st provider.Status, masterOn bool) {
+	{{ hc, _ := st.Hooks[provider.HookEventPreToolUse] }}
+	{{ intent := st.Instance.HookEnabled(provider.HookEventPreToolUse) }}
+	{{ urlBase := base + "/providers/" + string(st.Instance.Type) + "/" + st.Instance.Name + "/hooks/" + provider.HookEventPreToolUse }}
 	<div class="pt-3 border-t border-white-300 dark:border-navy-600 space-y-2">
 		<div class="flex items-center justify-between gap-2">
-			<div class="flex items-center gap-2">
+			<div class="flex items-center gap-2 flex-wrap">
 				<span class="text-xs font-semibold text-black-900 dark:text-white-100">Command Gate</span>
-				if has && hc.Verified {
-					<span class="rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Capability probe confirmed this provider honors the deny envelope">verified ✓</span>
-				} else if has && hc.Supported {
-					<span class="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Adapter exists but runtime probe has not confirmed deny is honored">unverified</span>
+				if !masterOn {
+					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-700 dark:text-black-600" data-tooltip="Master switch is off — per-provider controls disabled. Turn the global gate on first.">locked</span>
+				} else if st.Probing {
+					<span class="rounded bg-blue-500 px-2 py-0.5 text-xs font-medium text-white-100 animate-pulse" data-tooltip="Capability probe in flight — refresh in a few seconds to see the result">testing…</span>
+				} else if intent && hc.Verified {
+					<span class="rounded bg-green-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Hook installed every spawn; verified to honor deny">enabled ✓</span>
+				} else if intent && !hc.Verified {
+					<span class="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-white-100" data-tooltip="Intent on but last probe failed — re-run Test or Disable">enabled (unverified)</span>
+				} else if hc.Verified {
+					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600" data-tooltip="Probe passed; not enabled yet">ready</span>
 				} else {
-					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600">not probed</span>
+					<span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600">disabled</span>
 				}
-				if has && hc.Scope != "" {
+				if hc.Scope != "" {
 					<span class="text-xs text-black-700 dark:text-black-600">scope: { hc.Scope }</span>
 				}
 			</div>
-			<button
-				type="button"
-				class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-				data-tooltip="Spawn this provider with a force-deny hook and check whether the deny envelope is honored. Takes 5–30s."
-			data-tooltip-pos="bottom"
-				data-check-hook
-				data-check-url={ base + "/providers/" + string(st.Instance.Type) + "/" + st.Instance.Name + "/hooks/" + provider.HookEventPreToolUse + "/check" }
-			>Test</button>
+			if masterOn {
+				<div class="flex items-center gap-1">
+					if st.Probing {
+						<button
+							type="button"
+							class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-700 dark:text-black-600 opacity-60 cursor-not-allowed"
+							data-tooltip="A probe is already running for this provider"
+							data-tooltip-pos="bottom"
+							disabled
+						>Testing…</button>
+					} else if intent {
+						<button
+							type="button"
+							class="rounded-lg border border-white-400 dark:border-navy-600 px-2 py-1 text-xs text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
+							data-tooltip="Re-run the capability probe without changing the enable state"
+							data-tooltip-pos="bottom"
+							data-check-hook
+							data-check-url={ urlBase + "/check" }
+						>Test</button>
+						<button
+							type="button"
+							class="rounded-lg border border-red-400 dark:border-red-700 px-2 py-1 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+							data-tooltip="Stop installing the gate hook on this provider's spawns"
+							data-tooltip-pos="bottom"
+							data-hook-action
+							data-action-url={ urlBase + "/disable" }
+						>Disable</button>
+					} else {
+						<button
+							type="button"
+							class="rounded-lg bg-green-500 px-3 py-1 text-xs font-medium text-white-100 hover:bg-green-600"
+							data-tooltip="Probe this provider's deny envelope, and on success install the gate hook on every spawn. Takes 5–30s."
+							data-tooltip-pos="bottom"
+							data-hook-action
+							data-action-url={ urlBase + "/enable" }
+						>Enable</button>
+					}
+				</div>
+			}
 		</div>
-		if has && hc.Error != "" {
+		if hc.Error != "" {
 			<p class="font-mono text-xs text-red-600 dark:text-red-400 break-all">{ hc.Error }</p>
 		}
-		if has && !hc.ProbedAt.IsZero() {
+		if !hc.ProbedAt.IsZero() {
 			<p class="font-mono text-xs text-black-700 dark:text-black-600">last probed: { hc.ProbedAt.Local().Format("2006-01-02 15:04:05") }</p>
 		}
 	</div>

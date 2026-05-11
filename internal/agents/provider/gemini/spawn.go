@@ -23,6 +23,7 @@ import (
 	"os/exec"
 
 	"github.com/rs/zerolog/log"
+	"github.com/yogasw/wick/internal/agents/capability"
 	provider "github.com/yogasw/wick/internal/agents/provider"
 )
 
@@ -58,8 +59,19 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if bin == "" {
 		bin = "gemini"
 	}
+
+	// Install / remove per-workspace hook config based on the user's
+	// per-instance intent. See claude/spawn.go for the fail-soft
+	// rationale. UNVERIFIED: gemini hook contract not validated end-
+	// to-end; the writer + prober still ship so the wiring is
+	// exercised even when no contributor has confirmed the format.
+	gateActive := s.applyHookConfig(opt)
+
 	args := []string{"-p"}
-	if s.YoloMode {
+	// YoloMode skips every approval prompt — incompatible with gate
+	// enforcement because gemini in yolo mode is believed to bypass
+	// hook firing. Defer to the hook envelope when gate is active.
+	if !gateActive && s.YoloMode {
 		args = append(args, "--yolo")
 	}
 	args = append(args, s.ExtraArgs...)
@@ -96,6 +108,36 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	}
 	log.Info().Int("pid", cmd.Process.Pid).Str("bin", bin).Msg("agents.spawn: started (gemini)")
 	return &process{cmd: cmd, stdin: stdin, stdout: stdout}, nil
+}
+
+// applyHookConfig installs / removes the per-workspace hook config
+// based on the user's per-instance intent for PreToolUse. Returns
+// true when the hook is installed for this spawn. Same fail-soft
+// approach as the claude/codex equivalents.
+func (s Spawner) applyHookConfig(opt provider.SpawnOptions) bool {
+	if opt.Workspace == "" {
+		return false
+	}
+	writer, ok := capability.LookupHookConfigWriter("gemini")
+	if !ok {
+		return false
+	}
+	enabled := opt.Instance != nil && opt.Instance.HookEnabled(provider.HookEventPreToolUse)
+	if !enabled {
+		if err := writer.Remove(opt.Workspace); err != nil {
+			log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: gemini hook config remove failed")
+		}
+		return false
+	}
+	if opt.GateBinary == "" {
+		log.Warn().Str("workspace", opt.Workspace).Msg("agents.spawn: gemini hook requested but gate binary path empty")
+		return false
+	}
+	if err := writer.Write(opt.Workspace, opt.GateBinary); err != nil {
+		log.Warn().Err(err).Str("workspace", opt.Workspace).Msg("agents.spawn: gemini hook config write failed")
+		return false
+	}
+	return true
 }
 
 type process struct {
