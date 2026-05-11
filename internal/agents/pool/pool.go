@@ -271,6 +271,26 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 	if err != nil {
 		return err
 	}
+	// Ensure the agent entry exists in agents.json before reading it.
+	// Channels like Slack auto-create sessions without going through the
+	// UI flow that would call AddAgent, so agents.json stays [] and
+	// CLISessionID is never written — breaking --resume on respawn.
+	hasEntry := false
+	for _, a := range sess.Agents {
+		if a.Name == agentName {
+			hasEntry = true
+			break
+		}
+	}
+	if !hasEntry {
+		if err := session.AddAgent(p.cfg.Layout, sessionID, agentName, ""); err != nil {
+			return err
+		}
+		sess, err = session.Load(p.cfg.Layout, sessionID)
+		if err != nil {
+			return err
+		}
+	}
 	resumeID := ""
 	pType := ""
 	for _, a := range sess.Agents {
