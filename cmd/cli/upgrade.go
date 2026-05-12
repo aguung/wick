@@ -86,7 +86,46 @@ func runUpgrade() error {
 	if err := execCmd("go mod tidy"); err != nil {
 		return err
 	}
+
+	upgradeDockerfile(latest, reader)
+
 	return runTask("dev")
+}
+
+// upgradeDockerfile checks whether a Dockerfile in the current directory
+// references an older wick version and offers to update it.
+func upgradeDockerfile(latest string, reader *bufio.Reader) {
+	const dockerfileName = "Dockerfile"
+	data, err := os.ReadFile(dockerfileName)
+	if err != nil {
+		return // no Dockerfile, skip silently
+	}
+
+	re := regexp.MustCompile(`github\.com/yogasw/wick@(v[^\s"'\x60]+)`)
+	m := re.FindSubmatch(data)
+	if m == nil {
+		return // no wick reference in Dockerfile
+	}
+
+	current := string(m[1])
+	if current == latest {
+		return
+	}
+
+	fmt.Printf("Dockerfile: wick@%s -> %s? [Y/n]: ", current, latest)
+	ans, _ := reader.ReadString('\n')
+	ans = strings.TrimSpace(strings.ToLower(ans))
+	if ans != "" && ans != "y" && ans != "yes" {
+		fmt.Println("Dockerfile upgrade skipped")
+		return
+	}
+
+	updated := re.ReplaceAll(data, []byte("github.com/yogasw/wick@"+latest))
+	if err := os.WriteFile(dockerfileName, updated, 0o644); err != nil {
+		fmt.Printf("warning: could not update Dockerfile: %v\n", err)
+		return
+	}
+	fmt.Printf("Dockerfile updated to wick@%s\n", latest)
 }
 
 func installCLI(version string) error {
