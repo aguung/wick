@@ -8,8 +8,11 @@ RUN wick setup
 # --headless drops the systray UI (container has no display) and
 # --target picks up the docker buildx target platform so multi-arch
 # images (linux/amd64, linux/arm64) build without extra config.
-# gate binary is embedded inside app by wick build (assets/gate-<os>-<arch>).
 RUN wick build --headless --target ${TARGETOS}/${TARGETARCH} -o /out/app
+# Rename gate sibling to a stable name — wick build produces <appname>-gate-<os>-<arch>
+# next to the output binary; runtime resolves sibling by exe stem so we name it app-gate.
+RUN gate=$(find /out -maxdepth 1 -name '*-gate-*' | head -1) && \
+    [ -n "$gate" ] && mv "$gate" /out/app-gate || echo "warning: gate binary not found"
 
 # Build gotty for the target platform (cross-compile)
 RUN mkdir -p /out && \
@@ -37,10 +40,11 @@ RUN useradd -m -u 1001 -s /bin/bash app && \
     echo "app ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/app && \
     chmod 440 /etc/sudoers.d/app
 
-COPY --from=build /out/app   /usr/local/bin/app
-COPY --from=build /out/gotty /usr/local/bin/gotty
+COPY --from=build /out/app      /usr/local/bin/app
+COPY --from=build /out/app-gate /usr/local/bin/app-gate
+COPY --from=build /out/gotty    /usr/local/bin/gotty
 
-RUN chmod 555 /usr/local/bin/app /usr/local/bin/gotty
+RUN chmod 555 /usr/local/bin/app /usr/local/bin/app-gate /usr/local/bin/gotty
 
 USER app
 WORKDIR /home/app
