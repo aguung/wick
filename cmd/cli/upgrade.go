@@ -52,10 +52,10 @@ func runUpgrade() error {
 	reader := bufio.NewReader(os.Stdin)
 
 	if binStale || binVersion == "dev" {
-		fmt.Printf("upgrade cli binary %s -> %s? [y/N]: ", binVersion, latest)
+		fmt.Printf("upgrade cli binary %s -> %s? [Y/n]: ", binVersion, latest)
 		ans, _ := reader.ReadString('\n')
 		ans = strings.TrimSpace(strings.ToLower(ans))
-		if ans == "y" || ans == "yes" {
+		if ans == "" || ans == "y" || ans == "yes" {
 			if err := installCLI(latest); err != nil {
 				return err
 			}
@@ -72,10 +72,10 @@ func runUpgrade() error {
 		return nil
 	}
 
-	fmt.Printf("upgrade go.mod dep %s -> %s? [y/N]: ", depVersion, latest)
+	fmt.Printf("upgrade go.mod dep %s -> %s? [Y/n]: ", depVersion, latest)
 	ans, _ := reader.ReadString('\n')
 	ans = strings.TrimSpace(strings.ToLower(ans))
-	if ans != "y" && ans != "yes" {
+	if ans != "" && ans != "y" && ans != "yes" {
 		fmt.Println("dep upgrade skipped")
 		return nil
 	}
