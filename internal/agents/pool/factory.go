@@ -11,6 +11,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/gate"
+	"github.com/yogasw/wick/internal/agents/preset"
 	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/provider/claude"
 	codexpkg "github.com/yogasw/wick/internal/agents/provider/codex"
@@ -88,6 +89,13 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		AgentName: opt.AgentName,
 		RecordRaw: f.RecordRaw,
 	})
+
+	var presetContent string
+	if opt.PresetName != "" {
+		if p, err := preset.Load(f.Layout, opt.PresetName); err == nil {
+			presetContent = p.Body
+		}
+	}
 
 	bypassPerms := false
 	if f.BypassPermissionsLoader != nil {
@@ -233,6 +241,7 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 		OnExit:        onExit,
 		Instance:      &insCopy,
 		GateBinary:    gateBin,
+		Preset:        presetContent,
 	})
 	return BuildResult{Agent: a, State: st, Store: sto, OnStarted: onStarted}, nil
 }

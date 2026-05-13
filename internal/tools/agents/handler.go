@@ -262,6 +262,7 @@ func createSessionQuick(c *tool.Ctx) {
 	_, err := globalMgr.CreateSession(c.Context(), session.CreateOptions{
 		ID:     id,
 		Origin: session.OriginUI,
+		Preset: "default",
 	})
 	if err != nil {
 		c.Error(http.StatusInternalServerError, err.Error())
@@ -396,10 +397,17 @@ func createSession(c *tool.Ctx) {
 		prov = "claude"
 	}
 	id := uuid.New().String()
+	presetName := "default"
+	if ws != "" {
+		if wsData, werr := workspace.Load(globalLayout, ws); werr == nil && wsData.Meta.DefaultPreset != "" {
+			presetName = wsData.Meta.DefaultPreset
+		}
+	}
 	_, err := globalMgr.CreateSession(c.Context(), session.CreateOptions{
 		ID:        id,
 		Workspace: ws,
 		Origin:    session.OriginUI,
+		Preset:    presetName,
 	})
 	if err != nil {
 		log.Ctx(c.Context()).Error().Msgf("create session: %s", err.Error())

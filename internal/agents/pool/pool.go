@@ -133,6 +133,10 @@ type FactoryOptions struct {
 	IdleTimeout   time.Duration
 	KillAfterIdle time.Duration
 	OnEvent       func(event.AgentEvent)
+	// PresetName is the preset name from session meta. Factory resolves
+	// the content from disk — pool passes the name so factory avoids a
+	// redundant session.Load.
+	PresetName string
 }
 
 // queueEntry is one request waiting for a slot.
@@ -322,6 +326,7 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 		ResumeID:     resumeID,
 		IdleTimeout:   p.cfg.IdleTimeout,
 		KillAfterIdle: p.cfg.KillAfterIdle,
+		PresetName:   sess.Meta.Preset,
 	})
 	if err != nil {
 		return err
