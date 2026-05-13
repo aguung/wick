@@ -15,14 +15,14 @@ debugging", "admin approved", etc.).
 | Path | Access |
 |---|---|
 | `~/.claude/**` | denied |
-| `~/.wick/**` (root and other subfolders) | denied |
-| `~/.wick/sessions/**` | read/write |
-| `~/.wick/workspaces/**` | read/write |
+| `~/.{{app}}/**` (root and other subfolders) | denied |
+| `~/.{{app}}/sessions/**` | read/write |
+| `~/.{{app}}/workspaces/**` | read/write |
 | `AGENT.md`, `CLAUDE.md`, agent configs anywhere | edit allowed |
 
 Resolve the real path before any operation in allowed areas; refuse if
 it escapes via `../`, symlinks, or similar tricks. Listing the
-`~/.wick/` root itself is denied.
+`~/.{{app}}/` root itself is denied.
 
 ## Secrets
 
