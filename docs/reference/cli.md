@@ -9,7 +9,7 @@ Wick ships two kinds of commands:
 - **Built-in commands** are hardcoded in the `wick` binary (`init`, `run`, `build`, `server`, `worker`, `skill`, `doctor`, `upgrade`, `version`). They work the same across every project and the behavior is fixed by the installed wick version.
 - **Task shortcuts** (`dev`, `setup`, `test`, `tidy`, `generate`) are thin wrappers that execute the matching task in your project's [`wick.yml`](./wick-yml). You can edit or extend those tasks per project; `wick run <task>` runs any arbitrary task defined there.
 
-Apps built by `wick build` also ship their own subcommand tree (`tray`, `server`, `worker`, `mcp serve / install / uninstall`) — see [Built apps](#built-apps) below.
+Apps built by `wick build` also ship their own subcommand tree (`tray`, `server`, `worker`, `all`, `mcp serve / install / uninstall`) — see [Built apps](#built-apps) below.
 
 Run `wick --help` to print the current list.
 
@@ -258,6 +258,26 @@ Start the HTTP server only. Useful for running on a server, in Docker, or alongs
 ### `<app> worker`
 
 Start the background job worker only. Pair with `server` in a separate process / container when you want to scale them independently.
+
+### `<app> all`
+
+Run the HTTP server **and** the cron scheduler in the same process, sharing one `manager.Service`. Use this for single-node deployments where `server` and `worker` can't share a volume (single-container Docker, simple VPS, etc.) — without a shared filesystem a separate worker pod can't see provider-storage files restored on the API pod, so jobs that touch those files silently no-op.
+
+```bash
+./bin/myapp all
+./bin/myapp all --port 9000
+```
+
+Trade-offs vs. running `server` + `worker` as separate processes:
+
+| Aspect | `all` (single-node) | `server` + `worker` (multi-pod) |
+|---|---|---|
+| Filesystem | One pod, no volume sharing needed | Needs shared volume (or per-pod restore) |
+| Scaling | Vertical only (one process) | Horizontal (scale worker independently) |
+| Cron double-fire | Impossible (one `manager.Service`) | Possible if you accidentally run two workers |
+| Failure isolation | HTTP crash kills cron too | Independent |
+
+The scheduler goroutine auto-respawns with exponential backoff (2s → 30s cap) if it exits unexpectedly. Clean shutdown via `SIGTERM` / Ctrl+C stops both.
 
 ### `<app> mcp serve`
 
