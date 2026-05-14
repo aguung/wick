@@ -755,7 +755,7 @@ func NewServer() *Server {
 	// Home
 	r.Handle("/", http.HandlerFunc(homeHandler.Index))
 
-	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, channelReg: channelReg, db: db, gateBin: resolvedGateBin}
+	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, channelReg: channelReg, db: db, gateBin: resolvedGateBin, jobsSvc: jobsSvc}
 }
 
 type Server struct {
@@ -766,7 +766,14 @@ type Server struct {
 	channelReg *agentchannels.Registry
 	db         *gorm.DB
 	gateBin    string // resolved gate binary path; used for hook cleanup on shutdown
+	jobsSvc    *manager.Service
 }
+
+// JobsSvc returns the manager.Service the API server owns. Exposed so
+// the single-node `lab all` entrypoint can hand it to worker.RunScheduler
+// — both the HTTP handlers and the cron loop then share one Service,
+// avoiding the double-fire race two independent Services would have.
+func (s *Server) JobsSvc() *manager.Service { return s.jobsSvc }
 
 // startChannels starts every configured channel and launches the
 // registry's hot-reload watcher. Replaces the per-channel watchSlack /
