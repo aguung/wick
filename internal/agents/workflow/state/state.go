@@ -24,6 +24,8 @@ type Store interface {
 	AppendEvent(slug, runID string, ev workflow.RunEvent) error
 	ListEvents(slug, runID string) ([]workflow.RunEvent, error)
 	ListRuns(slug string) ([]string, error)
+	IndexAppend(slug string, entry IndexEntry) error
+	IndexList(slug string, page, pageSize int) ([]IndexEntry, bool, error)
 }
 
 // FileStore writes state.json + events.jsonl per run.

@@ -90,14 +90,34 @@ func (r *Router) Unregister(slug string) {
 // Returns an error if the workflow isn't registered with the router
 // (caller should HotReload first).
 func (r *Router) RunNow(ctx context.Context, slug string, evt workflow.Event) error {
+	return r.RunNowWith(ctx, slug, nil, evt)
+}
+
+// RunNowWith is RunNow with an explicit workflow override. Pass a
+// non-nil `w` to execute that exact definition (typically the
+// draft loaded from disk) instead of the published copy registered
+// in Router.defs. The router still owns the per-slug queue + worker
+// machinery — the override only affects which Workflow value the
+// engine receives.
+//
+// When `w` is nil, behaviour is identical to RunNow.
+func (r *Router) RunNowWith(ctx context.Context, slug string, w *workflow.Workflow, evt workflow.Event) error {
 	r.mu.RLock()
-	_, ok := r.defs[slug]
+	_, registered := r.defs[slug]
 	q := r.queues[slug]
 	r.mu.RUnlock()
-	if !ok || q == nil {
+	if q == nil {
+		// No queue means the workflow was never registered AND no
+		// override is enough to spin one up on the fly. Caller should
+		// HotReload first (which builds the queue + worker).
+		return fmt.Errorf("workflow %q has no router queue — register it first", slug)
+	}
+	// If neither override nor registered def exists, refuse — engine
+	// would have nothing to walk.
+	if w == nil && !registered {
 		return fmt.Errorf("workflow %q not registered with router", slug)
 	}
-	return q.Enqueue(WorkItem{Slug: slug, Event: evt})
+	return q.Enqueue(WorkItem{Slug: slug, Event: evt, Workflow: w})
 }
 
 // Dispatch matches an event to all workflows with a fitting trigger
@@ -281,11 +301,20 @@ func (r *Router) runWorker(ctx context.Context, slug string) {
 		if !ok {
 			return
 		}
-		r.mu.RLock()
-		w, defOK := r.defs[slug]
-		r.mu.RUnlock()
-		if !defOK {
-			continue
+		// Pick the workflow the engine should walk: explicit override
+		// (Run Now with a freshly-loaded draft) wins over the
+		// router's registered published copy.
+		var w workflow.Workflow
+		if item.Workflow != nil {
+			w = *item.Workflow
+		} else {
+			r.mu.RLock()
+			reg, defOK := r.defs[slug]
+			r.mu.RUnlock()
+			if !defOK {
+				continue
+			}
+			w = reg
 		}
 		st, err := r.engine.Run(ctx, w, item.Event)
 		if item.Done != nil {

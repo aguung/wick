@@ -7,71 +7,360 @@ import (
 	wf "github.com/yogasw/wick/internal/agents/workflow"
 )
 
-// TestTriggerFanoutRoundtrip locks in the bug fix where multiple
-// trigger → node edges drawn on the canvas survived save + reload.
-// Before the fix, only the entry node kept its trigger edge — every
-// other fan-out target lost its line on refresh.
-func TestTriggerFanoutRoundtrip(t *testing.T) {
-	// Drawflow payload: trigger fans out to two regular nodes.
-	body := `{
-	  "drawflow":{"Home":{"data":{
-	    "1":{"id":1,"name":"__trigger__","class":"node-trigger","html":"",
-	         "data":{"id":"__trigger__","type":"trigger","data":{"kind":"manual"}},
-	         "pos_x":100,"pos_y":50,
-	         "inputs":{},
-	         "outputs":{"output_1":{"connections":[
-	             {"node":"2","output":"input_1"},
-	             {"node":"3","output":"input_1"}
-	         ]}}},
-	    "2":{"id":2,"name":"alpha","class":"node-shell","html":"",
-	         "data":{"id":"alpha","type":"shell","data":{"command":["echo","a"]}},
-	         "pos_x":300,"pos_y":80,
-	         "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
-	         "outputs":{"output_1":{"connections":[]}}},
-	    "3":{"id":3,"name":"beta","class":"node-shell","html":"",
-	         "data":{"id":"beta","type":"shell","data":{"command":["echo","b"]}},
-	         "pos_x":300,"pos_y":260,
-	         "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
-	         "outputs":{"output_1":{"connections":[]}}}
-	  }}}}`
+// ── Per-trigger routing (canvas → workflow.Triggers) ──────────────
+//
+// Each trigger NODE on the canvas owns its own outgoing line and
+// translates to one entry in workflow.Triggers with its own
+// Trigger.EntryNode. Engine.pickEntry picks the right chain by
+// matching evt.Type to Trigger.Type, so:
+//   - manual fire → uses the manual-trigger's EntryNode
+//   - slack inbound → uses the channel-trigger's EntryNode
+//   - cron tick → uses the cron-trigger's EntryNode
+//   - … all independent of each other.
+//
+// Tests below cover every shape we expect the codec to produce.
 
+// findTriggerByType returns the first trigger of the given type in
+// the workflow, or nil if none exists. Helper for table tests.
+func findTriggerByType(w wf.Workflow, t wf.TriggerType) *wf.Trigger {
+	for i := range w.Triggers {
+		if w.Triggers[i].Type == t {
+			return &w.Triggers[i]
+		}
+	}
+	return nil
+}
+
+// TestMultiTriggerEachFiresOwnChain — the user's mental model:
+// canvas has a Slack trigger wired to `agent` AND a webhook trigger
+// wired to `http`. Each fires its own chain.
+func TestMultiTriggerEachFiresOwnChain(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger-channel","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-channel","type":"trigger","data":{"triggerKind":"channel"}},
+	       "pos_x":0,"pos_y":0,
+	       "inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"3","output":"input_1"}]}}},
+	  "2":{"id":2,"name":"trigger-webhook","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-webhook","type":"trigger","data":{"triggerKind":"webhook"}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"4","output":"input_1"}]}}},
+	  "3":{"id":3,"name":"agent","class":"node-agent","html":"",
+	       "data":{"id":"agent","type":"agent","data":{"prompt":"go"}},
+	       "pos_x":0,"pos_y":200,
+	       "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
+	       "outputs":{"output_1":{"connections":[]}}},
+	  "4":{"id":4,"name":"http","class":"node-http","html":"",
+	       "data":{"id":"http","type":"http","data":{"url":"x","method":"GET"}},
+	       "pos_x":200,"pos_y":200,
+	       "inputs":{"input_1":{"connections":[{"node":"2","input":"output_1"}]}},
+	       "outputs":{"output_1":{"connections":[]}}}
+	}}}}`
 	w, err := drawflowJSONToWorkflow("t", body)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-
-	// Codec stores the fan-out targets under _canvas.trigger_edges.
-	tedges := triggerTargetsFromCanvas(w)
-	if len(tedges) != 2 {
-		t.Fatalf("expected 2 trigger fan-out targets, got %d (%v)", len(tedges), tedges)
+	if len(w.Triggers) != 2 {
+		t.Fatalf("expected 2 triggers, got %d: %+v", len(w.Triggers), w.Triggers)
 	}
-	has := map[string]bool{}
-	for _, n := range tedges {
-		has[n] = true
+	ch := findTriggerByType(w, wf.TriggerChannel)
+	if ch == nil || ch.EntryNode != "agent" {
+		t.Errorf("channel trigger should fire agent; got %+v", ch)
 	}
-	if !has["alpha"] || !has["beta"] {
-		t.Errorf("trigger fan-out missing target: %v", tedges)
+	wh := findTriggerByType(w, wf.TriggerWebhook)
+	if wh == nil || wh.EntryNode != "http" {
+		t.Errorf("webhook trigger should fire http; got %+v", wh)
 	}
-
-	// Round-trip back to Drawflow JSON and confirm the phantom
-	// trigger still emits two outgoing connections.
-	out, err := workflowToDrawflowJSON(w)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
+	// triggerHasEntry per type: manual should be refused (no manual
+	// trigger on the canvas), the wired types accepted.
+	if triggerHasEntry(w, wf.TriggerManual) {
+		t.Errorf("manual run should be refused — no manual trigger node on canvas")
 	}
-	if !strings.Contains(out, `"alpha"`) || !strings.Contains(out, `"beta"`) {
-		t.Errorf("round-trip output missing target node names: %s", out)
+	if !triggerHasEntry(w, wf.TriggerChannel) {
+		t.Errorf("channel inbound should be accepted — trigger is wired to agent")
+	}
+	if !triggerHasEntry(w, wf.TriggerWebhook) {
+		t.Errorf("webhook inbound should be accepted — trigger is wired to http")
 	}
 }
 
-// TestTriggerEdgesNotInGraphEdges — the trigger fan-out lives in
-// _canvas.trigger_edges, never in Graph.Edges. The engine routes from
+// TestTriggerDeletedFromCanvas — user deletes the entire trigger
+// node on the canvas. After save, workflow.Triggers must NOT carry
+// the deleted entry forward (canvas is source of truth for which
+// triggers exist) and Run Now must be refused.
+func TestTriggerDeletedFromCanvas(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "2":{"id":2,"name":"agent","class":"node-agent","html":"",
+	       "data":{"id":"agent","type":"agent","data":{"prompt":"hi"}},
+	       "pos_x":0,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[]}},
+	       "outputs":{"output_1":{"connections":[]}}},
+	  "3":{"id":3,"name":"http","class":"node-http","html":"",
+	       "data":{"id":"http","type":"http","data":{"url":"x"}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[]}},
+	       "outputs":{"output_1":{"connections":[]}}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("t", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Codec emits a default manual trigger when canvas has no
+	// trigger nodes at all so workflow.Triggers stays non-empty,
+	// but that fallback trigger has NO EntryNode — Run Now must
+	// refuse.
+	if triggerHasEntry(w, wf.TriggerManual) {
+		t.Errorf("manual run should be refused: canvas has no wired trigger")
+	}
+	if w.Graph.Entry != "" {
+		t.Errorf("graph.entry should be empty, got %q", w.Graph.Entry)
+	}
+}
+
+// TestTriggerWithNoOutgoing — canvas has a manual trigger node but
+// no outgoing line. Run Now must be refused (trigger exists but
+// fires nothing).
+func TestTriggerWithNoOutgoing(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger-manual","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-manual","type":"trigger","data":{"triggerKind":"manual"}},
+	       "pos_x":0,"pos_y":0,
+	       "inputs":{},
+	       "outputs":{"output_1":{"connections":[]}}},
+	  "2":{"id":2,"name":"agent","class":"node-agent","html":"",
+	       "data":{"id":"agent","type":"agent","data":{"prompt":"hi"}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[]}},
+	       "outputs":{"output_1":{"connections":[]}}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("t", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	manual := findTriggerByType(w, wf.TriggerManual)
+	if manual == nil {
+		t.Fatalf("expected manual trigger entry, got: %+v", w.Triggers)
+	}
+	if manual.EntryNode != "" {
+		t.Errorf("manual trigger has dangling EntryNode %q — should be empty", manual.EntryNode)
+	}
+	if triggerHasEntry(w, wf.TriggerManual) {
+		t.Errorf("manual run should be refused: trigger has no outgoing line")
+	}
+}
+
+// TestPerTriggerRoundtrip — encode then decode a workflow with two
+// triggers and verify the canvas IDs + entries survive. Locks in
+// the merge contract: Trigger.ID round-trips so save handler can
+// fold prev's metadata back in by ID.
+func TestPerTriggerRoundtrip(t *testing.T) {
+	in := wf.Workflow{
+		Slug:    "t",
+		Version: 1,
+		Triggers: []wf.Trigger{
+			{ID: "trigger-channel", Type: wf.TriggerChannel, ChannelName: "slack", EntryNode: "agent"},
+			{ID: "trigger-webhook", Type: wf.TriggerWebhook, Path: "/x", EntryNode: "http"},
+		},
+		Graph: wf.Graph{
+			Entry: "agent",
+			Nodes: []wf.Node{
+				{ID: "agent", Type: wf.NodeAgent, Prompt: "go"},
+				{ID: "http", Type: wf.NodeHTTP, URL: "https://example.com", Method: "GET"},
+			},
+		},
+	}
+	body, err := workflowToDrawflowJSON(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !strings.Contains(body, `"trigger-channel"`) || !strings.Contains(body, `"trigger-webhook"`) {
+		t.Fatalf("encoded body missing trigger phantom IDs: %s", body)
+	}
+	out, err := drawflowJSONToWorkflow("t", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Triggers) != 2 {
+		t.Fatalf("expected 2 triggers after round-trip, got %d: %+v", len(out.Triggers), out.Triggers)
+	}
+	for _, src := range in.Triggers {
+		match := false
+		for _, got := range out.Triggers {
+			if got.ID == src.ID && got.Type == src.Type && got.EntryNode == src.EntryNode {
+				match = true
+				break
+			}
+		}
+		if !match {
+			t.Errorf("trigger %s lost in round-trip; got %+v", src.ID, out.Triggers)
+		}
+	}
+}
+
+// TestMergeTriggersPreservesPrevMetadata — the save handler folds
+// per-trigger config (channel name, schedule, …) from the prior
+// draft into the canvas-derived list using Trigger.ID. Canvas
+// owns Type + EntryNode; prev owns everything else.
+func TestMergeTriggersPreservesPrevMetadata(t *testing.T) {
+	canvas := []wf.Trigger{
+		{ID: "trigger-channel", Type: wf.TriggerChannel, EntryNode: "agent"},
+	}
+	prev := []wf.Trigger{
+		{ID: "trigger-channel", Type: wf.TriggerChannel, ChannelName: "slack",
+			Event: "message", DedupTTLSec: 60, EntryNode: "old-target"},
+	}
+	got := mergeTriggers(canvas, prev)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(got))
+	}
+	tr := got[0]
+	if tr.ChannelName != "slack" || tr.Event != "message" || tr.DedupTTLSec != 60 {
+		t.Errorf("prev metadata lost: %+v", tr)
+	}
+	if tr.EntryNode != "agent" {
+		t.Errorf("canvas EntryNode should win; got %q", tr.EntryNode)
+	}
+}
+
+// TestMergeTriggersDropsRemovedFromCanvas — user removes a trigger
+// on the canvas; prev still had it on disk. mergeTriggers must
+// honour the canvas as source of truth and drop the removed entry.
+func TestMergeTriggersDropsRemovedFromCanvas(t *testing.T) {
+	canvas := []wf.Trigger{
+		{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "x"},
+	}
+	prev := []wf.Trigger{
+		{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "x"},
+		{ID: "trigger-cron", Type: wf.TriggerCron, Schedule: "0 0 * * *", EntryNode: "y"},
+	}
+	got := mergeTriggers(canvas, prev)
+	if len(got) != 1 || got[0].ID != "trigger-manual" {
+		t.Errorf("cron trigger should be dropped (no canvas counterpart); got %+v", got)
+	}
+}
+
+// TestPickTriggerByID — the picker is the contract between the
+// Execute workflow menu and the engine. UI sends trigger_id; server
+// must resolve it (or refuse explicitly) so multi-trigger workflows
+// route correctly. Covered shapes:
+//
+//   - empty id + zero triggers → error (no trigger to fire)
+//   - empty id + one trigger   → that one wins (legacy single-trigger
+//                                YAML keeps the no-arg behaviour)
+//   - empty id + many triggers → error (UI must show picker)
+//   - explicit id matches      → that one wins regardless of order
+//   - explicit id missing      → error (stale UI reference)
+func TestPickTriggerByID(t *testing.T) {
+	cases := []struct {
+		name     string
+		triggers []wf.Trigger
+		askID    string
+		wantID   string
+		wantErr  bool
+	}{
+		{
+			name:    "no triggers — refuse",
+			wantErr: true,
+		},
+		{
+			name:     "empty id, one trigger — pick it",
+			triggers: []wf.Trigger{{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "x"}},
+			wantID:   "trigger-manual",
+		},
+		{
+			name: "empty id, many triggers — refuse",
+			triggers: []wf.Trigger{
+				{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "x"},
+				{ID: "trigger-cron", Type: wf.TriggerCron, EntryNode: "y"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "explicit id matches",
+			triggers: []wf.Trigger{
+				{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "x"},
+				{ID: "trigger-cron", Type: wf.TriggerCron, EntryNode: "y"},
+			},
+			askID:  "trigger-cron",
+			wantID: "trigger-cron",
+		},
+		{
+			name:     "explicit id missing — refuse",
+			triggers: []wf.Trigger{{ID: "trigger-manual", Type: wf.TriggerManual}},
+			askID:    "trigger-cron",
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := wf.Workflow{Triggers: tc.triggers}
+			got, err := pickTriggerByID(w, tc.askID)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (resolved to %+v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.ID != tc.wantID {
+				t.Errorf("picked %q, want %q", got.ID, tc.wantID)
+			}
+		})
+	}
+}
+
+// TestDraftEntryWinsOverStalePublished — locks in the fix for the
+// production repro: YAML draft says `triggers[0].entry_node: http`,
+// but the Router's registered copy is the published version with
+// `entry: agent`. Run Now must walk the DRAFT, not the registered
+// copy.
+//
+// The runWorkflowNow handler passes the loaded draft to MCP as an
+// explicit `RunNowWith` override; the router worker prefers
+// `item.Workflow` over `defs[slug]`. This test asserts the data
+// layer of that flow: the helpers Run Now relies on resolve from
+// the workflow value supplied, not from any stale lookup.
+func TestDraftEntryWinsOverStalePublished(t *testing.T) {
+	draft := wf.Workflow{
+		Slug: "t",
+		Triggers: []wf.Trigger{
+			{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "http"},
+		},
+		Graph: wf.Graph{
+			Entry: "http",
+			Nodes: []wf.Node{
+				{ID: "agent", Type: wf.NodeAgent},
+				{ID: "http", Type: wf.NodeHTTP},
+			},
+		},
+	}
+	if !triggerHasEntry(draft, wf.TriggerManual) {
+		t.Fatalf("draft should accept manual run — wired to http")
+	}
+	if got := pickGraphEntry(draft); got != "http" {
+		t.Errorf("draft pickGraphEntry = %q, want %q", got, "http")
+	}
+	stale := draft
+	stale.Triggers = []wf.Trigger{
+		{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "agent"},
+	}
+	stale.Graph.Entry = "agent"
+	if got := pickGraphEntry(stale); got != "agent" {
+		t.Errorf("stale pickGraphEntry = %q, want %q", got, "agent")
+	}
+}
+
+// TestTriggerNodesNotInGraphEdges — trigger nodes are visual-only,
+// they must NEVER leak into Graph.Edges. The engine routes from
 // workflow.Triggers + Graph.Entry, so polluting Graph.Edges with
 // trigger sources would break the validator.
-func TestTriggerEdgesNotInGraphEdges(t *testing.T) {
+func TestTriggerNodesNotInGraphEdges(t *testing.T) {
 	body := `{"drawflow":{"Home":{"data":{
-	  "1":{"id":1,"name":"__trigger__","class":"node-trigger","html":"",
-	       "data":{"id":"__trigger__","type":"trigger","data":{"kind":"manual"}},
+	  "1":{"id":1,"name":"trigger-manual","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-manual","type":"trigger","data":{"triggerKind":"manual"}},
 	       "pos_x":0,"pos_y":0,
 	       "inputs":{},
 	       "outputs":{"output_1":{"connections":[{"node":"2","output":"input_1"}]}}},
@@ -86,7 +375,7 @@ func TestTriggerEdgesNotInGraphEdges(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	for _, e := range w.Graph.Edges {
-		if e.From == "__trigger__" {
+		if strings.HasPrefix(e.From, "trigger-") {
 			t.Errorf("trigger edge leaked into Graph.Edges: %+v", e)
 		}
 	}
@@ -276,3 +565,4 @@ func TestCanvasPositionsRoundtrip(t *testing.T) {
 		t.Errorf("position lost: %+v", got)
 	}
 }
+

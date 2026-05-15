@@ -282,7 +282,15 @@ type DatasetBinding struct {
 
 // Trigger is one polymorphic trigger entry. Fields are a flat union
 // like Node — the validator gates each field to its Type.
+//
+// ID is the stable canvas identifier (e.g. "trigger-manual",
+// "trigger-cron-2"). The codec uses it to merge per-trigger
+// metadata (channel name, schedule, …) across save cycles so the
+// canvas can re-wire EntryNode without losing the config the user
+// typed in the inspector. Optional in YAML — workflows hand-edited
+// without canvas can omit it.
 type Trigger struct {
+	ID        string      `yaml:"id,omitempty"`
 	Type      TriggerType `yaml:"type"`
 	EntryNode string      `yaml:"entry_node,omitempty"`
 

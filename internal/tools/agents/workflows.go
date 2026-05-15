@@ -3,7 +3,9 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,9 +13,11 @@ import (
 	"github.com/rs/zerolog/log"
 
 	wf "github.com/yogasw/wick/internal/agents/workflow"
+	"github.com/yogasw/wick/internal/agents/workflow/engine"
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/agents/workflow/parse"
 	"github.com/yogasw/wick/internal/agents/workflow/setup"
+	"github.com/yogasw/wick/internal/pkg/config"
 	wfview "github.com/yogasw/wick/internal/tools/agents/view/workflow"
 	"github.com/yogasw/wick/pkg/tool"
 )
@@ -22,6 +26,97 @@ import (
 // workflow run events. The editor JS subscribes to /stream?session=<key>
 // to receive per-node progress without polling.
 func WorkflowSSESession(slug string) string { return "wf:" + slug }
+
+// triggerHasEntry reports whether the named trigger type has a
+// destination node wired up so the engine can actually start.
+//
+// Canvas-driven workflows (any Trigger has an ID set, meaning the
+// codec produced this list) use strict per-trigger rules:
+//   - found a matching trigger with EntryNode set → true
+//   - everything else → false
+//
+// Legacy YAML (no Trigger.ID anywhere) falls back to the global
+// `graph.entry` so hand-edited files still run. Once the canvas
+// rewrites the workflow, that legacy path drops away naturally.
+func triggerHasEntry(w wf.Workflow, t wf.TriggerType) bool {
+	canvasDriven := false
+	for _, tr := range w.Triggers {
+		if tr.ID != "" {
+			canvasDriven = true
+			break
+		}
+	}
+	for _, tr := range w.Triggers {
+		if tr.Type != t {
+			continue
+		}
+		if tr.EntryNode != "" {
+			return true
+		}
+	}
+	if canvasDriven {
+		return false
+	}
+	return w.Graph.Entry != ""
+}
+
+// pickTriggerByID resolves the user-chosen trigger to fire. When
+// `id` is non-empty it must match a Trigger.ID exactly — required
+// for canvas-driven workflows where multiple triggers (manual,
+// slack, cron, …) coexist and the engine has no way to guess.
+//
+// As a last-ditch fallback for legacy YAML that has exactly one
+// trigger and no Trigger.ID set, an empty id returns that trigger
+// so hand-edited single-trigger workflows still fire from the UI.
+func pickTriggerByID(w wf.Workflow, id string) (*wf.Trigger, error) {
+	if id != "" {
+		for i := range w.Triggers {
+			if w.Triggers[i].ID == id {
+				return &w.Triggers[i], nil
+			}
+		}
+		return nil, fmt.Errorf("trigger %q not found on canvas", id)
+	}
+	if len(w.Triggers) == 0 {
+		return nil, fmt.Errorf("no trigger on canvas — drag a trigger from the palette first")
+	}
+	if len(w.Triggers) > 1 {
+		return nil, fmt.Errorf("multiple triggers on canvas — pick one from the Execute workflow menu")
+	}
+	return &w.Triggers[0], nil
+}
+
+// mergeTriggers folds prev's per-trigger metadata (channel name,
+// schedule, webhook path, …) into the canvas-derived list. The
+// canvas owns: ID, Type, EntryNode, position. prev owns: all
+// other config fields the inspector lets the user edit.
+//
+// Match key is Trigger.ID; new triggers added on the canvas keep
+// their codec-defaulted shape (just Type + EntryNode), prev
+// triggers without a canvas counterpart are dropped — the canvas
+// is the source of truth for which triggers exist.
+func mergeTriggers(canvas, prev []wf.Trigger) []wf.Trigger {
+	byID := make(map[string]wf.Trigger, len(prev))
+	for _, p := range prev {
+		if p.ID != "" {
+			byID[p.ID] = p
+		}
+	}
+	out := make([]wf.Trigger, 0, len(canvas))
+	for _, c := range canvas {
+		if p, ok := byID[c.ID]; ok {
+			// Overlay canvas-owned fields onto prev so the user's
+			// inspector edits (Schedule, ChannelName, Match, …) survive.
+			p.ID = c.ID
+			p.Type = c.Type
+			p.EntryNode = c.EntryNode
+			out = append(out, p)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 // WorkflowEventHook builds an engine.OnEvent callback that fans
 // workflow run events out to the SSE broadcaster. Marshals the
@@ -129,7 +224,16 @@ func workflowEditor(c *tool.Ctx) {
 		graphJSON = "{}"
 	}
 	report := globalWorkflowMgr.Guard.Review(c.Context(), w)
-	runs, _ := globalWorkflowMgr.MCP.GetRuns(slug, 20)
+	// Runs panel pagination — `?runs_page=N` (1-based). 100 per page
+	// matches the index shard cap so each page request reads exactly
+	// one shard file.
+	page := 1
+	if v := strings.TrimSpace(c.Query("runs_page")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	runs, hasMore, _ := globalWorkflowMgr.MCP.GetRunSummaries(slug, page, 100)
 	approved := false
 	if st, err := globalWorkflowMgr.Service.LoadState(slug); err == nil {
 		approved = st.Approved
@@ -162,6 +266,8 @@ func workflowEditor(c *tool.Ctx) {
 		GuardReport:    &report,
 		NodeTypes:      globalWorkflowMgr.MCP.NodeTypes(),
 		Runs:           runs,
+		RunsPage:       page,
+		RunsHasMore:    hasMore,
 	}))
 }
 
@@ -176,21 +282,23 @@ func saveWorkflow(c *tool.Ctx) {
 		saveResponse(c, http.StatusBadRequest, "invalid graph payload: "+err.Error(), nil)
 		return
 	}
-	// Carry forward triggers + entry from disk — the canvas only edits
-	// nodes + edges, so refreshing the trigger list each save would
-	// drop user-configured cron/channel/webhook bindings. Use draft
-	// state so iterative trigger edits land in the same draft.
+	// Carry forward metadata from disk that the canvas doesn't model
+	// (name, env, on_error, …). For triggers, the canvas now drives
+	// the shape: each canvas trigger node maps to one Trigger entry.
+	// Merge per-trigger config (channel name, schedule, webhook
+	// path, …) from prev by Trigger.ID so the canvas can re-wire
+	// EntryNode without losing the inspector-typed settings.
+	//
+	// Codec's empty graph.entry is now intentional ("trigger not
+	// wired anywhere"); don't paper over it with the prev value.
 	if prev, err := globalWorkflowMgr.Service.LoadDraft(slug); err == nil {
-		w.Triggers = prev.Triggers
+		w.Triggers = mergeTriggers(w.Triggers, prev.Triggers)
 		w.Enabled = prev.Enabled
 		w.Name = prev.Name
 		w.Description = prev.Description
 		w.Env = prev.Env
 		w.Datasets = prev.Datasets
 		w.OnError = prev.OnError
-		if w.Graph.Entry == "" {
-			w.Graph.Entry = prev.Graph.Entry
-		}
 	}
 	// Validation is non-blocking on save — the canvas is allowed to
 	// be in a half-built state. We still run Validate so the response
@@ -368,6 +476,20 @@ func runWorkflowNow(c *tool.Ctx) {
 		c.NotFound()
 		return
 	}
+	// The UI's Execute workflow picker passes which trigger to
+	// fire. Required for canvas-driven workflows (multi-trigger
+	// support) — without it we'd have to guess, which broke when
+	// the user wanted Slack-only runs but we defaulted to manual.
+	triggerID := strings.TrimSpace(c.Form("trigger_id"))
+	chosen, err := pickTriggerByID(w, triggerID)
+	if err != nil {
+		runResponse(c, http.StatusBadRequest, "", err.Error())
+		return
+	}
+	if chosen.EntryNode == "" {
+		runResponse(c, http.StatusBadRequest, "", "trigger \""+chosen.ID+"\" is not wired to any node. Drag a line from the trigger to the node you want to start at.")
+		return
+	}
 	// Validation gates Run Now: a half-built draft would crash the
 	// engine partway through. Save itself stays non-blocking so the
 	// canvas can be in an unfinished state — only the actions that
@@ -389,13 +511,44 @@ func runWorkflowNow(c *tool.Ctx) {
 	// payload (falls back to its own IDGen when absent), so the
 	// browser can subscribe to the SSE stream in time to catch the
 	// very first node_started event.
-	runID := uuid.NewString()
+	//
+	// Format matches engine.NewRunID (`<utc-timestamp>-<uuid>`) so
+	// the runs/ directory listing sorts chronologically without an
+	// extra state.json read per row in the Runs panel.
+	runID := engine.NewRunID()
+	// Carry request_id across the queue boundary. The HTTP request
+	// ctx dies as soon as we return, but the worker goroutine that
+	// drains the queue lives forever — without this hop, engine
+	// logs lose the request_id from the HTTP middleware.
+	reqID, _ := c.Context().Value(config.RequestIDKey).(string)
 	evt := wf.Event{
-		Type:    string(wf.TriggerManual),
-		At:      time.Now().UTC(),
-		Payload: map[string]any{"run_id": runID, "source": "ui"},
+		Type: string(chosen.Type),
+		At:   time.Now().UTC(),
+		Payload: map[string]any{
+			"run_id":     runID,
+			"source":     "ui",
+			"request_id": reqID,
+			"trigger_id": chosen.ID,
+		},
 	}
-	if err := globalWorkflowMgr.MCP.RunNow(c.Context(), slug, evt); err != nil {
+	// Bookend log: the engine will fire its own "workflow event"
+	// lines with the same wf_run_id, so an operator searching by
+	// either request_id (HTTP middleware) or wf_run_id (engine)
+	// gets the complete trace from click → enqueue → run finish.
+	log.Ctx(c.Context()).Info().
+		Str("component", "wf").
+		Str("wf_slug", slug).
+		Str("wf_run_id", runID).
+		Str("wf_event", "run_enqueue").
+		Msg("workflow run enqueued from UI")
+	// Pass the draft as an explicit override so the run uses the
+	// canvas-fresh wiring (e.g. trigger → http after the user just
+	// rewired). Without this, the engine walks Router's registered
+	// PUBLISHED workflow.yaml and the rewire is invisible until the
+	// user clicks Publish — exactly the bug repro: YAML draft says
+	// `entry: http`, click Run Now, agent runs because router still
+	// holds the old published copy.
+	if err := globalWorkflowMgr.MCP.RunNowWith(c.Context(), slug, &w, evt); err != nil {
 		runResponse(c, http.StatusInternalServerError, "", err.Error())
 		return
 	}

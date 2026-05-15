@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/workflow"
@@ -38,6 +40,14 @@ type Engine struct {
 	OnEvent    func(slug, runID string, ev workflow.RunEvent)
 }
 
+// NewRunID returns a fresh run id. Plain UUID — chronological
+// ordering for the Runs panel comes from the sharded index file
+// (`runs/index/<date>-<seq>.jsonl`), so the per-run dir name
+// doesn't need to encode time anymore.
+func NewRunID() string {
+	return uuid.NewString()
+}
+
 // New builds a bare engine — no executors registered. Caller must
 // Register at least the node types the workflow uses.
 func New(layout config.Layout, svc service.Service, ss state.Store) *Engine {
@@ -47,7 +57,7 @@ func New(layout config.Layout, svc service.Service, ss state.Store) *Engine {
 		StateStore: ss,
 		Executors:  map[workflow.NodeType]workflow.Executor{},
 		Now:        func() time.Time { return time.Now().UTC() },
-		IDGen:      uuid.NewString,
+		IDGen:      NewRunID,
 	}
 }
 
@@ -64,9 +74,35 @@ func (e *Engine) SetEventHook(fn func(slug, runID string, ev workflow.RunEvent))
 }
 
 // emit persists the event then fires the broadcast hook. Centralised
-// so every event call site picks up SSE for free.
-func (e *Engine) emit(slug, runID string, ev workflow.RunEvent) {
+// so every event call site picks up SSE for free. Also emits a
+// structured zerolog line via the request-scoped logger
+// (zerolog.Ctx(ctx)) so request_id from the HTTP middleware
+// auto-correlates engine output back to the originating request —
+// operators can grep `wf_run_id=<id>` or `request_id=<id>` and pull
+// the same trace from either side. The request_id is read off the
+// per-run context the engine builds in Run() (Engine.Run derives a
+// ctx with request_id set from evt.Payload["request_id"] so the
+// queue-worker goroutine — whose own ctx outlives the HTTP request
+// — still logs with the right correlation id).
+//
+// The whole RunEvent.Data (input on _started, output on _completed,
+// error on _failed) is included after truncation so the grep target
+// has the payload, not just an opaque event name.
+func (e *Engine) emit(ctx context.Context, slug, runID string, ev workflow.RunEvent) {
 	_ = e.StateStore.AppendEvent(slug, runID, ev)
+	lg := log.Ctx(ctx)
+	logEvent := lg.Info()
+	if ev.Event == workflow.EventNodeFailed || ev.Event == workflow.EventWorkflowFailed {
+		logEvent = lg.Warn()
+	}
+	logEvent.
+		Str("component", "wf").
+		Str("wf_slug", slug).
+		Str("wf_run_id", runID).
+		Str("wf_node", ev.Node).
+		Str("wf_event", ev.Event).
+		Interface("data", truncateForEvent(ev.Data)).
+		Msg("workflow event")
 	if e.OnEvent != nil {
 		e.OnEvent(slug, runID, ev)
 	}
@@ -83,6 +119,30 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	if runID == "" {
 		runID = e.IDGen()
 	}
+	// Build the per-run logger.
+	//
+	// Default base = the global &log.Logger (whatever sink wick
+	// boot configured — stdout, file, whatever). This guarantees
+	// engine output shows up no matter who triggered the run
+	// (HTTP click, cron tick, channel inbound, MCP RPC).
+	//
+	// If the originating ctx already carries a scoped logger (HTTP
+	// middleware injects one with request_id), prefer it so parent
+	// fields propagate. log.Ctx returns zerolog's disabled
+	// placeholder when ctx has nothing — we ignore that case and
+	// stick with the global, otherwise every line gets swallowed.
+	base := &log.Logger
+	if l := log.Ctx(ctx); l.GetLevel() != zerolog.Disabled {
+		base = l
+	}
+	reqID, _ := evt.Payload["request_id"].(string)
+	lg := base.With().
+		Str("wf_slug", w.Slug).
+		Str("wf_run_id", runID)
+	if reqID != "" {
+		lg = lg.Str("request_id", reqID)
+	}
+	ctx = lg.Logger().WithContext(ctx)
 	entry := pickEntry(w, evt)
 	st := workflow.RunState{
 		RunID:      runID,
@@ -110,10 +170,29 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 		RunID:       runID,
 		NodeOutputs: map[string]workflow.NodeOutput{},
 	}
-	startEv := workflow.RunEvent{Event: workflow.EventWorkflowStarted, Data: map[string]any{"trigger": evt.Type}}
+	// Log which runID source we used so any future mismatch between
+	// the UI-issued ID and the engine's effective ID is grep-able.
+	idSource := "payload"
+	if _, ok := evt.Payload["run_id"].(string); !ok {
+		idSource = "generated"
+	}
+	startEv := workflow.RunEvent{
+		Event: workflow.EventWorkflowStarted,
+		Data:  map[string]any{"trigger": evt.Type, "id_source": idSource},
+	}
 	if err := e.StateStore.AppendEvent(w.Slug, runID, startEv); err != nil {
 		return st, err
 	}
+	// Funnel through emit so the started event lands in both the
+	// SSE stream and zerolog (with request_id from ctx) — same path
+	// every other event takes.
+	log.Ctx(ctx).Info().
+		Str("component", "wf").
+		Str("wf_slug", w.Slug).
+		Str("wf_run_id", runID).
+		Str("wf_event", workflow.EventWorkflowStarted).
+		Str("wf_id_source", idSource).
+		Msg("workflow run enqueued in engine")
 	if e.OnEvent != nil {
 		e.OnEvent(w.Slug, runID, startEv)
 	}
@@ -134,10 +213,10 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 		if st.Error == nil {
 			st.Error = &workflow.NodeError{Message: err.Error()}
 		}
-		e.emit(w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowFailed, Data: map[string]any{"error": err.Error()}})
+		e.emit(ctx, w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowFailed, Data: map[string]any{"error": err.Error()}})
 	} else {
 		st.Status = workflow.StatusSuccess
-		e.emit(w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowCompleted})
+		e.emit(ctx, w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowCompleted})
 	}
 	end := e.Now()
 	st.EndedAt = &end
@@ -145,6 +224,25 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	st.Current = nil
 	if err := e.StateStore.Save(w.Slug, runID, st); err != nil {
 		return st, err
+	}
+	// Persist a one-line summary to the sharded index file. The Runs
+	// panel reads from this index instead of scanning every run dir
+	// on disk, so listings stay constant-time as history grows. Log
+	// the failure (warn) so a broken index doesn't hide silently;
+	// don't return the error — the run itself already finished, and
+	// missing index rows are a UX degradation, not a data loss.
+	if ierr := e.StateStore.IndexAppend(w.Slug, state.IndexEntry{
+		ID:         runID,
+		Status:     st.Status,
+		StartedAt:  st.StartedAt,
+		EndedAt:    st.EndedAt,
+		DurationMs: end.Sub(st.StartedAt).Milliseconds(),
+	}); ierr != nil {
+		log.Ctx(ctx).Warn().Err(ierr).
+			Str("component", "wf").
+			Str("wf_slug", w.Slug).
+			Str("wf_run_id", runID).
+			Msg("index append failed; Runs panel may drop this run")
 	}
 	return st, err
 }
@@ -178,9 +276,9 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			started := e.Now()
 			out, err := runMerge(n, rc)
 			if err != nil {
-				return e.failNode(w.Slug, st, n, err)
+				return e.failNode(ctx, w.Slug, st, n, err)
 			}
-			e.recordSuccess(w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+			e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 			queue = append(queue, e.nextNodes(w, n, out)...)
 			continue
 		}
@@ -189,9 +287,9 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			started := e.Now()
 			out, err := e.runParallel(ctx, w, n, rc)
 			if err != nil {
-				return e.failNode(w.Slug, st, n, err)
+				return e.failNode(ctx, w.Slug, st, n, err)
 			}
-			e.recordSuccess(w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+			e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 			queue = append(queue, e.nextNodes(w, n, out)...)
 			continue
 		}
@@ -205,7 +303,7 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			}
 			return handled
 		}
-		e.recordSuccess(w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+		e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 		queue = append(queue, e.nextNodes(w, n, out)...)
 	}
 	return nil
@@ -228,7 +326,14 @@ func (e *Engine) runOne(ctx context.Context, n workflow.Node, rc *workflow.RunCo
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		e.emit(rc.Workflow.Slug, rc.RunID, workflow.RunEvent{Event: workflow.EventNodeStarted, Node: n.ID, Data: map[string]any{"type": string(n.Type)}})
+		e.emit(ctx, rc.Workflow.Slug, rc.RunID, workflow.RunEvent{
+			Event: workflow.EventNodeStarted,
+			Node:  n.ID,
+			Data: map[string]any{
+				"type":  string(n.Type),
+				"input": truncateForEvent(parentOutputs(rc, n)),
+			},
+		})
 		out, err := exec.Execute(ctx, n, rc)
 		if err == nil {
 			return out, nil
@@ -245,13 +350,13 @@ func (e *Engine) runOne(ctx context.Context, n workflow.Node, rc *workflow.RunCo
 	return workflow.NodeOutput{}, lastErr
 }
 
-func (e *Engine) recordSuccess(slug string, st *workflow.RunState, rc *workflow.RunContext, n workflow.Node, out workflow.NodeOutput, latencyMs int64) {
+func (e *Engine) recordSuccess(ctx context.Context, slug string, st *workflow.RunState, rc *workflow.RunContext, n workflow.Node, out workflow.NodeOutput, latencyMs int64) {
 	rc.NodeOutputs[n.ID] = out
 	rc.Outputs[n.ID] = nodeOutputAsMap(out)
 	st.Completed = append(st.Completed, n.ID)
 	st.Outputs = rc.Outputs
 	st.UpdatedAt = e.Now()
-	e.emit(slug, st.RunID, workflow.RunEvent{
+	e.emit(ctx, slug, st.RunID, workflow.RunEvent{
 		Event: workflow.EventNodeCompleted,
 		Node:  n.ID,
 		Data: map[string]any{
@@ -263,11 +368,11 @@ func (e *Engine) recordSuccess(slug string, st *workflow.RunState, rc *workflow.
 	_ = e.StateStore.Save(slug, st.RunID, *st)
 }
 
-func (e *Engine) failNode(slug string, st *workflow.RunState, n workflow.Node, err error) error {
+func (e *Engine) failNode(ctx context.Context, slug string, st *workflow.RunState, n workflow.Node, err error) error {
 	st.Failed = append(st.Failed, n.ID)
 	st.Error = &workflow.NodeError{Node: n.ID, Type: string(n.Type), Message: err.Error()}
 	st.UpdatedAt = e.Now()
-	e.emit(slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error()}})
+	e.emit(ctx, slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error()}})
 	_ = e.StateStore.Save(slug, st.RunID, *st)
 	return &workflow.ExecError{Node: n.ID, Type: n.Type, Wrapped: err}
 }
@@ -279,22 +384,22 @@ func (e *Engine) applyOnFailure(ctx context.Context, w workflow.Workflow, st *wo
 	}
 	switch policy {
 	case workflow.FailHalt:
-		return e.failNode(w.Slug, st, n, err)
+		return e.failNode(ctx, w.Slug, st, n, err)
 	case workflow.FailSkip:
 		st.Skipped = append(st.Skipped, n.ID)
-		e.emit(w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeSkipped, Node: n.ID, Data: map[string]any{"reason": err.Error()}})
+		e.emit(ctx, w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeSkipped, Node: n.ID, Data: map[string]any{"reason": err.Error()}})
 		return nil
 	case workflow.FailFallback:
 		if n.Fallback == "" {
-			return e.failNode(w.Slug, st, n, fmt.Errorf("on_failure=fallback but fallback is empty: %w", err))
+			return e.failNode(ctx, w.Slug, st, n, fmt.Errorf("on_failure=fallback but fallback is empty: %w", err))
 		}
 		st.Failed = append(st.Failed, n.ID)
-		e.emit(w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error(), "fallback": n.Fallback}})
+		e.emit(ctx, w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error(), "fallback": n.Fallback}})
 		_ = e.StateStore.Save(w.Slug, st.RunID, *st)
 		st.Current = append(st.Current, n.Fallback)
 		return nil
 	}
-	return e.failNode(w.Slug, st, n, err)
+	return e.failNode(ctx, w.Slug, st, n, err)
 }
 
 func (e *Engine) nextNodes(w workflow.Workflow, n workflow.Node, out workflow.NodeOutput) []string {
@@ -447,6 +552,34 @@ func indexNodes(g workflow.Graph) map[string]workflow.Node {
 		m[n.ID] = n
 	}
 	return m
+}
+
+// parentOutputs returns the map of upstream NodeOutputs that feed
+// node `n` — used for the "input" field on the node_started log
+// line so operators can grep the request payload by run_id even
+// when state.json is purged. For merge nodes the explicit Inputs
+// list wins; otherwise we walk graph edges. Returns whatever has
+// already completed (empty when the node sits at the trigger
+// boundary).
+func parentOutputs(rc *workflow.RunContext, n workflow.Node) map[string]any {
+	out := map[string]any{}
+	if len(n.Inputs) > 0 {
+		for _, p := range n.Inputs {
+			if v, ok := rc.Outputs[p]; ok {
+				out[p] = v
+			}
+		}
+		return out
+	}
+	for _, ed := range rc.Workflow.Graph.Edges {
+		if ed.To != n.ID {
+			continue
+		}
+		if v, ok := rc.Outputs[ed.From]; ok {
+			out[ed.From] = v
+		}
+	}
+	return out
 }
 
 func containsStr(xs []string, s string) bool {

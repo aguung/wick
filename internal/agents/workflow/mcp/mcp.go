@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/yogasw/wick/internal/agents/workflow"
 	"github.com/yogasw/wick/internal/agents/workflow/canvas"
@@ -261,13 +262,22 @@ func (m *Ops) Simulate(ctx context.Context, slug string, evt workflow.Event) (wo
 // workflow from the UI Run-Now button. Compare with Router.Dispatch
 // which is the trigger-source path.
 func (m *Ops) RunNow(ctx context.Context, slug string, evt workflow.Event) error {
+	return m.RunNowWith(ctx, slug, nil, evt)
+}
+
+// RunNowWith fires a single run with an explicit Workflow override.
+// The UI uses this so Run Now executes the freshly-saved DRAFT
+// (workflow.draft.yaml) without waiting for Publish — router's
+// registered copy stays on the published version so cron / channel
+// / webhook triggers keep firing live.
+func (m *Ops) RunNowWith(ctx context.Context, slug string, w *workflow.Workflow, evt workflow.Event) error {
 	if m.Router == nil {
 		return fmt.Errorf("router not configured")
 	}
 	if evt.Type == "" {
 		evt.Type = string(workflow.TriggerManual)
 	}
-	return m.Router.RunNow(ctx, slug, evt)
+	return m.Router.RunNowWith(ctx, slug, w, evt)
 }
 
 // GetRuns returns recent run IDs for a slug.
@@ -283,6 +293,39 @@ func (m *Ops) GetRuns(slug string, limit int) ([]string, error) {
 		runs = runs[:limit]
 	}
 	return runs, nil
+}
+
+// RunSummary is the lightweight row the editor's Runs panel shows —
+// ID + started timestamp + status. Loaded eagerly because the panel
+// only displays the most recent N runs (default 20) and one
+// state.json read per run is cheap.
+type RunSummary struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+}
+
+// GetRunSummaries returns one page of recent runs, newest first.
+// Reads from the sharded index (`runs/index/<date>-<seq>.jsonl`)
+// instead of scanning the per-run subdirs, so the cost stays
+// constant whether the workflow has 10 or 100,000 historical runs.
+// hasMore=true when older pages exist.
+func (m *Ops) GetRunSummaries(slug string, page, pageSize int) ([]RunSummary, bool, error) {
+	entries, hasMore, err := m.StateStore.IndexList(slug, page, pageSize)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]RunSummary, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, RunSummary{
+			ID:        e.ID,
+			Status:    e.Status,
+			StartedAt: e.StartedAt,
+			EndedAt:   e.EndedAt,
+		})
+	}
+	return out, hasMore, nil
 }
 
 // Summary is the row shape for `workflow_list`.

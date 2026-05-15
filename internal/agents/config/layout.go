@@ -54,6 +54,13 @@ func (l Layout) WorkflowRunState(slug, runID string) string {
 func (l Layout) WorkflowRunEvents(slug, runID string) string {
 	return filepath.Join(l.WorkflowRunDir(slug, runID), "events.jsonl")
 }
+// WorkflowIndexDir holds the sharded run-summary index files
+// (YYYY-MM-DD-NN.jsonl, max 100 lines each) — sibling to runs/.
+// Lets the Runs panel paginate cheaply without scanning every
+// per-run subdir.
+func (l Layout) WorkflowIndexDir(slug string) string {
+	return filepath.Join(l.WorkflowRunsDir(slug), "index")
+}
 func (l Layout) WorkflowEnvFile(slug string) string {
 	return filepath.Join(l.WorkflowDir(slug), "env.yaml")
 }

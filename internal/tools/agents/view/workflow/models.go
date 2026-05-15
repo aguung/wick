@@ -32,7 +32,9 @@ type EditorVM struct {
 	Approved    bool
 	GuardReport *guard.Report
 	NodeTypes   []mcp.NodeTypeInfo
-	Runs        []string
+	Runs        []mcp.RunSummary
+	RunsPage    int  // current 1-based page rendered in the Runs panel
+	RunsHasMore bool // older pages still exist
 }
 
 // RunVM carries the run-detail page payload.

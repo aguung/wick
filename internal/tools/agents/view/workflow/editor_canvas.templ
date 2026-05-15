@@ -21,13 +21,18 @@ templ EditorCanvas(vm EditorVM) {
 			<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
 		</button>
 		<div id="wf-canvas"></div>
-		// Floating "Execute workflow" pill at the canvas bottom — n8n
-		// pattern: keeps the run trigger reachable from anywhere in the
-		// graph without scrolling up to the toolbar. Mirrors the toolbar
-		// Run Now form's submit handler (no duplicate logic).
-		<button type="button" id="wf-execute-pill" class="wf-execute-pill" title="Run the full workflow (Ctrl+Enter)">
-			<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/></svg>
-			Execute workflow
-		</button>
+		// Floating "Execute workflow" pill at the canvas bottom. Acts
+		// as a launcher that opens a trigger picker — the user must
+		// choose which wired trigger to fire (manual, slack, cron, …)
+		// so multi-trigger workflows route correctly. With no wired
+		// trigger the pill stays disabled and explains why.
+		<div id="wf-execute-host" class="wf-execute-host">
+			<button type="button" id="wf-execute-pill" class="wf-execute-pill" title="Pick a trigger to fire">
+				<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/></svg>
+				Execute workflow
+				<span class="wf-execute-caret">▾</span>
+			</button>
+			<div id="wf-execute-menu" class="wf-execute-menu hidden" role="menu" aria-label="Pick trigger to fire"></div>
+		</div>
 	</div>
 }

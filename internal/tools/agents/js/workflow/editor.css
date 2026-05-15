@@ -566,13 +566,15 @@
   color: #f1f5f9;
 }
 
-/* ── Floating Execute workflow pill ──────────────────────────── */
-.wf-execute-pill {
+/* ── Floating Execute workflow pill + trigger picker ─────────── */
+.wf-execute-host {
   position: absolute;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 4;
+}
+.wf-execute-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -588,11 +590,89 @@
   transition: background 0.15s, transform 0.1s;
 }
 .wf-execute-pill:hover { background: #dc2626; }
-.wf-execute-pill:active { transform: translateX(-50%) translateY(1px); }
+.wf-execute-pill:active { transform: translateY(1px); }
 .wf-execute-pill[data-state="running"] {
   background: #f59e0b;
   cursor: progress;
 }
+.wf-execute-pill[data-state="disabled"] {
+  background: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.wf-execute-caret { font-size: 10px; opacity: 0.85; }
+
+/* Picker menu — pops upward so it doesn't fall off the canvas
+   bottom edge. Anchored above the pill via bottom: 100%. */
+.wf-execute-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 240px;
+  max-width: 360px;
+  background: #ffffff;
+  border: 1px solid #e0dccf;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wf-execute-menu.hidden { display: none; }
+.dark .wf-execute-menu {
+  background: #0f172a;
+  border-color: #1f2937;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+.wf-execute-menu-header {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+  padding: 6px 10px 4px;
+}
+.dark .wf-execute-menu-header { color: #94a3b8; }
+.wf-execute-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.wf-execute-menu-item:hover { background: rgba(239, 68, 68, 0.08); }
+.dark .wf-execute-menu-item:hover { background: rgba(239, 68, 68, 0.18); }
+.wf-execute-menu-item[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.wf-execute-menu-item[disabled]:hover { background: transparent; }
+.wf-execute-menu-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.wf-execute-menu-meta {
+  font-size: 11px;
+  color: #6b7280;
+}
+.dark .wf-execute-menu-meta { color: #94a3b8; }
+.wf-execute-menu-empty {
+  padding: 12px 10px;
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+}
+.dark .wf-execute-menu-empty { color: #94a3b8; }
 
 /* ── Bottom logs panel rows ─────────────────────────────────────
  * Theme-aware: light defaults; `.dark` ancestor flips palette so
@@ -654,3 +734,69 @@
   overflow-y: auto;
 }
 .dark .wf-log-body { background: #0f172a; color: #f1f5f9; }
+
+/* ── Runs panel rows ──────────────────────────────────────────── */
+.wf-run-row {
+  border: 1px solid #e0dccf;
+  border-radius: 4px;
+  background: #ffffff;
+}
+.dark .wf-run-row { border-color: rgba(156, 163, 175, 0.25); background: rgba(255,255,255,0.04); }
+.wf-run-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: inherit;
+}
+.wf-run-head:hover { background: rgba(0,0,0,0.04); }
+.dark .wf-run-head:hover { background: rgba(255,255,255,0.04); }
+.wf-run-status {
+  display: inline-block;
+  min-width: 64px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.wf-run-status-success  { background: #10b98122; color: #047857; }
+.wf-run-status-failed   { background: #ef444422; color: #b91c1c; }
+.wf-run-status-running  { background: #f59e0b22; color: #b45309; }
+.wf-run-status-queued   { background: #6b728022; color: #4b5563; }
+.wf-run-status-unknown  { background: #6b728022; color: #4b5563; }
+.dark .wf-run-status-success  { color: #34d399; }
+.dark .wf-run-status-failed   { color: #f87171; }
+.dark .wf-run-status-running  { color: #fbbf24; }
+.dark .wf-run-status-queued,
+.dark .wf-run-status-unknown  { color: #9ca3af; }
+.wf-run-time {
+  font-family: monospace;
+  color: #1f2937;
+}
+.dark .wf-run-time { color: #f1f5f9; }
+.wf-run-dur {
+  margin-left: auto;
+  font-family: monospace;
+  font-size: 10px;
+  color: #6b7280;
+}
+.dark .wf-run-dur { color: #94a3b8; }
+.wf-run-dur:empty { display: none; }
+.wf-run-detail {
+  padding: 4px 8px 8px;
+  border-top: 1px dashed #e0dccf;
+  background: #faf8f3;
+}
+.dark .wf-run-detail {
+  border-top-color: rgba(156, 163, 175, 0.15);
+  background: rgba(255,255,255,0.02);
+}

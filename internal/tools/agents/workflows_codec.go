@@ -146,35 +146,36 @@ func workflowToDrawflowJSON(w wf.Workflow) (string, error) {
 	nameToNumeric := map[string]int{}
 	nextID := 1
 
-	// Phantom trigger node — visual only, not part of w.Graph.Nodes.
-	// Connects out to the entry node so users see the trigger source
-	// in the editor without conflating triggers with graph nodes.
-	if entry := pickGraphEntry(w); entry != "" && len(w.Triggers) > 0 {
-		tr := w.Triggers[0]
+	// One phantom node per trigger — each renders with its own
+	// canvas ID (Trigger.ID) so the codec can identify it again on
+	// the next save. The user can wire each phantom independently:
+	// manual → http, slack → agent, cron → end. Engine.pickEntry
+	// picks the right chain by matching evt.Type to Trigger.Type.
+	for i, tr := range w.Triggers {
+		id := triggerNodeID(tr, i)
 		hint := triggerHint(tr)
-		// Anchor trigger inside the canvas (positive x) so it isn't
-		// clipped by Drawflow's container. Auto-layout shifts other
-		// nodes right via the i*260 offset below.
-		x, y := 40.0, 80.0
-		if p, ok := positions["__trigger__"]; ok {
+		x, y := 40.0+float64(i)*220, 80.0
+		if p, ok := positions[id]; ok {
 			x, y = p[0], p[1]
 		}
 		nodes[strconv.Itoa(nextID)] = drawflowNode{
 			ID:    nextID,
-			Name:  "__trigger__",
+			Name:  id,
 			Class: "node-trigger",
 			HTML:  drawflowHTML("trigger", string(tr.Type), hint),
 			Data: map[string]any{
-				"id":   "__trigger__",
+				"id":   id,
 				"type": "trigger",
-				"data": map[string]any{"kind": string(tr.Type)},
+				"data": map[string]any{
+					"triggerKind": string(tr.Type),
+				},
 			},
 			PosX:    x,
 			PosY:    y,
 			Inputs:  drawflowPorts(0, "input"),
 			Outputs: drawflowPorts(1, "output"),
 		}
-		nameToNumeric["__trigger__"] = nextID
+		nameToNumeric[id] = nextID
 		nextID++
 	}
 
@@ -202,37 +203,35 @@ func workflowToDrawflowJSON(w wf.Workflow) (string, error) {
 		}
 	}
 
-	// Wire trigger → target edges. Primary source is the canvas
-	// metadata `_canvas.trigger_edges` (every fan-out the user drew);
-	// falls back to a single entry-node edge for workflows that have
-	// no canvas state yet (freshly scaffolded or hand-edited yaml).
-	trigNum, hasTrig := nameToNumeric["__trigger__"]
-	if hasTrig {
-		targets := triggerTargetsFromCanvas(w)
-		if len(targets) == 0 {
-			if entry := pickGraphEntry(w); entry != "" {
-				targets = []string{entry}
-			}
+	// Wire each trigger phantom to its declared EntryNode. Per-
+	// trigger routing — manual → X, slack → Y, cron → Z — no flat
+	// "_canvas.trigger_edges" list any more.
+	for i, tr := range w.Triggers {
+		if tr.EntryNode == "" {
+			continue
+		}
+		trigID := triggerNodeID(tr, i)
+		trigNum, ok := nameToNumeric[trigID]
+		if !ok {
+			continue
+		}
+		toNum, ok := nameToNumeric[tr.EntryNode]
+		if !ok {
+			continue
 		}
 		trigKey := strconv.Itoa(trigNum)
-		for _, name := range targets {
-			toNum, ok := nameToNumeric[name]
-			if !ok {
-				continue
-			}
-			toKey := strconv.Itoa(toNum)
-			t := nodes[trigKey]
-			out := t.Outputs["output_1"]
-			out.Connections = append(out.Connections, drawflowConn{Node: toKey, Output: "input_1"})
-			t.Outputs["output_1"] = out
-			nodes[trigKey] = t
+		toKey := strconv.Itoa(toNum)
+		t := nodes[trigKey]
+		out := t.Outputs["output_1"]
+		out.Connections = append(out.Connections, drawflowConn{Node: toKey, Output: "input_1"})
+		t.Outputs["output_1"] = out
+		nodes[trigKey] = t
 
-			e := nodes[toKey]
-			in := e.Inputs["input_1"]
-			in.Connections = append(in.Connections, drawflowConn{Node: trigKey, Input: "output_1"})
-			e.Inputs["input_1"] = in
-			nodes[toKey] = e
-		}
+		e := nodes[toKey]
+		in := e.Inputs["input_1"]
+		in.Connections = append(in.Connections, drawflowConn{Node: trigKey, Input: "output_1"})
+		e.Inputs["input_1"] = in
+		nodes[toKey] = e
 	}
 	// Wire edges into the per-node inputs/outputs maps.
 	for _, e := range w.Graph.Edges {
@@ -332,6 +331,11 @@ func triggerHint(tr wf.Trigger) string {
 // fans out to, captured during save under `_canvas.trigger_edges`.
 // Returns nil when the workflow predates this metadata; callers fall
 // back to the single Graph.Entry node.
+//
+// Deprecated: legacy reader for workflows saved before per-trigger
+// routing. New saves emit one Trigger per canvas trigger node with
+// the EntryNode set directly. Kept so a one-time migration can
+// surface old fan-out data if needed.
 func triggerTargetsFromCanvas(w wf.Workflow) []string {
 	if w.Canvas == nil {
 		return nil
@@ -437,31 +441,33 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 	}
 
 	edges := []wf.Edge{}
-	// trigger fan-out edges: stored separately under `_canvas.trigger_edges`
-	// so the visual graph survives round-trip. The engine doesn't use
-	// them (it only routes from workflow.Triggers + Graph.Entry), but
-	// the canvas codec re-renders them on load.
-	triggerEdges := []map[string]any{}
+	// Collect every canvas trigger node + the node it fans out to.
+	// Each trigger node owns its own routing — the engine uses
+	// `Trigger.EntryNode` (matched by event type) to start the run,
+	// so canvases can model "Slack fires chain A, cron fires chain
+	// B" naturally.
+	canvasTriggers := []canvasTrigger{}
 	for _, i := range ids {
 		dn := nodes[strconv.Itoa(i)]
 		fromName := dn.Name
-		// trigger nodes only emit; the engine has no `trigger` node type
-		// in its graph. Their connections are captured as canvas
-		// metadata so the visual round-trips on reload — without this
-		// every output beyond the first one disappeared after save.
 		isTriggerSrc := false
 		if t, ok := dn.Data["type"].(string); ok && t == "trigger" {
 			isTriggerSrc = true
 		}
 		if isTriggerSrc {
+			ct := canvasTrigger{NodeID: dn.Name, Kind: triggerKindFromNode(dn)}
+			// First outgoing connection becomes this trigger's entry.
+			// Multiple outgoing edges aren't used yet — the canvas
+			// allows them, the engine still runs one chain per fire.
 			for _, port := range dn.Outputs {
 				for _, c := range port.Connections {
 					toIdx, _ := strconv.Atoi(c.Node)
-					if toName, ok := numericToName[toIdx]; ok {
-						triggerEdges = append(triggerEdges, map[string]any{"to": toName})
+					if toName, ok := numericToName[toIdx]; ok && ct.EntryNode == "" {
+						ct.EntryNode = toName
 					}
 				}
 			}
+			canvasTriggers = append(canvasTriggers, ct)
 			continue
 		}
 		for portKey, port := range dn.Outputs {
@@ -481,23 +487,113 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 		}
 	}
 
+	// Build the wf.Triggers list from the canvas trigger nodes. Each
+	// canvas node becomes one Trigger entry; metadata (schedule,
+	// channel name, …) is filled in later by the save handler from
+	// the prev draft using Trigger.ID as the merge key.
+	triggers := make([]wf.Trigger, 0, len(canvasTriggers))
+	for _, ct := range canvasTriggers {
+		triggers = append(triggers, wf.Trigger{
+			ID:        ct.NodeID,
+			Type:      triggerTypeFromKind(ct.Kind),
+			EntryNode: ct.EntryNode,
+		})
+	}
+	// Legacy fallback: workflows that predate per-trigger routing
+	// expect a non-empty workflow.Triggers list. Keep emitting a
+	// manual trigger when the canvas is empty so the editor doesn't
+	// brick on first open. Triggers with no entry will still be
+	// blocked by triggerHasEntry at Run Now time.
+	if len(triggers) == 0 {
+		triggers = []wf.Trigger{{Type: wf.TriggerManual, Label: "Run"}}
+	}
+
+	// graph.entry: pick the first trigger's EntryNode so legacy
+	// engine paths (no Trigger.EntryNode match) still resolve.
+	entry := ""
+	for _, t := range triggers {
+		if t.EntryNode != "" {
+			entry = t.EntryNode
+			break
+		}
+	}
+
 	w := wf.Workflow{
-		Slug:    slug,
-		Version: 1,
-		Name:    slug,
-		Enabled: true,
-		Triggers: []wf.Trigger{{Type: wf.TriggerManual, Label: "Run"}},
+		Slug:     slug,
+		Version:  1,
+		Name:     slug,
+		Enabled:  true,
+		Triggers: triggers,
 		Graph: wf.Graph{
-			Entry: pickEntryNode(wfNodes, edges),
+			Entry: entry,
 			Nodes: wfNodes,
 			Edges: edges,
 		},
 		Canvas: map[string]any{
-			"positions":     positions,
-			"trigger_edges": triggerEdges,
+			"positions": positions,
 		},
 	}
 	return w, nil
+}
+
+// canvasTrigger holds one trigger node's identity + wiring as seen
+// on the canvas. Intermediate type used during decode before we
+// build the YAML-shape wf.Trigger.
+type canvasTrigger struct {
+	NodeID    string
+	Kind      string
+	EntryNode string
+}
+
+// triggerNodeID returns the canvas node id used to render a Trigger
+// as a phantom node. Prefers the persisted Trigger.ID (round-tripped
+// from prior saves); falls back to `trigger-<type>-<idx>` so legacy
+// YAML without IDs still gets stable, collision-free names when
+// re-emitted to the canvas.
+func triggerNodeID(tr wf.Trigger, idx int) string {
+	if tr.ID != "" {
+		return tr.ID
+	}
+	t := string(tr.Type)
+	if t == "" {
+		t = "manual"
+	}
+	if idx == 0 {
+		return "trigger-" + t
+	}
+	return fmt.Sprintf("trigger-%s-%d", t, idx+1)
+}
+
+// triggerKindFromNode pulls the `triggerKind` field out of a
+// Drawflow trigger node's data block. Defaults to "manual" — the
+// canonical no-config trigger — so a freshly dragged trigger node
+// still resolves to a meaningful wf.TriggerType.
+func triggerKindFromNode(dn drawflowNode) string {
+	inner, _ := dn.Data["data"].(map[string]any)
+	if inner != nil {
+		if k, ok := inner["triggerKind"].(string); ok && k != "" {
+			return k
+		}
+	}
+	return "manual"
+}
+
+// triggerTypeFromKind maps the canvas `triggerKind` to the engine's
+// wf.TriggerType enum.
+func triggerTypeFromKind(kind string) wf.TriggerType {
+	switch kind {
+	case "cron":
+		return wf.TriggerCron
+	case "channel":
+		return wf.TriggerChannel
+	case "webhook":
+		return wf.TriggerWebhook
+	case "error":
+		return wf.TriggerError
+	case "schedule_at":
+		return wf.TriggerScheduleAt
+	}
+	return wf.TriggerManual
 }
 
 func workflowNodeFromDrawflow(dn drawflowNode) wf.Node {
@@ -568,21 +664,6 @@ func caseFromOutput(portKey string, src drawflowNode, _ map[string]drawflowNode)
 	return ""
 }
 
-func pickEntryNode(nodes []wf.Node, edges []wf.Edge) string {
-	hasIn := map[string]bool{}
-	for _, e := range edges {
-		hasIn[e.To] = true
-	}
-	for _, n := range nodes {
-		if !hasIn[n.ID] {
-			return n.ID
-		}
-	}
-	if len(nodes) > 0 {
-		return nodes[0].ID
-	}
-	return ""
-}
 
 func stringSliceFromAny(v any) []string {
 	if s, ok := v.([]any); ok {

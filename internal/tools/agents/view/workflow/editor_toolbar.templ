@@ -46,9 +46,10 @@ templ EditorToolbar(vm EditorVM) {
 				</button>
 			</form>
 
-			<form method="POST" action={ templ.SafeURL(vm.Base + "/workflows/edit/" + vm.Slug + "/run") } class="inline" id="wf-run-form" title="Live test current draft (or published if no draft)">
-				<button type="submit" id="wf-run-btn" class="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white-100 hover:bg-amber-600 active:bg-amber-700 transition-colors">Run Now</button>
-			</form>
+			// Run trigger lives on the canvas (Execute workflow pill) —
+			// it picks which trigger to fire when more than one is
+			// wired. The toolbar only keeps Save + Publish here so
+			// "what fires now" is anchored visually next to the graph.
 
 			<form method="POST" action={ templ.SafeURL(vm.Base + "/workflows/edit/" + vm.Slug + "/save") } class="inline" id="save-form">
 				<input type="hidden" name="body" id="save-body"/>

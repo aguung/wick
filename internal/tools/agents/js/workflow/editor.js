@@ -1165,6 +1165,18 @@
     if (runsTab) runsTab.click();
   });
 
+  // Runs panel — click a row to reveal the full run ID + status
+  // detail. The list itself is server-rendered with timestamps; the
+  // detail line stays hidden until clicked so the panel doesn't
+  // overwhelm the user with UUIDs.
+  document.addEventListener('click', (e) => {
+    const head = e.target.closest('[data-run-toggle]');
+    if (!head) return;
+    const row = head.closest('.wf-run-row');
+    if (!row) return;
+    row.querySelector('.wf-run-detail')?.classList.toggle('hidden');
+  });
+
   // ── Run progress: flush-then-run + SSE per-node painting ─────
   // The server-side handler returns 202 {run_id} immediately after
   // enqueue (engine reads run_id from the Event payload so the
@@ -1174,8 +1186,10 @@
   //   2) POST /run with Accept: application/json, expect 202 {run_id}
   //   3) open EventSource on /stream?session=wf:<slug>, paint events
   //   4) close stream on workflow_completed | workflow_failed
-  const runForm = document.getElementById('wf-run-form');
-  const runBtn = document.getElementById('wf-run-btn');
+  // Execute workflow pill — the run trigger lives on the canvas
+  // floating button. `wf-execute-pill` opens a picker; the actual
+  // run kick-off happens in startWorkflowRun() below.
+  const runBtn = document.getElementById('wf-execute-pill');
   const logsList = document.getElementById('wf-logs-list');
   const logsEmpty = document.getElementById('wf-logs-empty');
   const logsCounter = document.getElementById('wf-logs-counter');
@@ -1313,16 +1327,118 @@
     }
     if (ev.event === 'node_failed' && domID) setNodeBadge(domID, 'failed');
     if (ev.event === 'node_skipped' && domID) setNodeBadge(domID, 'skipped');
-    if (ev.event === 'workflow_completed' || ev.event === 'workflow_failed') finishRun(ev.event === 'workflow_completed');
+    if (ev.event === 'workflow_completed' || ev.event === 'workflow_failed') {
+      finishRun(ev.event === 'workflow_completed');
+      // Fetch the final state for the run that just finished and
+      // prepend a fresh row to the Runs panel so the count + ordering
+      // tracks reality without forcing the user to reload the page.
+      prependRunRow(ev.run_id);
+    }
+  }
+
+  // prependRunRow fetches /runs/<id>/state and pushes a new row at
+  // the top of the Runs list. Status badge + timestamp + duration
+  // mirror the server-side template so the panel looks consistent
+  // whether the row came from initial page load or a live append.
+  async function prependRunRow(rid) {
+    if (!rid) return;
+    // Only prepend when the user is viewing page 1 — otherwise the
+    // row would interleave into an older page and break the sort.
+    // Page 1 is the default; the URL only carries `runs_page` when
+    // navigating older pages.
+    const params = new URLSearchParams(window.location.search);
+    const page = parseInt(params.get('runs_page') || '1', 10);
+    if (page > 1) return;
+    try {
+      const resp = await fetch(`${baseURL}/edit/${slug}/runs/${rid}/state`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!resp.ok) return;
+      const body = await resp.json();
+      const st = body.state;
+      if (!st) return;
+      let list = document.getElementById('wf-runs-list');
+      const tab = document.querySelector('[data-bottom-tab="runs"]');
+      // First run on a workflow renders "No runs yet" placeholder
+      // instead of the <ul>. Swap the placeholder for an empty list
+      // we can prepend into.
+      if (!list) {
+        const panel = document.querySelector('[data-bottom-panel="runs"]');
+        if (panel) {
+          panel.innerHTML = '<ul class="space-y-1 text-xs" id="wf-runs-list"></ul>';
+          list = document.getElementById('wf-runs-list');
+        }
+        if (!list) {
+          if (tab) tab.textContent = `Runs (1) `;
+          return;
+        }
+      }
+      // Skip if a row for this id is already there (shouldn't happen
+      // but cheap to guard).
+      if (list.querySelector(`[data-run-id="${rid}"]`)) return;
+      const li = document.createElement('li');
+      li.className = 'wf-run-row';
+      li.dataset.runId = rid;
+      const started = st.started_at ? new Date(st.started_at) : null;
+      const ended = st.ended_at ? new Date(st.ended_at) : null;
+      const status = st.status || 'unknown';
+      const tsLabel = started
+        ? started.toLocaleString('sv-SE', { hour12: false }).replace('T', ' ')
+        : '—';
+      const dur = (started && ended) ? formatDur(ended - started) : '';
+      li.innerHTML = `
+        <button type="button" class="wf-run-head" data-run-toggle>
+          <span class="wf-run-status wf-run-status-${escapeAttr(status)}">${escapeHTML(status)}</span>
+          <span class="wf-run-time">${escapeHTML(tsLabel)}</span>
+          <span class="wf-run-dur">${escapeHTML(dur)}</span>
+        </button>
+        <div class="wf-run-detail hidden">
+          <div class="font-mono text-[11px] text-black-700 dark:text-black-600 break-all">${escapeHTML(rid)}</div>
+          <a href="${baseURL}/edit/${slug}/runs/${rid}" class="mt-1 inline-block text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300">Open run detail →</a>
+        </div>`;
+      list.insertBefore(li, list.firstChild);
+      // Bump the tab counter — pull the integer out of the existing
+      // "Runs (N)" label and increment.
+      if (tab) {
+        const m = tab.textContent.match(/Runs \((\d+)\)/);
+        const next = m ? parseInt(m[1], 10) + 1 : list.children.length;
+        tab.firstChild.nodeValue = `Runs (${next}) `;
+      }
+    } catch (_) {
+      // Silent — Runs panel staleness is non-fatal; user can reload
+      // the page to recover.
+    }
+  }
+
+  function formatDur(ms) {
+    if (ms < 1000) return `${ms}ms`;
+    const s = Math.floor(ms / 1000);
+    return `${s}s`;
+  }
+
+  function setPillState(state, label) {
+    if (!runBtn) return;
+    runBtn.dataset.state = state;
+    runBtn.disabled = state === 'running' || state === 'disabled';
+    const caret = runBtn.querySelector('.wf-execute-caret');
+    runBtn.textContent = '';
+    const icon = document.createElement('span');
+    icon.innerHTML = state === 'running'
+      ? '⟳ '
+      : '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/></svg>';
+    runBtn.appendChild(icon);
+    runBtn.appendChild(document.createTextNode(label));
+    if (caret && state !== 'running') {
+      const c = document.createElement('span');
+      c.className = 'wf-execute-caret';
+      c.textContent = '▾';
+      runBtn.appendChild(c);
+    }
   }
 
   function finishRun(ok) {
     if (runEventSource) { try { runEventSource.close(); } catch (_) {} runEventSource = null; }
-    if (runBtn) {
-      runBtn.dataset.state = 'idle';
-      runBtn.disabled = false;
-      runBtn.textContent = 'Run Now';
-    }
+    setPillState('idle', 'Execute workflow');
     const ms = Date.now() - runStarted;
     setStatus(ok ? 'ok' : 'error', ok ? `✓ Run completed in ${ms}ms` : `✕ Run failed (${ms}ms)`);
   }
@@ -1335,13 +1451,12 @@
     }
   }
 
-  runForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    if (runBtn) {
-      runBtn.dataset.state = 'running';
-      runBtn.disabled = true;
-      runBtn.textContent = '⟳ Running…';
-    }
+  // startWorkflowRun fires one trigger from the canvas. Caller must
+  // pass a Drawflow trigger node — its data carries the kind +
+  // outgoing wiring needed to drive the server-side run handler.
+  async function startWorkflowRun(triggerNode) {
+    if (!triggerNode) return;
+    setPillState('running', 'Running…');
     setStatus('saving', '⟳ Saving + running…');
     clearNodeBadges();
     logsByNode = {};
@@ -1353,16 +1468,18 @@
     runStarted = Date.now();
     await flushAutosave();
     try {
+      const tid = (triggerNode.data && triggerNode.data.id) || triggerNode.name;
       const resp = await fetch(`${baseURL}/edit/${slug}/run`, {
         method: 'POST',
-        headers: { 'Accept': 'application/json' },
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ trigger_id: tid }).toString(),
       });
       let data = null;
       try { data = await resp.json(); } catch (_) {}
       if (!resp.ok || !data || !data.ok) {
         const msg = (data && data.error) || `HTTP ${resp.status}`;
         setStatus('error', `✕ Run rejected: ${msg}`);
-        if (runBtn) { runBtn.disabled = false; runBtn.dataset.state = 'idle'; runBtn.textContent = 'Run Now'; }
+        setPillState('idle', 'Execute workflow');
         return;
       }
       currentRunID = data.run_id;
@@ -1370,8 +1487,88 @@
       startRunStream(currentRunID);
     } catch (err) {
       setStatus('error', `✕ Run failed: ${err.message || err}`);
-      if (runBtn) { runBtn.disabled = false; runBtn.dataset.state = 'idle'; runBtn.textContent = 'Run Now'; }
+      setPillState('idle', 'Execute workflow');
     }
+  }
+
+  // ── Trigger picker menu ──────────────────────────────────────
+  const executeMenu = document.getElementById('wf-execute-menu');
+
+  function listCanvasTriggers() {
+    const live = editor.drawflow.drawflow.Home.data;
+    const out = [];
+    for (const k in live) {
+      const n = live[k];
+      if (!n || !n.data) continue;
+      if (n.data.type !== 'trigger') continue;
+      const inner = n.data.data || {};
+      const kind = inner.triggerKind || 'manual';
+      // Find first outgoing connection target node id (data.id).
+      let target = '';
+      const outs = n.outputs || {};
+      const slot = outs.output_1;
+      const conns = (slot && slot.connections) || [];
+      if (conns.length > 0) {
+        const child = live[conns[0].node];
+        if (child && child.data) target = child.data.id || child.name;
+      }
+      out.push({ node: n, id: n.data.id || n.name, kind, target });
+    }
+    return out;
+  }
+
+  function renderExecuteMenu() {
+    if (!executeMenu) return;
+    const trigs = listCanvasTriggers();
+    executeMenu.innerHTML = '';
+    if (trigs.length === 0) {
+      const e = document.createElement('div');
+      e.className = 'wf-execute-menu-empty';
+      e.textContent = 'No trigger on canvas. Drag a trigger from the palette to wire it up.';
+      executeMenu.appendChild(e);
+      return;
+    }
+    const header = document.createElement('div');
+    header.className = 'wf-execute-menu-header';
+    header.textContent = 'Pick trigger to fire';
+    executeMenu.appendChild(header);
+    trigs.forEach((t) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wf-execute-menu-item';
+      if (!t.target) btn.disabled = true;
+      const title = document.createElement('div');
+      title.className = 'wf-execute-menu-title';
+      title.innerHTML = `<span class="wf-run-status wf-run-status-${escapeAttr(t.kind === 'manual' ? 'queued' : 'success')}" style="min-width:auto;">${escapeHTML(t.kind)}</span> ${escapeHTML(t.id)}`;
+      const meta = document.createElement('div');
+      meta.className = 'wf-execute-menu-meta';
+      meta.textContent = t.target ? `→ ${t.target}` : 'not wired to any node — drag a line from this trigger first';
+      btn.appendChild(title);
+      btn.appendChild(meta);
+      btn.addEventListener('click', () => {
+        executeMenu.classList.add('hidden');
+        startWorkflowRun(t.node);
+      });
+      executeMenu.appendChild(btn);
+    });
+  }
+
+  function toggleExecuteMenu() {
+    if (!executeMenu) return;
+    const isHidden = executeMenu.classList.contains('hidden');
+    if (isHidden) renderExecuteMenu();
+    executeMenu.classList.toggle('hidden');
+  }
+
+  runBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (runBtn.dataset.state === 'running') return;
+    toggleExecuteMenu();
+  });
+  document.addEventListener('click', (e) => {
+    if (!executeMenu || executeMenu.classList.contains('hidden')) return;
+    if (executeMenu.contains(e.target) || runBtn.contains(e.target)) return;
+    executeMenu.classList.add('hidden');
   });
 
   // ── Execute step (single-node iteration) ─────────────────────
@@ -1495,16 +1692,13 @@
     if (settingsTab) settingsTab.click();
     document.getElementById('ins-exec-input')?.focus();
   });
-  // "Execute previous nodes" — runs the full workflow so the parent's
-  // output becomes available for the input pane.
+  // "Execute previous nodes" — opens the trigger picker so the
+  // user explicitly chooses which trigger to fire. We can't just
+  // auto-pick because per-trigger routing means cron / slack /
+  // manual all start from different nodes; only one is the
+  // right answer for the current inspector context.
   document.getElementById('ins-input-from-parent')?.addEventListener('click', () => {
-    document.getElementById('wf-run-btn')?.click();
-  });
-
-  // Floating "Execute workflow" pill at canvas bottom — same as
-  // toolbar Run Now. Visually clones the n8n pattern.
-  document.getElementById('wf-execute-pill')?.addEventListener('click', () => {
-    document.getElementById('wf-run-btn')?.click();
+    runBtn?.click();
   });
 
   // ── Palette drawer: open / close / search filter ─────────────
