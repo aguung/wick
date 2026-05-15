@@ -282,14 +282,32 @@ func toggleWorkflow(c *tool.Ctx) {
 		return
 	}
 	slug := c.PathValue("slug")
-	w, err := globalWorkflowMgr.MCP.Get(slug)
+	// Read enabled from whichever copy the editor is showing (draft
+	// if present, otherwise published) so the toggle button reflects
+	// what the user clicked.
+	w, err := globalWorkflowMgr.Service.LoadDraft(slug)
 	if err != nil {
 		c.NotFound()
 		return
 	}
-	if _, err := globalWorkflowMgr.MCP.Toggle(slug, !w.Enabled); err != nil {
-		c.Error(http.StatusInternalServerError, err.Error())
-		return
+	next := !w.Enabled
+	// Toggle should always succeed regardless of validation state —
+	// it just flips a boolean flag, it doesn't run the graph. Going
+	// through MCP.Toggle would route via Canvas.mutate which runs
+	// parse.Validate and refuses to save half-built drafts. Skip
+	// that path and write the flag directly to whichever file is
+	// the active source.
+	if globalWorkflowMgr.Service.HasDraft(slug) {
+		w.Enabled = next
+		if err := globalWorkflowMgr.Service.SaveDraft(slug, w); err != nil {
+			c.Error(http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		if err := globalWorkflowMgr.Service.Toggle(slug, next); err != nil {
+			c.Error(http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, slug)
 	c.Redirect(c.Base()+"/workflows/edit/"+slug, http.StatusSeeOther)

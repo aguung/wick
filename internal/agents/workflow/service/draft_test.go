@@ -101,6 +101,35 @@ func TestPublishPromotesDraft(t *testing.T) {
 	}
 }
 
+// TestServiceToggleSkipsValidation — Service.Toggle just flips the
+// enabled flag, it must not run parse.Validate. Earlier the Toggle
+// flow on the canvas (Canvas.Toggle → mutate → Validate) refused to
+// flip enabled when the workflow had any validation issue, leaving
+// users unable to disable a half-built workflow they wanted to stop.
+func TestServiceToggleSkipsValidation(t *testing.T) {
+	svc, _ := newTestService(t)
+	// Build a workflow that would fail validation (classify w/o prompt).
+	bad := wf.Workflow{
+		Slug:     "bad",
+		ID:       "id-bad",
+		Triggers: []wf.Trigger{{Type: wf.TriggerManual}},
+		Graph: wf.Graph{
+			Entry: "c",
+			Nodes: []wf.Node{{ID: "c", Type: wf.NodeClassify, OutputCases: []string{"a"}}},
+		},
+	}
+	if err := svc.Create("bad", bad, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.Toggle("bad", true); err != nil {
+		t.Fatalf("toggle on invalid workflow should succeed, got: %v", err)
+	}
+	loaded, _ := svc.Load("bad")
+	if !loaded.Enabled {
+		t.Errorf("expected Enabled=true after toggle, got false")
+	}
+}
+
 // TestDiscardDraftRevertsToPublished — discard wipes the draft and
 // next LoadDraft falls back to the published workflow.
 func TestDiscardDraftRevertsToPublished(t *testing.T) {
