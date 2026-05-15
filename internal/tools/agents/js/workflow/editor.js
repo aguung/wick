@@ -2082,16 +2082,19 @@
         body: JSON.stringify(body),
       });
       const data = await resp.json();
+      // Both branches dump JSON into the OUTPUT pane and the empty
+      // placeholder has to hide either way — leaving it visible was
+      // the "error message + No output data + JSON" triple-stack bug.
+      document.getElementById('ins-output-empty')?.classList.add('hidden');
+      if (execOutput) execOutput.classList.remove('hidden');
       if (!resp.ok || !data.ok) {
         if (execStatus) execStatus.textContent = '✕ ' + (data.error || `HTTP ${resp.status}`);
-        if (execOutput) execOutput.classList.remove('hidden');
         if (execJSON) execJSON.textContent = JSON.stringify(data, null, 2);
+        if (execSchema) execSchema.textContent = inferSchema(data);
         return;
       }
       if (execStatus) execStatus.textContent = '✓ Step completed';
       if (execLatency) execLatency.textContent = `${data.latency_ms || 0}ms`;
-      document.getElementById('ins-output-empty')?.classList.add('hidden');
-      if (execOutput) execOutput.classList.remove('hidden');
       if (execJSON) execJSON.textContent = JSON.stringify(data.output || {}, null, 2);
       if (execSchema) execSchema.textContent = inferSchema(data.output || {});
     } catch (err) {
