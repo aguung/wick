@@ -530,6 +530,13 @@ func NewServer() *Server {
 	// line never changes.
 	channelsetup.All(channelReg, agentchannels.NewDBStore(db), sendFnFor, tokensSvc)
 
+	// Wire each channel's workflow integration surface — registers
+	// per-event + per-action descriptors and attaches the inbound
+	// event sink that fires router.Dispatch. Per-channel calls so
+	// telegram/rest can opt in independently as they grow workflow
+	// surfaces.
+	wfsetup.RegisterSlackIntegration(wfMgr.Integration, channelReg, wfMgr.Router)
+
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
 	// Register the code-side definitions for dispatch and auto-seed
 	// one DB row per Key on first boot. The MCP server below is the

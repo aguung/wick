@@ -1145,7 +1145,7 @@
 
   function refreshOutputRefs() {
     if (!f.refs) return;
-    const refs = ['{{.Event.Text}}', '{{.Event.User}}', '{{.Event.Channel}}'];
+    const refs = ['{{.Event.Payload.text}}', '{{.Event.Payload.user}}', '{{.Event.Payload.channel_id}}'];
     const all = editor.export();
     const nodes = all.drawflow.Home.data;
     Object.values(nodes).forEach((n) => {
@@ -1813,4 +1813,98 @@
     });
   }
   paletteSearch?.addEventListener('input', () => filterPalette(paletteSearch.value));
+
+  // ── Toast + background publish/discard ────────────────────────────
+  // Replaces the full-page reload pattern: Publish / Discard / Toggle /
+  // Unpublish forms POST via fetch, surface server response inline via
+  // toast, and update the toolbar button states locally. The editor
+  // never reloads; only when the server response carries fresh state
+  // (e.g. validation report) do we re-paint affected widgets.
+  const toastHost = document.getElementById('wf-toast-host');
+  function showToast(kind, title, body) {
+    if (!toastHost) return;
+    const el = document.createElement('div');
+    el.className = `wf-toast wf-toast-${kind}`;
+    const t = document.createElement('div');
+    t.className = 'wf-toast-title';
+    t.textContent = title;
+    el.appendChild(t);
+    if (body) {
+      const b = document.createElement('div');
+      b.className = 'wf-toast-body';
+      b.textContent = body;
+      el.appendChild(b);
+    }
+    el.addEventListener('click', () => el.remove());
+    toastHost.appendChild(el);
+    setTimeout(() => el.remove(), kind === 'error' ? 8000 : 4000);
+  }
+
+  // bindBackgroundForm intercepts a form submit, POSTs via fetch, and
+  // routes the response through showToast. okMessage shows on 2xx /
+  // 3xx (server typically 303s after success); errors show the
+  // response body text. onOK runs after a successful response so the
+  // caller can flip local UI state (e.g. disable the Publish button
+  // once the draft has been promoted).
+  function bindBackgroundForm(form, opts) {
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (opts.confirmText && !confirm(opts.confirmText)) return;
+      try {
+        const resp = await fetch(form.action, {
+          method: form.method || 'POST',
+          headers: { 'Accept': 'text/plain' },
+          body: new URLSearchParams(new FormData(form)),
+          redirect: 'manual',
+        });
+        // 0 = opaque redirect (manual), 2xx = direct OK, 3xx not
+        // followed = also OK.
+        if (resp.status === 0 || resp.type === 'opaqueredirect' || (resp.status >= 200 && resp.status < 400)) {
+          showToast('ok', opts.okTitle, opts.okBody || '');
+          opts.onOK?.();
+          return;
+        }
+        const text = await resp.text();
+        showToast('error', opts.errTitle || 'Request failed', text || `HTTP ${resp.status}`);
+      } catch (err) {
+        showToast('error', opts.errTitle || 'Request failed', String(err));
+      }
+    });
+  }
+
+  bindBackgroundForm(document.querySelector(`form[action$="/edit/${slug}/publish"]`), {
+    okTitle: 'Published',
+    okBody: 'Draft promoted to workflow.yaml.',
+    errTitle: 'Cannot publish',
+    onOK: () => {
+      // Draft is now the published copy — hide the Publish button until
+      // the next save creates a new draft. Easier than re-rendering the
+      // toolbar: disable in place, swap the title.
+      document.querySelectorAll(`form[action$="/edit/${slug}/publish"] button[type=submit]`).forEach((btn) => {
+        btn.disabled = true;
+        btn.title = 'No draft to publish';
+        btn.classList.add('cursor-not-allowed');
+        btn.classList.remove('hover:bg-blue-600', 'active:bg-blue-700');
+        btn.classList.add('bg-blue-500/40');
+        btn.classList.remove('bg-blue-500');
+      });
+      document.querySelectorAll(`form[action$="/edit/${slug}/discard"] button[type=submit]`).forEach((btn) => {
+        btn.disabled = true;
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+      });
+    },
+  });
+  bindBackgroundForm(document.querySelector(`form[action$="/edit/${slug}/discard"]`), {
+    confirmText: 'Rollback to last published version? All draft changes will be lost.',
+    okTitle: 'Draft discarded',
+    okBody: 'Editor will refresh to the last published version.',
+    errTitle: 'Cannot discard',
+    onOK: () => {
+      // Discard rolls graph state back to the published copy — easiest
+      // way to sync the canvas with the new server state is a full
+      // reload. This is the one path that still nav, by necessity.
+      setTimeout(() => window.location.reload(), 500);
+    },
+  });
 })();

@@ -16,6 +16,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/workflow/dataset"
 	"github.com/yogasw/wick/internal/agents/workflow/engine"
 	"github.com/yogasw/wick/internal/agents/workflow/guard"
+	"github.com/yogasw/wick/internal/agents/workflow/integration"
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/agents/workflow/nodes"
 	"github.com/yogasw/wick/internal/agents/workflow/provider"
@@ -34,8 +35,9 @@ type Manager struct {
 	Router     *trigger.Router
 	Cron       *trigger.CronScheduler
 	Canvas     *canvas.Canvas
-	Channels   *channel.Registry
-	Connectors *connector.Registry
+	Channels    *channel.Registry
+	Integration *integration.Registry
+	Connectors  *connector.Registry
 	Providers  *provider.Registry
 	Datasets   dataset.Service
 	Guard      *guard.Guard
@@ -54,6 +56,7 @@ func New(layout config.Layout) *Manager {
 	cron := trigger.NewCronScheduler(router)
 	can := canvas.New(svc)
 	chReg := channel.NewRegistry()
+	intReg := integration.New()
 	conReg := connector.NewRegistry(nil, nil)
 	provReg := provider.NewRegistry()
 	dsSvc := dataset.NewMem()
@@ -73,7 +76,7 @@ func New(layout config.Layout) *Manager {
 	eng.Register(workflow.NodeEnd, nodes.NewEndExecutor())
 	eng.Register(workflow.NodeClassify, nodes.NewClassifyExecutor(provReg))
 	eng.Register(workflow.NodeAgent, nodes.NewAgentExecutor(provReg))
-	eng.Register(workflow.NodeChannel, nodes.NewChannelExecutor(chReg))
+	eng.Register(workflow.NodeChannel, nodes.NewChannelExecutor(intReg))
 	eng.Register(workflow.NodeConnector, nodes.NewConnectorExecutor(conReg))
 	dsExec := nodes.NewDatasetExecutor(dsSvc)
 	for _, t := range []workflow.NodeType{
@@ -87,20 +90,21 @@ func New(layout config.Layout) *Manager {
 	ops := mcp.New(svc, eng, router, can, chReg, conReg, provReg, dsSvc, ss)
 
 	return &Manager{
-		Layout:     layout,
-		Service:    svc,
-		StateStore: ss,
-		Engine:     eng,
-		Router:     router,
-		Cron:       cron,
-		Canvas:     can,
-		Channels:   chReg,
-		Connectors: conReg,
-		Providers:  provReg,
-		Datasets:   dsSvc,
-		Guard:      g,
-		Cost:       c,
-		MCP:        ops,
+		Layout:      layout,
+		Service:     svc,
+		StateStore:  ss,
+		Engine:      eng,
+		Router:      router,
+		Cron:        cron,
+		Canvas:      can,
+		Channels:    chReg,
+		Integration: intReg,
+		Connectors:  conReg,
+		Providers:   provReg,
+		Datasets:    dsSvc,
+		Guard:       g,
+		Cost:        c,
+		MCP:         ops,
 	}
 }
 

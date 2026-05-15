@@ -51,7 +51,7 @@ func (r *PromptInjectionRule) Check(w workflow.Workflow) []Violation {
 			continue
 		}
 		for _, arg := range n.Command {
-			if strings.Contains(arg, "{{.Event.Text}}") || strings.Contains(arg, "{{.Event.Payload") {
+			if strings.Contains(arg, "{{.Event.Payload") {
 				out = append(out, Violation{Rule: r.Name(), Node: n.ID, Severity: SevHigh,
 					Message: "shell command interpolates untrusted Event data without sanitization"})
 				break

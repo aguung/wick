@@ -33,11 +33,11 @@ func Workflow(slug, template string) workflow.Workflow {
 			Entry: "classify",
 			Nodes: []workflow.Node{
 				{ID: "classify", Type: workflow.NodeClassify, Provider: "claude",
-					Prompt:      "Classify this support message: {{.Event.Text}}",
+					Prompt:      "Classify this support message: {{.Event.Payload.text}}",
 					OutputCases: []string{"bug", "question", "default"}},
-				{ID: "handle-bug", Type: workflow.NodeEnd, Result: "Bug: {{.Event.Text}}"},
-				{ID: "handle-question", Type: workflow.NodeEnd, Result: "Question: {{.Event.Text}}"},
-				{ID: "handle-default", Type: workflow.NodeEnd, Result: "Other: {{.Event.Text}}"},
+				{ID: "handle-bug", Type: workflow.NodeEnd, Result: "Bug: {{.Event.Payload.text}}"},
+				{ID: "handle-question", Type: workflow.NodeEnd, Result: "Question: {{.Event.Payload.text}}"},
+				{ID: "handle-default", Type: workflow.NodeEnd, Result: "Other: {{.Event.Payload.text}}"},
 			},
 			Edges: []workflow.Edge{
 				{From: "classify", Case: "bug", To: "handle-bug"},

@@ -36,8 +36,8 @@ func InjectImplicitReply(w *workflow.Workflow) {
 		ChannelName: chTrig.ChannelName,
 		Op:          "reply_thread",
 		Args: map[string]any{
-			"channel": "{{.Event.Channel}}",
-			"thread":  "{{.Event.Thread}}",
+			"channel": "{{.Event.Payload.channel_id}}",
+			"thread":  "{{.Event.Payload.thread}}",
 			"text":    "{{.Run.ID}}",
 		},
 	}

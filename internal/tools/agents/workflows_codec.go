@@ -493,11 +493,36 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 	// the prev draft using Trigger.ID as the merge key.
 	triggers := make([]wf.Trigger, 0, len(canvasTriggers))
 	for _, ct := range canvasTriggers {
-		triggers = append(triggers, wf.Trigger{
+		tr := wf.Trigger{
 			ID:        ct.NodeID,
 			Type:      triggerTypeFromKind(ct.Kind),
 			EntryNode: ct.EntryNode,
-		})
+		}
+		// Lift channel-specific metadata from the canvas node's data
+		// block. Palette level-2 op rows seed channel + event into
+		// `data.data` (e.g. drop "Slack → on_message" sets
+		// channel="slack", event="message"). Without this lift the
+		// codec emits a bare `type: channel` trigger that fails
+		// validation with "channel is required".
+		if tr.Type == wf.TriggerChannel {
+			for _, dn := range nodes {
+				if dn.Name != ct.NodeID {
+					continue
+				}
+				inner, ok := dn.Data["data"].(map[string]any)
+				if !ok {
+					break
+				}
+				if v, ok := inner["channel"].(string); ok {
+					tr.ChannelName = v
+				}
+				if v, ok := inner["event"].(string); ok {
+					tr.Event = v
+				}
+				break
+			}
+		}
+		triggers = append(triggers, tr)
 	}
 	// Legacy fallback: workflows that predate per-trigger routing
 	// expect a non-empty workflow.Triggers list. Keep emitting a

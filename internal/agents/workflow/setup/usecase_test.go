@@ -172,9 +172,9 @@ func TestUseCase_TemplateRender_EventNodeEnv(t *testing.T) {
 	m := newMgr(t)
 	require.NoError(t, m.Start(context.Background()))
 
-	args := []string{"cmd", "/C", "echo hello {{.Event.User}}"}
+	args := []string{"cmd", "/C", "echo hello {{.Event.Payload.user}}"}
 	if runtime.GOOS != "windows" {
-		args = []string{"sh", "-c", "echo hello {{.Event.User}}"}
+		args = []string{"sh", "-c", "echo hello {{.Event.Payload.user}}"}
 	}
 
 	w := workflow.Workflow{
@@ -194,7 +194,11 @@ func TestUseCase_TemplateRender_EventNodeEnv(t *testing.T) {
 		},
 	}
 
-	runID := runWorkflow(t, m, w, workflow.Event{Type: string(workflow.TriggerManual), User: "alice", At: time.Now()})
+	runID := runWorkflow(t, m, w, workflow.Event{
+		Type:    string(workflow.TriggerManual),
+		At:      time.Now(),
+		Payload: map[string]any{"user": "alice"},
+	})
 
 	st, err := m.StateStore.Load(w.Slug, runID)
 	require.NoError(t, err)
@@ -246,7 +250,7 @@ func TestUseCase_Connector_StubModule(t *testing.T) {
 					Type:   workflow.NodeConnector,
 					Module: "stub",
 					Op:     "echo",
-					Args:   map[string]any{"text": "{{.Event.Text}}"},
+					Args:   map[string]any{"text": "{{.Event.Payload.text}}"},
 				},
 				{ID: "stop", Type: workflow.NodeEnd},
 			},
@@ -254,7 +258,11 @@ func TestUseCase_Connector_StubModule(t *testing.T) {
 		},
 	}
 
-	runID := runWorkflow(t, m, w, workflow.Event{Type: string(workflow.TriggerManual), Text: "hello from event", At: time.Now()})
+	runID := runWorkflow(t, m, w, workflow.Event{
+		Type:    string(workflow.TriggerManual),
+		At:      time.Now(),
+		Payload: map[string]any{"text": "hello from event"},
+	})
 
 	require.True(t, executed, "connector Execute should have fired")
 	require.Equal(t, "hello from event", receivedArgs["text"])

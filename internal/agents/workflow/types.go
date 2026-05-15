@@ -343,15 +343,25 @@ type OnErrorBinding struct {
 	IncludeNodeOutput bool   `yaml:"include_node_output,omitempty"`
 }
 
-// Event is the trigger payload passed to a run.
+// Event is the trigger payload passed to a run. Minimal envelope —
+// channel/transport-specific keys (user, text, thread, chat_id,
+// callback_id, path, …) live in Payload so each integration owns its
+// own shape. Workflow templates reference them as
+// `{{.Event.Payload.<key>}}`.
+//
+// Type identifies the trigger family ("channel" | "webhook" | "cron" |
+// "manual" | "error" | "schedule_at"). Subtype is the within-family
+// discriminator: for channel events it's the event name
+// ("message", "block_action", …); for webhooks empty; for cron the
+// schedule expression label; for error the source workflow.
+//
+// Channel is the module name when Type=="channel" ("slack",
+// "telegram", …). Empty for non-channel triggers.
 type Event struct {
 	Type    string         `json:"type"`
 	Subtype string         `json:"subtype,omitempty"`
-	At      time.Time      `json:"at"`
-	User    string         `json:"user,omitempty"`
-	Text    string         `json:"text,omitempty"`
 	Channel string         `json:"channel,omitempty"`
-	Thread  string         `json:"thread,omitempty"`
+	At      time.Time      `json:"at"`
 	Payload map[string]any `json:"payload,omitempty"`
 }
 

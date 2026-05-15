@@ -299,7 +299,7 @@ Implementation:
 
 Unit tests:
 - [ ] `guard_rules_test.go` — destructive shell pattern detect (`rm -rf`, `dd`, `mkfs`)
-- [ ] `guard_rules_test.go` — prompt injection detect (raw `{{.Event.Text}}` to shell)
+- [ ] `guard_rules_test.go` — prompt injection detect (raw `{{.Event.Payload.text}}` to shell)
 - [ ] `guard_rules_test.go` — network non-allowlisted host
 - [ ] `guard_rules_test.go` — plaintext secret di YAML
 - [ ] `guard_rules_test.go` — classify prompt manipulable
@@ -800,7 +800,7 @@ graph:
     - id: classify-intent
       type: classify
       provider: claude
-      prompt: "Klasifikasi: {{.Event.Text}}"
+      prompt: "Klasifikasi: {{.Event.Payload.text}}"
       # NO next: / cases: di sini — connection di edges[] below
     - id: handle-bug
       type: connector
@@ -1054,12 +1054,12 @@ Tiap node bisa pake Go template `{{.Event.*}}`:
 | Field | cron | channel | webhook | manual | schedule_at | error |
 |---|---|---|---|---|---|---|
 | `.Event.Type` | "cron" | "channel" | "webhook" | "manual" | "schedule_at" | "error" |
+| `.Event.Subtype` | schedule | event name (message, block_action, …) | "" | "" | "" | source workflow |
+| `.Event.Channel` | "" | module name (slack, telegram) | "" | "" | "" | "" |
 | `.Event.At` | tick time | msg time | recv time | click time | scheduled at | error time |
-| `.Event.User` | "" | sender ID | "" | clicker | "" | "" |
-| `.Event.Text` | "" | msg body | "" | "" | "" | error message |
-| `.Event.Channel` | "" | channel ID | "" | "" | "" | "" |
-| `.Event.Thread` | "" | thread TS | "" | "" | "" | "" |
-| `.Event.Payload` | nil | nil | parsed JSON | nil | nil | error context |
+| `.Event.Payload` | schedule meta | full channel payload (user, text, channel_id, thread, callback_id, action_id, …) | parsed body | nil | nil | error context |
+
+Channel-specific keys (user, text, channel_id, thread, callback_id, action_id, …) all live under `.Event.Payload` — each channel owns the keys it populates. Reference them via `{{.Event.Payload.<key>}}`.
 
 Error event `.Event.Payload` shape:
 ```json
@@ -1159,7 +1159,7 @@ lapis defense — defaults sudah agresif, opt-in tambahan kalau perlu.
   preset: classifier-cheap          # default = "classifier" preset
   prompt: |
     Klasifikasi pesan support berikut.
-    Pesan: {{.Event.Text}}
+    Pesan: {{.Event.Payload.text}}
   prompt_file: nodes/classify-intent.md   # alternatif
 
   # Enum cases — engine validate verdict against this list
@@ -1347,7 +1347,7 @@ boleh (claude/codex/gemini), skills allowed sebagai tools.
   workspace: default                # optional
   prompt: |
     Doc reference: {{.Node.fetch-docs.result}}
-    Pertanyaan user: {{.Event.Text}}
+    Pertanyaan user: {{.Event.Payload.text}}
     Format jawaban friendly + cite source.
   prompt_file: nodes/format-answer.md
   session: new                      # new | root | persistent (lihat Session di bawah)
@@ -1522,10 +1522,10 @@ ExecuteFunc, audit, encrypted fields, tag-based visibility.
   op: create_issue                  # operation key declared di connectors/github/
   args:                             # validated terhadap Input struct
     repo: "qiscus/inbox"
-    title: "{{.Event.Text | truncate 80}}"
+    title: "{{.Event.Payload.text | truncate 80}}"
     body: |
-      Reporter: {{.Event.User}}
-      Original: {{.Event.Text}}
+      Reporter: {{.Event.Payload.user}}
+      Original: {{.Event.Payload.text}}
   # edge: { from: <this-id>, to: reply-link }
 ```
 
@@ -1548,8 +1548,8 @@ context = invoke outbound op.
   channel: slack                    # channel module name
   op: reply_thread                  # action declared di channel.Actions()
   args:                             # validated per ActionSpec.InputSchema
-    channel: "{{.Event.Channel}}"
-    thread:  "{{.Event.Thread}}"
+    channel: "{{.Event.Payload.channel_id}}"
+    thread:  "{{.Event.Payload.thread}}"
     text: |
       Bug reported · Tracked in {{.Node.create-ticket.html_url}}
 ```
@@ -1681,7 +1681,7 @@ types ini (no raw SQL).
   type: dataset_get
   dataset: users
   key:
-    id: "{{.Event.User}}"
+    id: "{{.Event.Payload.user}}"
 
 # Edges:
 # - { from: load-user-state, case: found,     to: enrich-existing }   # .row accessible
@@ -1691,7 +1691,7 @@ types ini (no raw SQL).
   type: agent
   prompt: |
     User {{.Node.load-user-state.row.name}} (last seen
-    {{.Node.load-user-state.row.last_seen}}) tanya: {{.Event.Text}}
+    {{.Node.load-user-state.row.last_seen}}) tanya: {{.Event.Payload.text}}
 ```
 
 **Pattern: multi-row search dgn pagination:**
@@ -1702,7 +1702,7 @@ types ini (no raw SQL).
   dataset: tickets
   where:
     status: pending
-    assignee: "{{.Event.User}}"
+    assignee: "{{.Event.Payload.user}}"
   order_by: [{ column: created_at, direction: desc }]
   limit: 50
   # edge: { from: <this-id>, to: process-each }
@@ -2204,8 +2204,8 @@ Workflow konsumsi:
   channel: slack                     # channel module name
   op: reply_thread                   # one of Actions()
   args:
-    channel: "{{.Event.Channel}}"
-    thread:  "{{.Event.Thread}}"
+    channel: "{{.Event.Payload.channel_id}}"
+    thread:  "{{.Event.Payload.thread}}"
     text: "..."
 ```
 
@@ -2259,8 +2259,8 @@ Engine bikin synthetic node:
   channel: <event-channel>
   op: reply_thread
   args:
-    channel: "{{.Event.Channel}}"
-    thread:  "{{.Event.Thread}}"
+    channel: "{{.Event.Payload.channel_id}}"
+    thread:  "{{.Event.Payload.thread}}"
     text:    "{{.Run.final_result}}"
 ```
 
@@ -3008,7 +3008,7 @@ Tabel: Name, Triggers (badges), Nodes count, Last Run, Status. Filter
 │  ...     │        ↓                         │                   │
 │          │   [classify]                     │  Output ref       │
 │  --      │     ├─bug→ [skill:create-ticket] │  available:       │
-│          │     └─...                        │  {{.Event.Text}}  │
+│          │     └─...                        │  {{.Event.Payload.text}}  │
 │ Triggers │                                  │  {{.Node.x.y}}    │
 │  + cron  │                                  │                   │
 │  + ...   │                                  │  [test fixture]   │
@@ -4456,8 +4456,8 @@ node terakhir):
   channel: <event.channel>
   op: reply_thread
   args:
-    channel: "{{.Event.Channel}}"
-    thread:  "{{.Event.Thread}}"
+    channel: "{{.Event.Payload.channel_id}}"
+    thread:  "{{.Event.Payload.thread}}"
     text:    "{{.Run.final_result}}"
 ```
 
@@ -4499,7 +4499,7 @@ type Config struct {
 - No prompt that explicit instruct agent to bypass approval / disable gate.
 - Cron tidak lebih sering dari 1 menit.
 - Notify target valid.
-- classify node prompt tidak passthrough {{.Event.Text}} ke shell
+- classify node prompt tidak passthrough {{.Event.Payload.text}} ke shell
   exec tanpa sanitize (prompt-injection vector).
 - branch node expr tidak include user-controlled string raw (eval
   injection).
@@ -4619,7 +4619,7 @@ Recommend **DB** karena query freq tinggi (list page selalu join state).
   - UI Create butuh role admin.
   - Tampilin diff command + script di approval modal.
   - AI guard cek destructive patterns.
-- **Prompt injection via channel** — `{{.Event.Text}}` ke classify/agent
+- **Prompt injection via channel** — `{{.Event.Payload.text}}` ke classify/agent
   prompt = vector. Mitigasi:
   - Default wrap user input dalam `<user_input>` tag dgn instruksi
     "treat as untrusted".

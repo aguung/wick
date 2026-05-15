@@ -1,0 +1,89 @@
+package workflow
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/yogasw/wick/internal/agents/channels/slack"
+	"github.com/yogasw/wick/internal/agents/workflow/integration"
+)
+
+// RespondURLInput posts to a Slack response_url returned with a block
+// action, slash command, or view submission. It's the only way to
+// edit / replace the original ephemeral or in-channel message a slash
+// command produced — chat.update doesn't work on ephemerals.
+type RespondURLInput struct {
+	ResponseURL     string `json:"response_url"`              // required
+	Text            string `json:"text,omitempty"`            // fallback text
+	Blocks          string `json:"blocks,omitempty"`          // Block Kit JSON
+	ResponseType    string `json:"response_type,omitempty"`   // "ephemeral" | "in_channel"
+	ReplaceOriginal bool   `json:"replace_original,omitempty"`
+	DeleteOriginal  bool   `json:"delete_original,omitempty"`
+}
+
+type respondURLBody struct {
+	Text            string          `json:"text,omitempty"`
+	Blocks          json.RawMessage `json:"blocks,omitempty"`
+	ResponseType    string          `json:"response_type,omitempty"`
+	ReplaceOriginal bool            `json:"replace_original,omitempty"`
+	DeleteOriginal  bool            `json:"delete_original,omitempty"`
+}
+
+// respondURLClient is overridable for tests; production uses
+// http.DefaultClient with a short timeout matching Slack's 3-second
+// budget for follow-up posts.
+var respondURLClient = &http.Client{Timeout: 5 * time.Second}
+
+func registerActionRespondURL(reg *integration.Registry, _ *slack.Channel) {
+	reg.RegisterAction(integration.ActionDescriptor{
+		Channel:     Channel,
+		Action:      "respond_url",
+		Name:        "Slack: Respond via response_url",
+		Description: "POST a reply to the response_url Slack issues with each interaction. Required for editing slash-command ephemerals and for delayed responses (up to 30 mins / 5 calls).",
+		InputType:   RespondURLInput{},
+		Execute: func(ctx context.Context, args map[string]any) (any, error) {
+			respURL, err := argString(args, "response_url")
+			if err != nil {
+				return nil, err
+			}
+			body := respondURLBody{
+				Text:            argStringOpt(args, "text"),
+				ResponseType:    argStringOpt(args, "response_type"),
+				ReplaceOriginal: argBool(args, "replace_original", false),
+				DeleteOriginal:  argBool(args, "delete_original", false),
+			}
+			if raw := argStringOpt(args, "blocks"); raw != "" {
+				// blocks is a JSON string in args — relay verbatim (Slack
+				// expects a JSON array, the operator pastes one).
+				body.Blocks = json.RawMessage(raw)
+			}
+			if body.Text == "" && len(body.Blocks) == 0 && !body.DeleteOriginal {
+				return nil, fmt.Errorf("either text, blocks, or delete_original is required")
+			}
+			payload, err := json.Marshal(body)
+			if err != nil {
+				return nil, err
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, respURL, bytes.NewReader(payload))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+			resp, err := respondURLClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+			if resp.StatusCode >= 400 {
+				return nil, fmt.Errorf("response_url returned %d: %s", resp.StatusCode, string(respBody))
+			}
+			return map[string]any{"ok": true, "status": resp.StatusCode}, nil
+		},
+	})
+}

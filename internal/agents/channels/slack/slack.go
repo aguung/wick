@@ -100,6 +100,12 @@ type Channel struct {
 	sessions       agentchannels.SessionChecker
 	onSessionStart agentchannels.SessionStartHook
 
+	// workflowEmit fires for every inbound Slack event the operator
+	// might wire as a workflow trigger (messages, interactions, slash
+	// commands, view submissions, …). nil when no workflow router is
+	// attached; channel-only deployments leave it nil with no overhead.
+	workflowEmit WorkflowEventSink
+
 	runMu     sync.Mutex
 	runCancel context.CancelFunc
 	runWg     sync.WaitGroup
@@ -118,6 +124,16 @@ func New(cfg agentconfig.SlackChannelConfig) *Channel {
 
 // SetSendFunc satisfies channels.SendFuncSetter.
 func (s *Channel) SetSendFunc(fn agentchannels.SendFunc) { s.sendFn = fn }
+
+// API returns the live Slack web-API client. Returns nil when the
+// channel isn't configured yet — callers must nil-check before use.
+// The workflow action subpackage (slack/workflow) uses this to invoke
+// chat.postMessage, views.open, reactions.add, etc.
+func (s *Channel) API() *slackgo.Client {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.api
+}
 
 // SetPublicURL satisfies channels.PublicURLSetter.
 func (s *Channel) SetPublicURL(u string) {
@@ -281,6 +297,18 @@ func (s *Channel) handleSocketEvent(ctx context.Context, evt socketmode.Event) {
 			return
 		}
 		go s.handleInteraction(ctx, cb)
+	case socketmode.EventTypeSlashCommand:
+		// Slash commands need an immediate ack so the user doesn't see
+		// "operation_timeout" in Slack. Pass-through response goes via
+		// the response_url which the workflow can post to via the
+		// slack.respond_url action.
+		cmd, ok := evt.Data.(slackgo.SlashCommand)
+		if !ok {
+			s.socket.Ack(*evt.Request)
+			return
+		}
+		s.socket.Ack(*evt.Request)
+		go s.handleSlashCommand(ctx, cmd)
 	case socketmode.EventTypeConnecting:
 		log.Debug().Str("channel", "slack").Msg("connecting")
 	case socketmode.EventTypeConnected:
@@ -288,6 +316,21 @@ func (s *Channel) handleSocketEvent(ctx context.Context, evt socketmode.Event) {
 	case socketmode.EventTypeConnectionError:
 		log.Warn().Str("channel", "slack").Msg("connection error, will retry")
 	}
+}
+
+// handleSlashCommand fires the workflow trigger for a slash command.
+// The Slack channel itself has no agent-session role for slash
+// commands — they exist purely to be workflow-driven.
+func (s *Channel) handleSlashCommand(ctx context.Context, cmd slackgo.SlashCommand) {
+	s.emitWorkflow(ctx, "command", map[string]any{
+		"user":         cmd.UserID,
+		"command":      cmd.Command,
+		"text":         cmd.Text,
+		"channel_id":   cmd.ChannelID,
+		"team_id":      cmd.TeamID,
+		"trigger_id":   cmd.TriggerID,
+		"response_url": cmd.ResponseURL,
+	})
 }
 
 func (s *Channel) handleEventsAPI(ctx context.Context, outer slackevents.EventsAPIEvent) {
@@ -298,10 +341,21 @@ func (s *Channel) handleEventsAPI(ctx context.Context, outer slackevents.EventsA
 			if ev.BotID != "" {
 				return
 			}
+			cleanText := stripBotMention(ev.Text)
+			// Workflow surface first — emit the typed app_mention event
+			// before the legacy session dispatch so workflows can route
+			// mentions independently of the agent session machinery.
+			s.emitWorkflow(ctx, "app_mention", map[string]any{
+				"user":       ev.User,
+				"text":       cleanText,
+				"channel_id": ev.Channel,
+				"thread":     threadKey(ev.ThreadTimeStamp, ev.TimeStamp),
+				"ts":         ev.TimeStamp,
+			})
 			s.handleMessage(ctx, &slackevents.MessageEvent{
 				Type:            ev.Type,
 				User:            ev.User,
-				Text:            stripBotMention(ev.Text),
+				Text:            cleanText,
 				TimeStamp:       ev.TimeStamp,
 				ThreadTimeStamp: ev.ThreadTimeStamp,
 				Channel:         ev.Channel,
@@ -311,13 +365,40 @@ func (s *Channel) handleEventsAPI(ctx context.Context, outer slackevents.EventsA
 			if ev.BotID != "" || ev.SubType != "" {
 				return
 			}
-			// only handle DMs without mention requirement
+			// Workflow surface gets every non-bot message regardless of
+			// channel type — operators can scope via channel_id /
+			// channel_type match keys. Agent session dispatch below
+			// stays DM-only to preserve existing UX.
+			s.emitWorkflow(ctx, "message", map[string]any{
+				"user":         ev.User,
+				"text":         ev.Text,
+				"channel_id":   ev.Channel,
+				"channel_type": ev.ChannelType,
+				"thread":       threadKey(ev.ThreadTimeStamp, ev.TimeStamp),
+				"ts":           ev.TimeStamp,
+				"is_dm":        ev.ChannelType == "im" || ev.ChannelType == "mpim",
+			})
 			if ev.ChannelType != "im" && ev.ChannelType != "mpim" {
 				return
 			}
 			s.handleMessage(ctx, ev)
+		case *slackevents.AppHomeOpenedEvent:
+			s.emitWorkflow(ctx, "app_home_opened", map[string]any{
+				"user": ev.User,
+				"tab":  ev.Tab,
+			})
 		}
 	}
+}
+
+// threadKey returns the conversation thread key: parent thread_ts when
+// the message is a reply, otherwise the message's own ts (which is how
+// new threads boot — replying to a top-level message uses that ts).
+func threadKey(threadTS, msgTS string) string {
+	if threadTS != "" {
+		return threadTS
+	}
+	return msgTS
 }
 
 // stripBotMention removes the leading <@BOTID> mention Slack prepends to app_mention text.
@@ -851,7 +932,12 @@ func (s *Channel) OnApprovalResolved(sessionID, requestID, decision string) {
 	}
 }
 
-func (s *Channel) handleInteraction(_ context.Context, cb slackgo.InteractionCallback) {
+func (s *Channel) handleInteraction(ctx context.Context, cb slackgo.InteractionCallback) {
+	// Workflow surface first — emit a typed event for every interaction
+	// type so workflows can route by callback_id / action_id without
+	// caring about the gate-approval channel-side hijack below.
+	s.emitInteractionWorkflow(ctx, cb)
+
 	if len(cb.ActionCallback.BlockActions) == 0 {
 		return
 	}

@@ -821,3 +821,75 @@
   border-top-color: rgba(156, 163, 175, 0.15);
   background: rgba(255,255,255,0.02);
 }
+
+/* ── Toast notifications ─────────────────────────────────────────
+ * Background-friendly status messages for Publish, Discard, and any
+ * other action that previously reloaded the page. Stacks at the
+ * top-right of the editor viewport with auto-dismiss after 4 seconds.
+ * Click to dismiss early. */
+.wf-toast-host {
+  position: fixed;
+  top: 80px;
+  right: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.wf-toast {
+  pointer-events: auto;
+  min-width: 280px;
+  max-width: 440px;
+  padding: 10px 12px 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  border: 1px solid transparent;
+  animation: wf-toast-in 0.18s ease-out;
+}
+@keyframes wf-toast-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.wf-toast.wf-toast-ok {
+  background: #ecfdf5;
+  border-color: #10b981;
+  color: #065f46;
+}
+.wf-toast.wf-toast-error {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #991b1b;
+}
+.wf-toast.wf-toast-warn {
+  background: #fffbeb;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+.dark .wf-toast.wf-toast-ok {
+  background: #022c22;
+  border-color: #10b981;
+  color: #6ee7b7;
+}
+.dark .wf-toast.wf-toast-error {
+  background: #450a0a;
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+.dark .wf-toast.wf-toast-warn {
+  background: #451a03;
+  border-color: #f59e0b;
+  color: #fcd34d;
+}
+.wf-toast-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.wf-toast-body {
+  white-space: pre-wrap;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 11px;
+}

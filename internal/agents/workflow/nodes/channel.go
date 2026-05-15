@@ -5,41 +5,37 @@ import (
 	"fmt"
 
 	"github.com/yogasw/wick/internal/agents/workflow"
-	"github.com/yogasw/wick/internal/agents/workflow/channel"
+	"github.com/yogasw/wick/internal/agents/workflow/integration"
 	"github.com/yogasw/wick/internal/agents/workflow/template"
 )
 
-// ChannelExecutor dispatches `type: channel` action nodes via the
-// registry. Args templates are rendered against RunContext before invoke.
+// ChannelExecutor dispatches `type: channel` action nodes through the
+// integration registry. Each registered (channel, action) pair
+// describes its own input schema and Execute closure, so this executor
+// is just glue: render args → look up descriptor → call Execute.
+//
+// Adding a new outbound op = drop a file under
+// internal/agents/channels/<name>/workflow/ that registers an
+// ActionDescriptor. No engine change required.
 type ChannelExecutor struct {
-	Registry *channel.Registry
+	Registry *integration.Registry
 }
 
-// NewChannelExecutor wires the executor.
-func NewChannelExecutor(reg *channel.Registry) *ChannelExecutor {
+// NewChannelExecutor wires the executor to the integration registry.
+func NewChannelExecutor(reg *integration.Registry) *ChannelExecutor {
 	return &ChannelExecutor{Registry: reg}
 }
 
-// Execute invokes Channel.Send for the named op.
+// Execute renders the node's args, resolves the descriptor by
+// "<channel>.<op>", and dispatches.
 func (e *ChannelExecutor) Execute(ctx context.Context, n workflow.Node, rc *workflow.RunContext) (workflow.NodeOutput, error) {
 	if e.Registry == nil {
-		return workflow.NodeOutput{}, fmt.Errorf("channel executor: no registry configured")
+		return workflow.NodeOutput{}, fmt.Errorf("channel executor: no integration registry")
 	}
-	ch, ok := e.Registry.Get(n.ChannelName)
+	key := n.ChannelName + "." + n.Op
+	desc, ok := e.Registry.Action(key)
 	if !ok {
-		return workflow.NodeOutput{}, fmt.Errorf("channel %q not registered (available: %v)", n.ChannelName, e.Registry.List())
-	}
-	opFound := false
-	var spec channel.ActionSpec
-	for _, a := range ch.Actions() {
-		if a.ID == n.Op {
-			opFound = true
-			spec = a
-			break
-		}
-	}
-	if !opFound {
-		return workflow.NodeOutput{}, fmt.Errorf("channel %q has no op %q", n.ChannelName, n.Op)
+		return workflow.NodeOutput{}, fmt.Errorf("channel action %q not registered", key)
 	}
 	rendered, err := template.RenderInto(n.Args, rc.RenderCtx())
 	if err != nil {
@@ -49,12 +45,9 @@ func (e *ChannelExecutor) Execute(ctx context.Context, n workflow.Node, rc *work
 	if args == nil {
 		args = map[string]any{}
 	}
-	if err := channel.ValidateActionInput(spec, args); err != nil {
-		return workflow.NodeOutput{}, err
-	}
-	result, err := ch.Send(ctx, n.Op, args)
+	result, err := desc.Execute(ctx, args)
 	if err != nil {
-		return workflow.NodeOutput{}, fmt.Errorf("channel %s.%s: %w", n.ChannelName, n.Op, err)
+		return workflow.NodeOutput{}, fmt.Errorf("%s: %w", key, err)
 	}
 	out := workflow.NodeOutput{Result: result, Fields: map[string]any{"result": result}}
 	if m, ok := result.(map[string]any); ok {

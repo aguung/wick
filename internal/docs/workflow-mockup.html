@@ -410,7 +410,7 @@ classify-1: question | statement
 
         <label class="block text-xs font-medium text-slate-600 mb-1 mt-3">Prompt</label>
         <textarea class="w-full bg-white border border-slate-300 rounded p-2 mono text-xs" rows="4">Klasifikasi pesan support berikut.
-Pesan: {{.Event.Text}}
+Pesan: {{.Event.Payload.text}}
 Jawab: bug | question | feature | other</textarea>
 
         <label class="block text-xs font-medium text-slate-600 mb-1 mt-3">Cases (branches)</label>
@@ -430,8 +430,8 @@ Jawab: bug | question | feature | other</textarea>
 
         <div class="mt-4 p-3 bg-indigo-50 border border-indigo-200 rounded text-xs text-indigo-900">
           <strong>Output refs available:</strong><br>
-          <code class="text-indigo-700">{{.Event.Text}}</code><br>
-          <code class="text-indigo-700">{{.Event.User}}</code><br>
+          <code class="text-indigo-700">{{.Event.Payload.text}}</code><br>
+          <code class="text-indigo-700">{{.Event.Payload.user}}</code><br>
           <code class="text-indigo-700">{{.Node.classify-intent.verdict}}</code>
         </div>
       </aside>
@@ -470,7 +470,7 @@ Jawab: bug | question | feature | other</textarea>
       <span class="yaml-key">preset</span>: <span class="yaml-str">classifier-cheap</span>
       <span class="yaml-key">prompt</span>: |
         Klasifikasi pesan support berikut.
-        Pesan: {{.Event.Text}}
+        Pesan: {{.Event.Payload.text}}
         Jawab: bug | question | feature | other
       <span class="yaml-key">cases</span>:
         <span class="yaml-key">bug</span>: <span class="yaml-str">handle-bug</span>
@@ -482,7 +482,7 @@ Jawab: bug | question | feature | other</textarea>
       <span class="yaml-key">type</span>: <span class="yaml-str">skill</span>
       <span class="yaml-key">skill</span>: <span class="yaml-str">create-linear-ticket</span>
       <span class="yaml-key">args</span>:
-        <span class="yaml-key">title</span>: <span class="yaml-str">"{{.Event.Text | truncate 80}}"</span>
+        <span class="yaml-key">title</span>: <span class="yaml-str">"{{.Event.Payload.text | truncate 80}}"</span>
         <span class="yaml-key">project</span>: <span class="yaml-str">SUPPORT</span>
       <span class="yaml-key">next</span>: <span class="yaml-str">reply-link</span></pre>
     </div>
@@ -511,7 +511,7 @@ Jawab: bug | question | feature | other</textarea>
 provider: claude       # optional
 preset: classifier-cheap
 prompt: |
-  Klasifikasi: {{.Event.Text}}
+  Klasifikasi: {{.Event.Payload.text}}
 output_cases: [bug, question]
 
 # edges in graph.edges[]:
@@ -533,7 +533,7 @@ preset: support-responder
 session: new              # new|root|persistent
 skills: [qiscus-docs-search]
 prompt: |
-  Q: {{.Event.Text}}
+  Q: {{.Event.Payload.text}}
 max_turns: 5</pre>
       </div>
 
@@ -549,8 +549,8 @@ max_turns: 5</pre>
 channel: slack
 op: reply_thread
 args:
-  channel: "{{.Event.Channel}}"
-  thread: "{{.Event.Thread}}"
+  channel: "{{.Event.Payload.channel_id}}"
+  thread: "{{.Event.Payload.thread}}"
   text: "Tracked: {{.Node.t.html_url}}"</pre>
       </div>
 
@@ -567,7 +567,7 @@ module: github
 op: create_issue
 args:
   repo: "qiscus/inbox"
-  title: "{{.Event.Text}}"
+  title: "{{.Event.Payload.text}}"
 # edge: { from: <this>, to: reply-link }</pre>
       </div>
 
@@ -722,7 +722,7 @@ where:
 <pre class="mono text-xs bg-white p-2 rounded border border-slate-200">type: dataset_get
 dataset: users
 key:
-  id: "{{.Event.User}}"
+  id: "{{.Event.Payload.user}}"
 
 # edges:
 # - { from: <this>, case: found,     to: enrich }   # .row avail
@@ -1274,8 +1274,8 @@ result: "{{.Node.summary.text}}"</pre>
   <span class="yaml-key">channel</span>: <span class="yaml-str">slack</span>
   <span class="yaml-key">op</span>: <span class="yaml-str">reply_thread</span>     <span class="yaml-cmt"># one of channel.Actions()</span>
   <span class="yaml-key">args</span>:
-    <span class="yaml-key">channel</span>: <span class="yaml-str">"{{.Event.Channel}}"</span>
-    <span class="yaml-key">thread</span>:  <span class="yaml-str">"{{.Event.Thread}}"</span>
+    <span class="yaml-key">channel</span>: <span class="yaml-str">"{{.Event.Payload.channel_id}}"</span>
+    <span class="yaml-key">thread</span>:  <span class="yaml-str">"{{.Event.Payload.thread}}"</span>
     <span class="yaml-key">text</span>: <span class="yaml-str">"Tracked: {{.Node.ticket.url}}"</span></pre>
       <p class="text-xs text-slate-600 mt-3">UI Inspector: pilih channel dropdown → op dropdown auto-populate dari <code>Channel.Actions()</code>. AI discover via <code>workflow_channels()</code>.</p>
     </div>
@@ -2618,7 +2618,7 @@ Content-Type: application/json
       </div>
       <div class="bg-amber-50 border-l-4 border-amber-400 rounded p-4">
         <div class="text-amber-700 text-xs font-bold uppercase mb-1">Injection</div>
-        <p class="text-sm text-slate-700">classify prompt ga passthrough <code>{{.Event.Text}}</code> ke shell raw. db_query parameterized only.</p>
+        <p class="text-sm text-slate-700">classify prompt ga passthrough <code>{{.Event.Payload.text}}</code> ke shell raw. db_query parameterized only.</p>
       </div>
       <div class="bg-blue-50 border-l-4 border-blue-400 rounded p-4">
         <div class="text-blue-700 text-xs font-bold uppercase mb-1">Network</div>
