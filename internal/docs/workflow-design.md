@@ -41,10 +41,13 @@ Jangan skip — phase N+1 butuh phase N. Tiap phase **WAJIB include unit
 | 11. Interactive + error trigger | ✅ done | Slack interactive Action specs + error router with depth guard |
 | 12. MCP + canvas + test framework | ✅ done | MCPOps surface + Canvas mutator + JSON-fixture TestRunner |
 | 13. Polish + observability | ✅ done | Bootstrap + HotReload + CleanupRuns + CostTracker |
+| 14. Canvas editor v1 | ✅ done | Drawflow + draft/publish, soft validation, port hit-target, reverse drag-to-connect, trigger fan-out, palette drawer, n8n-style toolbar |
+| 15. Run observability v1 | ✅ done | SSE-driven per-node progress (pulsing borders, latency badges), bottom Logs tab live tail, structured zerolog mirror with `wf_run_id` + `request_id` correlation, Loki-ready payload shape |
+| 16. Per-trigger routing | ✅ done | each canvas trigger node = one wf.Trigger entry with own EntryNode; multi-trigger workflows route via `evt.Type` match; Execute workflow picker on canvas replaces toolbar Run Now |
+| 17. Sharded run index | ✅ done | `runs/index/YYYY-MM-DD-NN.jsonl` keeps Runs panel pagination constant-time at any history size; generic `internal/shardedlog/` module reusable for sessions / log views |
+| 18. Inspector debug shell | ✅ done | n8n-style 3-col modal (Input \| Parameters \| Output) opens on dblclick/right-click; Execute step runs one node in isolation; output preview JSON/Schema tabs |
 
 Deferred from above (out-of-scope for the package, wire when concrete UIs land):
-- Drawflow canvas UI (HTML mockup ada di `workflow-mockup.html`; templ
-  integration di `internal/tools/agents/` tab Workflows belum dibuat)
 - fsnotify watcher (Bootstrap + HotReload entrypoints sudah ada; watcher
   loop tinggal mount di server.go)
 - Postgres-backed DatasetService + Postgres `wick_workflow_state` table
@@ -55,6 +58,14 @@ Deferred from above (out-of-scope for the package, wire when concrete UIs land):
   subcommand
 - Webhook HMAC enforcement (VerifyHMAC helper ada, dispatch-side wiring
   belum)
+- Loki push for the structured log mirror — payload shape is already
+  Loki-compatible (label dimensions = `wf_slug`/`wf_run_id`/`wf_event`),
+  just need the HTTP sink wired
+- Run history import from Loki — reverse direction, rebuild
+  `runs/<id>/state.json` from log entries when local files purged
+- Per-trigger fan-out in engine — today's engine fires one chain
+  per trigger event; fan-out (one trigger → many parallel chains)
+  needs Router/Engine support for multi-EntryNode per Trigger
 
 **Phase 1 — Foundation** *(folder + types, no execution)* ✅
 
@@ -711,7 +722,8 @@ Reroute = swap edge target. Atomic operations.
 
 ```
 <BaseDir>/workflows/<slug>/
-  workflow.yaml          # graph + triggers (wajib)
+  workflow.yaml          # graph + triggers (wajib) — published copy
+  workflow.draft.yaml    # editor draft (lives only when user has unsaved edits)
   nodes/                 # per-node assets (opsional, kalau perlu)
     classify-msg.md      # prompt panjang
     fetch-data.sql       # query
@@ -721,7 +733,10 @@ Reroute = swap edge target. Atomic operations.
     classify-msg.json    # {input: {...}, expected_output: {...}}
     fetch-data.json
   runs/                  # state per run (auto-managed, gitignore)
-    <run-id>/
+    index/               # sharded run summary index (see §13)
+      2026-05-15-01.jsonl
+      2026-05-15-02.jsonl
+    <run-id>/            # per-run dir, runID = plain UUID
       state.json         # {current, completed[], outputs{}, error?}
       events.jsonl       # append-only log per step
       nodes/<id>.json    # output cache per node
@@ -741,13 +756,22 @@ enabled: true
 max_duration_sec: 600               # total flow timeout, default 5min
 
 triggers:                           # WAJIB minimal 1. Multi-trigger supported.
-  - type: channel
+  # Each trigger owns its own routing — manual fires its chain,
+  # slack fires another, cron fires yet another. The engine matches
+  # `evt.Type` to `Trigger.Type` and walks from that trigger's
+  # `entry_node`. `graph.entry` (below) is only a legacy fallback
+  # for hand-edited YAML; canvas-driven workflows leave it empty.
+  - id: trigger-channel             # stable canvas identity, round-trips
+    type: channel                   # save/load. Codec generates it if absent.
     channel: chat
     event: message
     target: "#inbox"
     match:
       mention_bot: true
-    entry_node: classify-intent     # optional: override workflow-level graph.entry
+    entry_node: classify-intent     # the node this trigger fires
+  - id: trigger-manual              # second trigger in the same workflow
+    type: manual                    # fires a different chain
+    entry_node: handle-question
 
 queue:
   max_size: 20
@@ -808,7 +832,7 @@ created_at: 2026-05-14T08:00:00Z
 | Branch routing (classify/branch node) | `{from: A, case: bug, to: B}` |
 | Fan-out parallel | Multiple `{from: A, to: X}`, `{from: A, to: Y}`, no `case` |
 | Fan-in (wait-for-all) | Multiple `{from: X, to: M}`, `{from: Y, to: M}` + node M `type: merge` |
-| Per-trigger entry | `entry_node:` di trigger spec (override `graph.entry`) |
+| Per-trigger entry | `entry_node:` di trigger spec (authoritative for canvas-driven workflows; `graph.entry` is the legacy hand-edited fallback) |
 
 **Why edge-first:**
 - Match canvas mental model (nodes = cards, edges = lines)
@@ -825,6 +849,73 @@ created_at: 2026-05-14T08:00:00Z
 - Cycle detection at parse time (Kahn's algorithm)
 - Unreachable nodes (not target of any edge + not entry) = warning, ga block
 
+### Canvas codec contract (Drawflow ↔ YAML)
+
+The Workflows tab UI uses Drawflow on the canvas. The codec at
+[`internal/tools/agents/workflows_codec.go`](../tools/agents/workflows_codec.go)
+bridges Drawflow's JSON with `workflow.yaml`. Key invariants:
+
+**Trigger phantom nodes**
+
+- Each entry in `triggers:` renders as one phantom node on the canvas
+  (CSS `node-trigger`, `data.type = "trigger"`,
+  `data.data.triggerKind = "manual" | "cron" | "channel" | "webhook" | "error" | "schedule_at"`).
+- The canvas node name (`drawflowNode.Name`) is the `Trigger.ID` value.
+  Codec auto-generates one (`trigger-<type>` or
+  `trigger-<type>-<idx>`) when YAML omits it, so legacy YAMLs still
+  render on first open.
+- On save, decoder scans every `type: trigger` node, reads its first
+  outgoing connection target, and emits one `wf.Trigger` entry per
+  phantom with `EntryNode` set to that target.
+- Trigger phantoms NEVER leak into `Graph.Nodes` or `Graph.Edges` —
+  they are visual-only. The engine routes via `Trigger.EntryNode`
+  matched by event type.
+
+**Save-time merge** ([`mergeTriggers`](../tools/agents/workflows.go))
+
+| Source of truth | Owns |
+|---|---|
+| Canvas (decoder output) | `ID`, `Type`, `EntryNode` |
+| Prev draft (loaded from disk) | Schedule, ChannelName, Match, Path, Method, SecretRef, DedupTTLSec, … (everything else) |
+
+The merge key is `Trigger.ID`. Triggers present in prev but missing
+from the canvas are **dropped** — canvas is authoritative for which
+triggers exist. New canvas triggers (no prev match) start with
+empty config; the inspector editor fills it in.
+
+**Entry resolution**
+
+- `triggerHasEntry(w, type)` is the UI gate for Run Now / external
+  fire. Logic:
+  1. If any `Trigger.ID` is set → canvas-driven workflow → strict
+     per-trigger rules (find matching type with non-empty
+     `EntryNode`).
+  2. Otherwise (legacy hand-edited YAML, no IDs) → fall back to
+     `graph.entry`.
+- Engine's `pickEntry` (called inside `Engine.Run`) follows the same
+  per-trigger-first / `graph.entry`-fallback chain.
+
+**Execute workflow picker**
+
+- Toolbar Run Now is removed. The floating "Execute workflow" pill
+  at the canvas bottom opens a menu listing every trigger on the
+  canvas with its wired target.
+- POST `/run` accepts `trigger_id` (form field). `pickTriggerByID`
+  resolves it; an empty `trigger_id` is acceptable only when the
+  workflow has exactly one trigger (legacy compat). Anything else
+  returns 400 with a human-readable error.
+
+**Draft vs published at Run time**
+
+- Run Now LOADS the draft (`workflow.draft.yaml`) and passes it as
+  an explicit override via `MCP.RunNowWith` → `Router.RunNowWith`
+  → `WorkItem.Workflow`. The worker prefers the override over
+  `Router.defs[slug]`.
+- Live triggers (cron, channel, webhook) keep firing the published
+  copy registered in `Router.defs[slug]`. This separation lets the
+  user iterate on a draft via Run Now without re-publishing every
+  edit.
+
 ### Identitas + governance
 
 - **`id`** — stable identitas. Rename folder atau ganti `name:` ga
@@ -837,12 +928,17 @@ created_at: 2026-05-14T08:00:00Z
 
 ### Trigger types catalog
 
-Sama dengan desain routine sebelumnya, ga berubah. Inline disini biar
-doc self-contained.
+Every trigger entry can carry an `id:` (stable canvas identity, used
+by the codec to round-trip wiring + by the Execute workflow picker
+to disambiguate Run Now) and an `entry_node:` (the node this
+trigger fires). Omitted in the catalog below for readability — see
+the YAML example above for the full shape.
 
 **`cron`** — jadwal periodik.
 ```yaml
-- type: cron
+- id: trigger-cron
+  type: cron
+  entry_node: daily-digest
   schedule: "0 8 * * *"
   timezone: Asia/Jakarta            # optional, default UTC
 ```
@@ -852,7 +948,9 @@ Channel-agnostic; `channel:` field cuma routing hint ke registry. Setiap
 channel ([internal/agents/channels/](../agents/channels/)) self-register
 dgn schema-nya sendiri.
 ```yaml
-- type: channel
+- id: trigger-channel-slack
+  type: channel
+  entry_node: classify-intent
   channel: slack                    # nama channel di registry; "*" = semua channel
   event: message                    # event sub-type, default: message
                                     # future: reaction, mention, join, leave, ...
@@ -881,7 +979,9 @@ channel future bisa expose `reaction`, `mention`, `join`, `leave`,
 
 **`webhook`** — HTTP POST eksternal.
 ```yaml
-- type: webhook
+- id: trigger-webhook
+  type: webhook
+  entry_node: ingest-payload
   path: /hooks/pagerduty
   secret_ref: wick_enc_...          # HMAC SHA-256 di header X-Wick-Sig
   whitelist:
@@ -889,23 +989,30 @@ channel future bisa expose `reaction`, `mention`, `join`, `leave`,
   body_to_var: payload              # body JSON → {{.Event.Payload}}
 ```
 
-**`manual`** — UI button + MCP op.
+**`manual`** — UI button + MCP op. Fired via the Execute workflow
+picker on the canvas (or via the MCP `workflow_run` op).
 ```yaml
-- type: manual
+- id: trigger-manual
+  type: manual
+  entry_node: classify-intent
   label: "Run digest now"
   require_role: admin
 ```
 
 **`schedule_at`** — one-shot.
 ```yaml
-- type: schedule_at
+- id: trigger-schedule-at
+  type: schedule_at
+  entry_node: classify-intent
   at: 2026-06-01T08:00:00+07:00
   delete_after: true                # auto-disable workflow setelah fire
 ```
 
 **`error`** — fire on failure of another workflow (n8n-style error workflow).
 ```yaml
-- type: error
+- id: trigger-error
+  type: error
+  entry_node: notify-oncall
   source_workflow: "*"              # workflow slug atau pattern; "*" = semua
   severity: [high, critical]        # optional filter: error severity levels
   node_types: [shell, http, connector]  # optional filter: cuma error dari node types ini
@@ -3822,12 +3929,48 @@ kalau data baru lahir dari workflow operation.
 ### Lifecycle state file
 
 ```
-runs/<run-id>/
-  state.json       # current snapshot
-  events.jsonl     # append-only log
-  nodes/
-    <id>.json      # output cache per node (large objects)
+runs/
+  index/                       # sharded run summary index
+    2026-05-15-01.jsonl        # one row per run, max ~100 rows per shard
+    2026-05-15-02.jsonl
+  <run-id>/                    # runID = plain UUID, listing not chronological
+    state.json                 # current snapshot
+    events.jsonl               # append-only log
+    nodes/
+      <id>.json                # output cache per node (large objects)
 ```
+
+### Sharded run index (Runs panel pagination)
+
+The Runs panel in the editor needs "newest 100 runs" answers in
+constant time even after 100k+ historical runs accumulate. Scanning
+`runs/<id>/state.json` for every entry doesn't scale.
+
+Solution: append a one-line summary to a sharded JSONL file every
+time a run completes. Each shard is bounded at ~100 rows so any
+"page N" query reads exactly one ~10KB file regardless of total
+history size.
+
+**Shard naming:** `YYYY-MM-DD-NN.jsonl`. Per-day grouping with a
+seq suffix when the day's first shard fills up. Alphabetical
+descending listing = chronological newest-first natural — no need
+to read state.json to sort.
+
+**Row shape** (kept lean so 100 rows = ~10KB):
+```json
+{"id":"<uuid>","status":"success","at":"2026-05-15T17:32:22Z","end":"2026-05-15T17:32:33Z","ms":11000}
+```
+
+**Generic module:** [`internal/shardedlog`](../shardedlog/) is a
+reusable `Store[T any]` (generics-based). Workflow runs use it via
+[`state.IndexAppend`](../agents/workflow/state/index.go) +
+`IndexList(slug, page, pageSize)`. Future features (agent sessions,
+log mirrors, …) can reuse the same store.
+
+**Migration:** old runs (saved before the index existed) won't be
+in any shard — the Runs panel only shows indexed entries. They
+remain accessible via direct URL `/runs/<id>`. Acceptable trade-off
+for the scale win.
 
 ### `state.json` schema
 
@@ -3861,6 +4004,42 @@ Atomic write (`tmp+rename`) setelah tiap node selesai. Pre-execution
 write update `current=<node>`, `status=running`. Post-execution write
 move ke `completed[]`, `outputs[id]=...`. events.jsonl append per
 sub-step.
+
+### Structured event logs (zerolog mirror)
+
+Every engine event hits zerolog with stable correlation fields so
+operators can reconstruct any run from the wick log file without
+touching `runs/`:
+
+```json
+{
+  "level": "info",
+  "component": "wf",
+  "wf_slug": "support-triage",
+  "wf_run_id": "<uuid>",
+  "request_id": "<from HTTP middleware>",
+  "wf_node": "agent",
+  "wf_event": "node_completed",
+  "data": {
+    "latency_ms": 12843,
+    "output": { ... },              // truncated at 4KB
+    "verdict": "..."
+  },
+  "time": "2026-05-15T17:32:22+07:00",
+  "message": "workflow event"
+}
+```
+
+Grep targets:
+- `wf_run_id=<id>` — every event for one specific run
+- `request_id=<id>` — HTTP request → engine run correlation
+- `wf_slug=<slug>` — every event for one workflow
+
+Engine carries `request_id` across the queue boundary via
+`Event.Payload["request_id"]` because the queue-worker goroutine's
+own ctx is the server's bootstrap ctx, not the originating HTTP
+request — see `Engine.Run` in
+[`engine.go`](../agents/workflow/engine/engine.go).
 
 ### Resume
 

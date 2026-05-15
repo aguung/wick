@@ -328,11 +328,14 @@ classify-1: question | statement
         <span class="badge bg-emerald-100 text-emerald-700">enabled</span>
         <span class="badge bg-blue-100 text-blue-700">approved v3</span>
       </div>
+      <!-- Toolbar: Save + Publish only. The Execute workflow trigger
+           lives on the canvas (floating pill) so the user picks which
+           trigger to fire from a menu next to the graph itself. -->
       <div class="flex gap-2 text-sm">
         <button class="px-3 py-1.5 bg-white border border-slate-300 rounded hover:bg-slate-100">YAML</button>
         <button class="px-3 py-1.5 bg-white border border-slate-300 rounded hover:bg-slate-100">Test</button>
-        <button class="px-3 py-1.5 bg-amber-500 text-white rounded hover:bg-amber-600 font-medium">Run Now</button>
-        <button class="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium">Save</button>
+        <button class="px-3 py-1.5 bg-white border border-slate-300 rounded hover:bg-slate-100 font-medium">Save</button>
+        <button class="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">Publish</button>
       </div>
     </div>
 
@@ -372,12 +375,28 @@ classify-1: question | statement
 
       <!-- Canvas -->
       <div class="flex-1 relative">
-        <div class="canvas-controls">
+        <!-- Zoom controls live bottom-left so they don't fight the
+             top-right Add-node button and the bottom-centre Execute pill. -->
+        <div class="canvas-controls" style="bottom:12px;left:12px;top:auto;right:auto;flex-direction:column-reverse;">
           <button title="Zoom in">+</button>
           <button title="Zoom out">−</button>
           <button title="Reset view">⤢</button>
+          <button title="Auto-format">⇒</button>
         </div>
+        <!-- Add-node floating button — opens the palette as a right
+             slide-in drawer. Replaces the always-on sidebar so the
+             canvas can use the full viewport by default. -->
+        <button title="Add node" style="position:absolute;top:12px;right:12px;width:38px;height:38px;border-radius:50%;background:#fff;border:1px solid #e2e8f0;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,0.08);">+</button>
         <div id="canvas-demo"></div>
+        <!-- Floating Execute workflow pill. Click opens a menu listing
+             every trigger on the canvas with its wired target node; user
+             picks which trigger to fire. Multi-trigger workflows route
+             via Trigger.Type → engine.pickEntry. -->
+        <div style="position:absolute;bottom:24px;left:50%;transform:translateX(-50%);">
+          <button style="display:inline-flex;align-items:center;gap:6px;background:#ef4444;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 8px 20px rgba(239,68,68,0.35);">
+            🧪 Execute workflow <span style="font-size:10px;opacity:0.85;">▾</span>
+          </button>
+        </div>
       </div>
 
       <!-- Inspector -->
@@ -418,27 +437,33 @@ Jawab: bug | question | feature | other</textarea>
       </aside>
     </div>
 
-    <!-- Bottom panel -->
+    <!-- Bottom panel. Logs is the default — SSE live-tails every
+         node event as the run executes. Runs tab uses the sharded
+         index file so pagination is constant-time at any history
+         size; Newer / Older buttons drive `?runs_page=N`. -->
     <div class="border-t border-slate-200 bg-slate-50">
       <div class="flex border-b border-slate-200 bg-white text-sm">
-        <button class="px-4 py-2 border-b-2 border-indigo-500 text-indigo-700 font-medium">YAML preview</button>
-        <button class="px-4 py-2 text-slate-600 hover:text-slate-900">Files</button>
+        <button class="px-4 py-2 border-b-2 border-indigo-500 text-indigo-700 font-medium">Logs <span class="text-xs text-slate-500 ml-1">(0)</span></button>
+        <button class="px-4 py-2 text-slate-600 hover:text-slate-900">YAML preview</button>
         <button class="px-4 py-2 text-slate-600 hover:text-slate-900">Runs (8)</button>
-        <button class="px-4 py-2 text-slate-600 hover:text-slate-900">Logs</button>
+        <button class="px-4 py-2 text-slate-600 hover:text-slate-900">Guard</button>
       </div>
       <pre class="p-4 mono text-xs text-slate-200 bg-slate-900 overflow-x-auto leading-relaxed"><span class="yaml-key">id</span>: <span class="yaml-str">0193e2b4-6c20-7a5f-...</span>
 <span class="yaml-key">name</span>: <span class="yaml-str">Slack Support Triage</span>
 <span class="yaml-key">enabled</span>: <span class="yaml-bool">true</span>
 
 <span class="yaml-key">triggers</span>:
-  - <span class="yaml-key">type</span>: <span class="yaml-str">channel</span>
+  - <span class="yaml-key">id</span>: <span class="yaml-str">trigger-channel-slack</span>
+    <span class="yaml-key">type</span>: <span class="yaml-str">channel</span>
+    <span class="yaml-key">entry_node</span>: <span class="yaml-str">classify-intent</span>
     <span class="yaml-key">channel</span>: <span class="yaml-str">slack</span>
     <span class="yaml-key">target</span>: <span class="yaml-str">"#support"</span>
     <span class="yaml-key">match</span>:
       <span class="yaml-key">mention_bot</span>: <span class="yaml-bool">true</span>
 
 <span class="yaml-key">graph</span>:
-  <span class="yaml-key">entry</span>: <span class="yaml-str">classify-intent</span>
+  <span class="yaml-cmt"># entry/edges populated by canvas; graph.entry is a legacy
+  # fallback only for hand-edited YAML without per-trigger entry_node.</span>
   <span class="yaml-key">nodes</span>:
     - <span class="yaml-key">id</span>: <span class="yaml-str">classify-intent</span>
       <span class="yaml-key">type</span>: <span class="yaml-str">classify</span>
