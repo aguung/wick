@@ -196,22 +196,36 @@ func workflowToDrawflowJSON(w wf.Workflow) (string, error) {
 		}
 	}
 
-	// Wire the phantom trigger → entry edge if both are present.
-	if entryNum, ok := nameToNumeric[pickGraphEntry(w)]; ok {
-		if trigNum, hasTrig := nameToNumeric["__trigger__"]; hasTrig {
-			trigKey := strconv.Itoa(trigNum)
-			entryKey := strconv.Itoa(entryNum)
+	// Wire trigger → target edges. Primary source is the canvas
+	// metadata `_canvas.trigger_edges` (every fan-out the user drew);
+	// falls back to a single entry-node edge for workflows that have
+	// no canvas state yet (freshly scaffolded or hand-edited yaml).
+	trigNum, hasTrig := nameToNumeric["__trigger__"]
+	if hasTrig {
+		targets := triggerTargetsFromCanvas(w)
+		if len(targets) == 0 {
+			if entry := pickGraphEntry(w); entry != "" {
+				targets = []string{entry}
+			}
+		}
+		trigKey := strconv.Itoa(trigNum)
+		for _, name := range targets {
+			toNum, ok := nameToNumeric[name]
+			if !ok {
+				continue
+			}
+			toKey := strconv.Itoa(toNum)
 			t := nodes[trigKey]
 			out := t.Outputs["output_1"]
-			out.Connections = append(out.Connections, drawflowConn{Node: entryKey, Output: "input_1"})
+			out.Connections = append(out.Connections, drawflowConn{Node: toKey, Output: "input_1"})
 			t.Outputs["output_1"] = out
 			nodes[trigKey] = t
 
-			e := nodes[entryKey]
+			e := nodes[toKey]
 			in := e.Inputs["input_1"]
 			in.Connections = append(in.Connections, drawflowConn{Node: trigKey, Input: "output_1"})
 			e.Inputs["input_1"] = in
-			nodes[entryKey] = e
+			nodes[toKey] = e
 		}
 	}
 	// Wire edges into the per-node inputs/outputs maps.
@@ -308,6 +322,39 @@ func triggerHint(tr wf.Trigger) string {
 	return string(tr.Type)
 }
 
+// triggerTargetsFromCanvas pulls the list of node ids the trigger
+// fans out to, captured during save under `_canvas.trigger_edges`.
+// Returns nil when the workflow predates this metadata; callers fall
+// back to the single Graph.Entry node.
+func triggerTargetsFromCanvas(w wf.Workflow) []string {
+	if w.Canvas == nil {
+		return nil
+	}
+	// The slice may come back as []any (after yaml decode) or as the
+	// concrete []map[string]any (right after save before round-trip
+	// through yaml). Handle both shapes — without this, the canvas
+	// lost its fan-out edges immediately after save even though they
+	// were stored correctly.
+	out := []string{}
+	switch raw := w.Canvas["trigger_edges"].(type) {
+	case []any:
+		for _, v := range raw {
+			if m, ok := v.(map[string]any); ok {
+				if to, ok := m["to"].(string); ok && to != "" {
+					out = append(out, to)
+				}
+			}
+		}
+	case []map[string]any:
+		for _, m := range raw {
+			if to, ok := m["to"].(string); ok && to != "" {
+				out = append(out, to)
+			}
+		}
+	}
+	return out
+}
+
 func canvasPositions(w wf.Workflow) map[string][2]float64 {
 	out := map[string][2]float64{}
 	if w.Canvas == nil {
@@ -384,17 +431,31 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 	}
 
 	edges := []wf.Edge{}
+	// trigger fan-out edges: stored separately under `_canvas.trigger_edges`
+	// so the visual graph survives round-trip. The engine doesn't use
+	// them (it only routes from workflow.Triggers + Graph.Entry), but
+	// the canvas codec re-renders them on load.
+	triggerEdges := []map[string]any{}
 	for _, i := range ids {
 		dn := nodes[strconv.Itoa(i)]
 		fromName := dn.Name
 		// trigger nodes only emit; the engine has no `trigger` node type
-		// in its graph, so we skip outgoing-edge writes when the source
-		// is a trigger placeholder.
+		// in its graph. Their connections are captured as canvas
+		// metadata so the visual round-trips on reload — without this
+		// every output beyond the first one disappeared after save.
 		isTriggerSrc := false
 		if t, ok := dn.Data["type"].(string); ok && t == "trigger" {
 			isTriggerSrc = true
 		}
 		if isTriggerSrc {
+			for _, port := range dn.Outputs {
+				for _, c := range port.Connections {
+					toIdx, _ := strconv.Atoi(c.Node)
+					if toName, ok := numericToName[toIdx]; ok {
+						triggerEdges = append(triggerEdges, map[string]any{"to": toName})
+					}
+				}
+			}
 			continue
 		}
 		for portKey, port := range dn.Outputs {
@@ -425,7 +486,10 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 			Nodes: wfNodes,
 			Edges: edges,
 		},
-		Canvas: map[string]any{"positions": positions},
+		Canvas: map[string]any{
+			"positions":     positions,
+			"trigger_edges": triggerEdges,
+		},
 	}
 	return w, nil
 }
