@@ -1,0 +1,31 @@
+package workflow
+
+// EditorPalette renders the left sidebar drag-source list. Theme
+// tokens match the agents tab — white/navy surfaces, black text.
+templ EditorPalette(sections []PaletteSection) {
+	<aside class="w-48 shrink-0 border-r border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 p-3 text-sm overflow-y-auto">
+		for _, section := range sections {
+			<div class="text-[11px] uppercase tracking-wider text-black-700 dark:text-black-600 font-semibold mb-2 mt-1">{ section.Title }</div>
+			<div class="space-y-1 mb-4">
+				for _, item := range section.Items {
+					@paletteRow(item)
+				}
+			</div>
+		}
+	</aside>
+}
+
+// paletteRow is one draggable palette entry.
+templ paletteRow(item PaletteItem) {
+	<div
+		class="wf-palette-item flex items-center gap-2 px-3 py-2 bg-white-100 dark:bg-navy-700 border border-white-300 dark:border-navy-600 rounded-lg text-black-900 dark:text-white-100 hover:border-green-500/40 dark:hover:border-green-500/40 transition-colors"
+		draggable="true"
+		data-node-type={ item.Type }
+	>
+		<span class={ "h-2 w-2 rounded-full", item.Dot }></span>
+		<span class="text-sm">{ item.Label }</span>
+		if item.Hint != "" {
+			<span class="ml-auto text-[10px] text-black-600 dark:text-black-700">{ item.Hint }</span>
+		}
+	</div>
+}

@@ -25,6 +25,46 @@ func NewLayout(baseDir string) Layout { return Layout{BaseDir: baseDir} }
 func (l Layout) PresetsDir() string    { return filepath.Join(l.BaseDir, "presets") }
 func (l Layout) WorkspacesDir() string { return filepath.Join(l.BaseDir, "workspaces") }
 func (l Layout) SessionsDir() string   { return filepath.Join(l.BaseDir, "sessions") }
+func (l Layout) WorkflowsDir() string  { return filepath.Join(l.BaseDir, "workflows") }
+func (l Layout) DatasetsDir() string   { return filepath.Join(l.BaseDir, "datasets") }
+
+// WorkflowDir is the folder for one workflow (`workflows/<slug>/`).
+func (l Layout) WorkflowDir(slug string) string {
+	return filepath.Join(l.WorkflowsDir(), slug)
+}
+func (l Layout) WorkflowFile(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "workflow.yaml")
+}
+func (l Layout) WorkflowRunsDir(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "runs")
+}
+func (l Layout) WorkflowRunDir(slug, runID string) string {
+	return filepath.Join(l.WorkflowRunsDir(slug), runID)
+}
+func (l Layout) WorkflowRunState(slug, runID string) string {
+	return filepath.Join(l.WorkflowRunDir(slug, runID), "state.json")
+}
+func (l Layout) WorkflowRunEvents(slug, runID string) string {
+	return filepath.Join(l.WorkflowRunDir(slug, runID), "events.jsonl")
+}
+func (l Layout) WorkflowEnvFile(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "env.yaml")
+}
+func (l Layout) WorkflowStateFile(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "state.json")
+}
+func (l Layout) WorkflowNodesDir(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "nodes")
+}
+func (l Layout) WorkflowTestsDir(slug string) string {
+	return filepath.Join(l.WorkflowDir(slug), "__tests__")
+}
+func (l Layout) DatasetDir(slug string) string {
+	return filepath.Join(l.DatasetsDir(), slug)
+}
+func (l Layout) DatasetFile(slug string) string {
+	return filepath.Join(l.DatasetDir(slug), "dataset.yaml")
+}
 
 func (l Layout) PresetDir(name string) string  { return filepath.Join(l.PresetsDir(), name) }
 func (l Layout) PresetFile(name string) string { return filepath.Join(l.PresetDir(name), "agent.md") }
@@ -69,7 +109,7 @@ func (l Layout) SessionRaw(id string) string {
 // EnsureLayout creates the three top-level folders if they don't exist.
 // Idempotent — safe to call on every boot.
 func (l Layout) EnsureLayout() error {
-	for _, d := range []string{l.PresetsDir(), l.WorkspacesDir(), l.SessionsDir()} {
+	for _, d := range []string{l.PresetsDir(), l.WorkspacesDir(), l.SessionsDir(), l.WorkflowsDir(), l.DatasetsDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}

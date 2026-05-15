@@ -191,6 +191,18 @@ func Register(r tool.Router) {
 
 	r.GET("/settings", settingsPage)
 
+	// Workflows tab — visual DAG editor (mockup §3).
+	r.GET("/workflows", workflowsPage)
+	r.POST("/workflows", createWorkflow)
+	// Slug-bound routes live under /edit/ so Go 1.22's mux doesn't
+	// flag a conflict with /static/{path}.
+	r.GET("/workflows/edit/{slug}", workflowEditor)
+	r.POST("/workflows/edit/{slug}/save", saveWorkflow)
+	r.POST("/workflows/edit/{slug}/toggle", toggleWorkflow)
+	r.POST("/workflows/edit/{slug}/run", runWorkflowNow)
+	r.POST("/workflows/edit/{slug}/delete", deleteWorkflow)
+	r.GET("/workflows/edit/{slug}/runs/{runID}", workflowRunDetail)
+
 	r.GET("/stream", streamSSE)
 }
 

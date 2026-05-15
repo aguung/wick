@@ -57,6 +57,7 @@ import (
 	"github.com/yogasw/wick/internal/sso"
 	"github.com/yogasw/wick/internal/tags"
 	"github.com/yogasw/wick/internal/tools"
+	wfsetup "github.com/yogasw/wick/internal/agents/workflow/setup"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	providerstoragetool "github.com/yogasw/wick/internal/tools/provider-storage"
@@ -372,6 +373,30 @@ func NewServer() *Server {
 	agentstool.SetDB(db)
 	agentstool.SetChannelRegistry(channelReg)
 	agentstool.SetSyncManager(syncMgr)
+
+	// Workflow stack — bundles every workflow subpkg into one Manager
+	// and bootstraps the router with every workflow folder found on disk.
+	wfMgr := wfsetup.New(agentsLayout)
+	// Wire live registries — workflow nodes need real providers +
+	// connectors to dispatch through, not empty registries. Skipping
+	// these means `type: classify`/`type: connector` nodes fail at
+	// runtime with "not registered".
+	wfsetup.RegisterLiveConnectors(wfMgr.Connectors)
+	// connectorsSvc is constructed further down (line ~517) — the
+	// creds adapter is wired after that block so RowCreds can resolve
+	// rows from the live connectors service. Search for
+	// "SetRowCreds" below.
+	if provs, perr := wfsetup.NewCLIProviders(); perr == nil {
+		for _, p := range provs {
+			wfMgr.WithProvider(p)
+		}
+	} else {
+		log.Warn().Err(perr).Msg("workflow: provider adapter init failed")
+	}
+	if err := wfMgr.Start(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("workflow bootstrap failed; workflows tab will be empty")
+	}
+	agentstool.SetWorkflowManager(wfMgr)
 	providerstoragetool.SetSyncManager(syncMgr)
 	provider.AppName = appname.Resolve()
 	// Wire the auto-rescan toggle: provider package consults this
@@ -497,6 +522,10 @@ func NewServer() *Server {
 	connectorsSvc.SetConfigs(configsSvc)
 	metricsRec := metrics.NewSimpleRecorder()
 	connectorsSvc.SetMetrics(metricsRec)
+
+	// Workflow connector executor needs row credentials resolved
+	// from the connectors service — wire after the service is built.
+	wfMgr.Connectors.SetRowCreds(wfsetup.ConnectorsCredsAdapter(connectorsSvc))
 
 	// Resolve every tool meta up front — wick stamps the mount path
 	// from meta.Key so modules never have to. (Earlier here than in

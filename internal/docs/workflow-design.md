@@ -20,11 +20,43 @@ load.
 
 ## Implementation roadmap
 
-12 phase berurutan. Tiap phase = vertical slice (tested, mergeable PR).
+13 phase berurutan. Tiap phase = vertical slice (tested, mergeable PR).
 Jangan skip — phase N+1 butuh phase N. Tiap phase **WAJIB include unit
 + integration test** sesuai §14.
 
-**Phase 1 — Foundation** *(folder + types, no execution)*
+### Status (2026-05-15)
+
+| Phase | Status | Notes |
+|---|---|---|
+| 1. Foundation | ✅ done | types + parser + validator + Service di `internal/agents/workflow/` |
+| 2. Engine core | ✅ done | walker + shell/http/branch/transform/end executors + state |
+| 3. Parallel + merge | ✅ done | fan-out goroutines, 4 merge strategies, diamond proven |
+| 4. Trigger router | ✅ done | router + queue + dedup + webhook handler |
+| 5. Channel integration | ✅ done | WorkflowChannel iface + registry + executor + implicit-reply injection |
+| 6. Connector integration | ✅ done | in-process Execute() dispatch + audit hook |
+| 7. Provider + AI nodes | ✅ done | 6-layer classify + agent + session ID derivation; provider impls deferred |
+| 8. Datasets | ✅ done | in-mem store + 7 dataset_* executors; Postgres impl deferred |
+| 9. Env + secrets | ✅ done | schema/value resolver + secret leak guard |
+| 10. AI guard | ✅ done | 5 rule packs + ContentHash + override flow |
+| 11. Interactive + error trigger | ✅ done | Slack interactive Action specs + error router with depth guard |
+| 12. MCP + canvas + test framework | ✅ done | MCPOps surface + Canvas mutator + JSON-fixture TestRunner |
+| 13. Polish + observability | ✅ done | Bootstrap + HotReload + CleanupRuns + CostTracker |
+
+Deferred from above (out-of-scope for the package, wire when concrete UIs land):
+- Drawflow canvas UI (HTML mockup ada di `workflow-mockup.html`; templ
+  integration di `internal/tools/agents/` tab Workflows belum dibuat)
+- fsnotify watcher (Bootstrap + HotReload entrypoints sudah ada; watcher
+  loop tinggal mount di server.go)
+- Postgres-backed DatasetService + Postgres `wick_workflow_state` table
+  (in-memory + per-workflow `state.json` shim sudah jalan)
+- Per-provider impls (Claude Code / Codex / Gemini) — abstraction
+  Provider tinggal di-implement di `internal/agents/provider/`
+- CLI `wick workflow test <slug>` — TestRunner sudah ada, tinggal cobra
+  subcommand
+- Webhook HMAC enforcement (VerifyHMAC helper ada, dispatch-side wiring
+  belum)
+
+**Phase 1 — Foundation** *(folder + types, no execution)* ✅
 
 Implementation:
 - [ ] `internal/agents/workflow/` package skeleton
@@ -41,7 +73,7 @@ Unit tests:
 - [ ] `service_test.go` — Service CRUD ops dgn temp folder, atomic write verify (tmp+rename never corrupt)
 - [ ] `types_test.go` — Edge/Node/Trigger YAML marshal+unmarshal round-trip
 
-**Phase 2 — Engine core** *(execution, simple linear flow only)*
+**Phase 2 — Engine core** *(execution, simple linear flow only)* ✅
 
 Implementation:
 - [ ] DAG walker algo per §6 (edge-first resolution, classify/branch case filter, fan-out detect)
@@ -66,7 +98,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_linear_test.go` — end-to-end 3-node linear workflow dgn mock executors, verify state + events
 
-**Phase 3 — Parallel + merge** *(DAG topology)*
+**Phase 3 — Parallel + merge** *(DAG topology)* ✅
 
 Implementation:
 - [ ] `parallel` node executor (fan-out goroutines, on_failure per-branch policy)
@@ -86,7 +118,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_diamond_test.go` — diamond topology (A → [B,C] → merge → D), partial failure, all strategies
 
-**Phase 4 — Trigger router**
+**Phase 4 — Trigger router** ✅
 
 Implementation:
 - [ ] Cron path: register sebagai `jobs.Module` Key `workflow:<slug>:cron-<idx>`, reuse existing scheduler
@@ -108,7 +140,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_triggers_test.go` — workflow w/ 3 triggers (cron + manual + webhook), each fires correct path
 
-**Phase 5 — Channel integration** *(symmetric trigger + action)*
+**Phase 5 — Channel integration** *(symmetric trigger + action)* ✅
 
 Implementation:
 - [ ] Channel interface extension: `TriggerSpecs()`, `Actions()`, `Send()`, `Subscribe()`
@@ -132,7 +164,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_slack_test.go` — Slack message trigger → workflow → reply (mock Slack API)
 
-**Phase 6 — Connector integration** *(reuse existing)*
+**Phase 6 — Connector integration** *(reuse existing)* ✅
 
 Implementation:
 - [ ] `type: connector` node executor — in-process call `Operation.Execute()`
@@ -151,7 +183,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_connector_test.go` — workflow invokes `crudcrud` connector (existing template module), verify audit + output ref
 
-**Phase 7 — Provider + AI nodes** *(classify, agent, sessions)*
+**Phase 7 — Provider + AI nodes** *(classify, agent, sessions)* ✅
 
 Implementation:
 - [ ] Provider interface extension: `Capabilities()`, `StructuredCall()`, `ListSkills()`
@@ -183,7 +215,7 @@ Integration test:
 - [ ] `integration_classify_test.go` — workflow dgn classify dgn 5 mock provider responses (success, fuzzy, default fallback, low confidence, retry)
 - [ ] `integration_agent_test.go` — agent dgn skill invocation, root session shared 2 agent nodes
 
-**Phase 8 — Datasets**
+**Phase 8 — Datasets** ✅
 
 Implementation:
 - [ ] `wick_datasets_rows` table migration (Postgres)
@@ -218,7 +250,7 @@ Integration test:
 - [ ] `integration_dedup_test.go` — webhook dedup workflow (dataset_exists + branch + upsert)
 - [ ] `integration_sharing_test.go` — 2 workflows share dataset, strict schema enforced, both write OK
 
-**Phase 9 — Environment & secrets**
+**Phase 9 — Environment & secrets** ✅
 
 Implementation:
 - [ ] `env:` schema parser di workflow.yaml (reuse config-tags vocab)
@@ -243,7 +275,7 @@ Unit tests:
 Integration test:
 - [ ] `integration_env_test.go` — workflow w/ secret → run → verify secret never in events.jsonl, run logs
 
-**Phase 10 — AI guard + governance**
+**Phase 10 — AI guard + governance** ✅
 
 Implementation:
 - [ ] Guard config struct (entity.Config reflected)
@@ -271,7 +303,7 @@ Integration test:
 - [ ] `integration_guard_test.go` — workflow w/ `rm -rf /` di shell node → guard blocks publish
 - [ ] `integration_guard_test.go` — override w/ reasoning → commit + audit log entry
 
-**Phase 11 — Interactive + error trigger** *(advanced channel + on_error)*
+**Phase 11 — Interactive + error trigger** *(advanced channel + on_error)* ✅
 
 Implementation:
 - [ ] Slack interactive Actions: `post_message_with_button`, `open_modal`, `react`, `update_message`
@@ -298,7 +330,7 @@ Integration test:
 - [ ] `integration_ticket_flow_test.go` — UC4 multi-stage interactive: message → button → action → modal → submission → ticket → reply
 - [ ] `integration_error_handler_test.go` — failing workflow fires error-handler, escalates per severity
 
-**Phase 12 — UI + MCP surface + Test framework**
+**Phase 12 — UI + MCP surface + Test framework** ✅ *(MCP + test framework done; UI tab/Drawflow pending)*
 
 Implementation:
 - [ ] Tab Workflows di `internal/tools/agents/` (list, detail, edit, runs)
@@ -331,7 +363,7 @@ Integration test:
 - [ ] `integration_ai_first_test.go` — end-to-end AI flow: MCP introspect → compose workflow + tests → workflow_test → fix → request_review
 - [ ] `integration_canvas_test.go` — workflow build via canvas ops only, YAML produced equivalent to hand-write
 
-**Phase 13 — Polish + observability**
+**Phase 13 — Polish + observability** ✅ *(Bootstrap/HotReload/Cleanup/Cost done; fsnotify watcher loop pending)*
 
 Implementation:
 - [ ] fsnotify watcher di `<BaseDir>/workflows/` + `<BaseDir>/datasets/`

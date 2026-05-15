@@ -1,0 +1,118 @@
+/* workflow editor.css — wick-flavored Drawflow overrides.
+ * Theme palette matches the agents tab: white-{100..400} / navy-{600..800} /
+ * black-{500..900} / green-{500..700}. No slate-* colors.
+ */
+
+/* Canvas drop zone. Light mode = white-200 bg + white-400 grid dots.
+ * Dark mode handled via .dark scope set on <html>. */
+#wf-canvas {
+  height: 100%;
+  width: 100%;
+  background-color: #f1efeb; /* white-200 */
+  background-image: radial-gradient(circle, #d6cfc4 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.dark #wf-canvas {
+  background-color: #131c2f; /* navy-800 */
+  background-image: radial-gradient(circle, #2c3a5a 1px, transparent 1px);
+}
+
+/* Drawflow node card. */
+.drawflow .drawflow-node {
+  border-radius: 12px;
+  padding: 0;
+  background: #ffffff;
+  border: 2px solid transparent;
+  min-width: 200px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.dark .drawflow .drawflow-node {
+  background: #1e2942; /* navy-700 */
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.drawflow .drawflow-node.selected {
+  border-color: #16a34a; /* green-500 */
+  box-shadow: 0 0 0 4px rgba(22,163,74,0.18);
+}
+.drawflow .drawflow-node .node-head {
+  padding: 8px 12px;
+  border-radius: 10px 10px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #fff;
+}
+.drawflow .drawflow-node .node-body { padding: 10px 12px; }
+.drawflow .drawflow-node .node-body .title {
+  font-weight: 600; font-size: 13px; color: #18181b;
+}
+.dark .drawflow .drawflow-node .node-body .title { color: #f5f3ef; }
+.drawflow .drawflow-node .node-body .meta {
+  font-size: 11px; color: #6b7280;
+}
+.dark .drawflow .drawflow-node .node-body .meta { color: #9aa3b2; }
+
+/* Per-type header colour. */
+.drawflow .drawflow-node.node-trigger .node-head   { background: #6366f1; }
+.drawflow .drawflow-node.node-classify .node-head  { background: #ec4899; }
+.drawflow .drawflow-node.node-agent .node-head     { background: #8b5cf6; }
+.drawflow .drawflow-node.node-connector .node-head { background: #14b8a6; }
+.drawflow .drawflow-node.node-channel .node-head   { background: #6366f1; }
+.drawflow .drawflow-node.node-shell .node-head     { background: #64748b; }
+.drawflow .drawflow-node.node-http .node-head      { background: #f59e0b; }
+.drawflow .drawflow-node.node-db_query .node-head  { background: #0ea5e9; }
+.drawflow .drawflow-node.node-branch .node-head    { background: #f43f5e; }
+.drawflow .drawflow-node.node-parallel .node-head  { background: #a3e635; color: #1a2e05; }
+.drawflow .drawflow-node.node-merge .node-head     { background: #475569; }
+.drawflow .drawflow-node.node-end .node-head       { background: #16a34a; } /* green-500 */
+.drawflow .drawflow-node.node-transform .node-head { background: #84cc16; }
+
+/* Connections. */
+.drawflow .connection .main-path { stroke: #9aa3b2; stroke-width: 2; }
+.dark .drawflow .connection .main-path { stroke: #5b6478; }
+.drawflow .input, .drawflow .output {
+  width: 14px; height: 14px;
+  border-color: #9aa3b2;
+}
+
+/* Floating zoom controls top-right. */
+.wf-canvas-controls {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-canvas-controls button {
+  background: #ffffff;
+  border: 1px solid #e0dccf; /* white-300 */
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-weight: 600;
+  color: #4a5568;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  cursor: pointer;
+}
+.wf-canvas-controls button:hover { background: #f1efeb; }
+.dark .wf-canvas-controls button {
+  background: #1e2942;
+  border-color: #2c3a5a;
+  color: #c9d1de;
+}
+.dark .wf-canvas-controls button:hover { background: #131c2f; }
+
+/* Palette drag affordance. */
+.wf-palette-item { cursor: grab; user-select: none; transition: transform 0.15s, border-color 0.15s; }
+.wf-palette-item:hover { transform: translateX(2px); }
+.wf-palette-item:active { cursor: grabbing; }
+
+/* YAML syntax-highlight tokens (server-side spans). */
+.yaml-key  { color: #7dd3fc; }
+.yaml-str  { color: #fde68a; }
+.yaml-num  { color: #f0abfc; }
+.yaml-cmt  { color: #6b7280; font-style: italic; }
+.yaml-bool { color: #f0abfc; }

@@ -1,0 +1,15 @@
+package workflow
+
+// EditorCanvas is the centre column — Drawflow drop target + zoom
+// controls. Background grid lives in editor.css; theme tokens
+// applied via the wrap div.
+templ EditorCanvas(vm EditorVM) {
+	<div class="flex-1 relative bg-white-200 dark:bg-navy-800" id="wf-canvas-wrap">
+		<div class="wf-canvas-controls">
+			<button type="button" id="wf-zoom-in" title="Zoom in">+</button>
+			<button type="button" id="wf-zoom-out" title="Zoom out">−</button>
+			<button type="button" id="wf-zoom-reset" title="Reset view">⤢</button>
+		</div>
+		<div id="wf-canvas"></div>
+	</div>
+}
