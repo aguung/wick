@@ -524,33 +524,155 @@
   // redraws affected edges. Cheap (few nodes, parseFloat, dict
   // compare per frame) and survives whatever event quirks the
   // bundled lib carries.
+  // Snap config — node positions round to multiples of GRID (16px is
+  // a comfortable default at the current node size). ALIGN_THRESHOLD
+  // is the snap radius for "this node is close to vertically/
+  // horizontally aligned with another node, lock it onto that line."
+  const GRID = 16;
+  const ALIGN_THRESHOLD = 8;
+
+  // Track mouse-button state so snap only kicks in during user drags,
+  // not during programmatic moves (autoLayout, edge connection
+  // creation, etc).
+  let mouseIsDown = false;
+  window.addEventListener('mousedown', () => { mouseIsDown = true; }, true);
+  window.addEventListener('mouseup', () => { mouseIsDown = false; }, true);
+  window.addEventListener('blur', () => { mouseIsDown = false; });
+
+  // Alignment guide layer — two absolutely-positioned lines that
+  // appear when a moved node locks onto another node's X or Y axis.
+  // Hidden by default; updateAlignGuides toggles + repositions them.
+  const guideLayer = document.createElement('div');
+  guideLayer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;';
+  const guideV = document.createElement('div');
+  guideV.style.cssText = 'position:absolute;width:1px;background:#16a34a;display:none;top:0;bottom:0;';
+  const guideH = document.createElement('div');
+  guideH.style.cssText = 'position:absolute;height:1px;background:#16a34a;display:none;left:0;right:0;';
+  guideLayer.appendChild(guideV);
+  guideLayer.appendChild(guideH);
+  canvasEl.parentElement.appendChild(guideLayer);
+
+  function hideAlignGuides() {
+    guideV.style.display = 'none';
+    guideH.style.display = 'none';
+  }
+  function updateAlignGuides(movedItems, live) {
+    if (!movedItems.length || !mouseIsDown) {
+      hideAlignGuides();
+      return;
+    }
+    let showV = false;
+    let showH = false;
+    // The guides are drawn in the canvas's coordinate space which is
+    // panned/zoomed by Drawflow via transform on .drawflow. Reading
+    // the actual DOM rect lets us position guides in viewport space
+    // so they match what the user sees.
+    for (const m of movedItems) {
+      if (m.alignedX !== null) {
+        const el = document.getElementById('node-' + m.id);
+        if (el) {
+          const r = el.getBoundingClientRect();
+          const parent = canvasEl.parentElement.getBoundingClientRect();
+          guideV.style.left = (r.left + r.width / 2 - parent.left) + 'px';
+          guideV.style.display = 'block';
+          showV = true;
+        }
+      }
+      if (m.alignedY !== null) {
+        const el = document.getElementById('node-' + m.id);
+        if (el) {
+          const r = el.getBoundingClientRect();
+          const parent = canvasEl.parentElement.getBoundingClientRect();
+          guideH.style.top = (r.top + r.height / 2 - parent.top) + 'px';
+          guideH.style.display = 'block';
+          showH = true;
+        }
+      }
+    }
+    if (!showV) guideV.style.display = 'none';
+    if (!showH) guideH.style.display = 'none';
+  }
+
   function reconcileNodes() {
     const home = editor && editor.drawflow && editor.drawflow.drawflow && editor.drawflow.drawflow.Home;
     if (!home || !home.data) return false;
     const live = home.data;
     let dirty = false;
     const moved = [];
+    // Collect snap candidates from every node NOT currently being
+    // moved (in practice: scan all, the dragger's own coords get
+    // overwritten before they're used as a candidate).
+    const xs = [];
+    const ys = [];
     for (const id in live) {
       const el = document.getElementById('node-' + id);
       if (!el) continue;
       const left = parseFloat(el.style.left);
       const top = parseFloat(el.style.top);
       if (Number.isNaN(left) || Number.isNaN(top)) continue;
-      if (left !== live[id].pos_x || top !== live[id].pos_y) {
-        live[id].pos_x = left;
-        live[id].pos_y = top;
+      // Snap target candidate = LIVE state (not DOM) so a dragging
+      // node never aligns to itself.
+      xs.push({ id, v: live[id].pos_x });
+      ys.push({ id, v: live[id].pos_y });
+      if (left === live[id].pos_x && top === live[id].pos_y) continue;
+
+      // Alignment-only snap. Look for a sibling whose X (or Y) is
+      // within ALIGN_THRESHOLD; if found, lock onto it. No grid snap
+      // — grid snap fought every frame against the user's mousemove
+      // and made the drag feel choppy. Alignment is opt-in: the
+      // node only locks when the user moves it close to a peer.
+      let alignedX = null;
+      let alignedY = null;
+      for (const cand of xs) {
+        if (cand.id === id) continue;
+        if (Math.abs(cand.v - left) <= ALIGN_THRESHOLD) {
+          alignedX = { partner: cand.id, value: cand.v };
+          break;
+        }
+      }
+      for (const cand of ys) {
+        if (cand.id === id) continue;
+        if (Math.abs(cand.v - top) <= ALIGN_THRESHOLD) {
+          alignedY = { partner: cand.id, value: cand.v };
+          break;
+        }
+      }
+
+      // Only write back to DOM when we actually locked onto a peer,
+      // and only during real user drags. Otherwise leave the raw
+      // mousemove coords alone — that's what makes the drag feel
+      // smooth.
+      const finalX = mouseIsDown && alignedX ? alignedX.value : left;
+      const finalY = mouseIsDown && alignedY ? alignedY.value : top;
+      if (mouseIsDown && (finalX !== left || finalY !== top)) {
+        el.style.left = finalX + 'px';
+        el.style.top = finalY + 'px';
+      }
+
+      if (finalX !== live[id].pos_x || finalY !== live[id].pos_y) {
+        live[id].pos_x = finalX;
+        live[id].pos_y = finalY;
         dirty = true;
-        moved.push(id);
+        moved.push({
+          id,
+          alignedX: alignedX ? alignedX.partner : null,
+          alignedY: alignedY ? alignedY.partner : null,
+          x: finalX,
+          y: finalY,
+        });
       }
     }
-    if (!dirty) return false;
-    // Drawflow's updateConnectionNodes(id) only redraws edges
-    // originating from id. Edges arriving INTO a moved node need a
-    // redraw triggered on the source side too — walk outputs of
-    // every node and tag the sources whose outgoing edge target was
-    // just moved.
-    const movedSet = new Set(moved);
-    const toRefresh = new Set(moved);
+    if (!dirty) {
+      hideAlignGuides();
+      return false;
+    }
+    // Show guide lines for every moved node that locked onto a
+    // sibling. Guides hide automatically on the next idle frame.
+    updateAlignGuides(moved, live);
+    // Downstream code expects `moved` to be a flat list of node ids.
+    const movedIds = moved.map((m) => m.id);
+    const movedSet = new Set(movedIds);
+    const toRefresh = new Set(movedIds);
     for (const id in live) {
       const outs = live[id].outputs || {};
       for (const key in outs) {
@@ -566,6 +688,7 @@
     });
     return true;
   }
+
   // Persistent rAF loop. Errors are caught so a single throw never
   // breaks the chain silently — without this guard, the loop would
   // stop firing the first time Drawflow's internal state was mid-
