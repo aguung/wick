@@ -1214,7 +1214,7 @@ func executionsPanel(c *tool.Ctx) {
 	runs, hasMore, _ := globalWorkflowMgr.MCP.GetRunSummaries(slug, page, 50)
 	vm := wfview.ExecutionsVM{
 		Base:        c.Base(),
-		Slug:        slug,
+		ID:          slug,
 		Runs:        runs,
 		RunsHasMore: hasMore,
 	}
