@@ -19,6 +19,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/agents/workflow/parse"
 	"github.com/yogasw/wick/internal/agents/workflow/setup"
+	"github.com/yogasw/wick/internal/agents/workflow/wftest"
 	"github.com/yogasw/wick/internal/entity"
 	"github.com/yogasw/wick/internal/pkg/config"
 	wfview "github.com/yogasw/wick/internal/tools/agents/view/workflow"
@@ -970,5 +971,27 @@ func workflowRunDetail(c *tool.Ctx) {
 		RunID:  runID,
 		State:  st,
 		Events: events,
+	}))
+}
+
+func runWorkflowTests(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	runner := wftest.New(
+		globalWorkflowMgr.Engine,
+		globalWorkflowMgr.Service,
+		globalWorkflowMgr.Layout,
+	)
+	results, cov, err := runner.RunAllWithCoverage(context.Background(), slug)
+	if err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.HTML(wfview.TestResultsPanel(wfview.TestResultsVM{
+		Slug:     slug,
+		Results:  results,
+		Coverage: cov,
 	}))
 }

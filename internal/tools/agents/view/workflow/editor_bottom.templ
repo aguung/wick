@@ -20,6 +20,15 @@ templ EditorBottom(vm EditorVM) {
 			<button type="button" data-bottom-tab="yaml" class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100">YAML preview</button>
 			<button type="button" data-bottom-tab="runs" class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100">Runs ({ runsLabel(len(vm.Runs)) })</button>
 			<button type="button" data-bottom-tab="guard" class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100">Guard</button>
+			<button
+				type="button"
+				data-bottom-tab="tests"
+				hx-post={ vm.Base + "/workflows/edit/" + vm.Slug + "/test" }
+				hx-target="#wf-test-results"
+				hx-swap="innerHTML"
+				hx-trigger="click"
+				class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100"
+			>Tests</button>
 			<span id="wf-run-cancel-host" class="ml-auto"></span>
 			<button type="button" id="wf-bottom-toggle" class="px-3 py-2 text-xs text-black-600 dark:text-black-700 hover:text-black-900 dark:hover:text-white-100" data-collapsed="true">▴ expand</button>
 		</div>
@@ -39,6 +48,11 @@ templ EditorBottom(vm EditorVM) {
 			</div>
 			<div data-bottom-panel="guard" class="hidden p-4 max-h-48 overflow-y-auto">
 				@bottomGuard(vm.GuardReport)
+			</div>
+			<div data-bottom-panel="tests" class="hidden max-h-72 overflow-y-auto">
+				<div id="wf-test-results" class="p-3 text-xs text-black-600 dark:text-black-700 italic">
+					Click the Tests tab to run fixtures.
+				</div>
 			</div>
 		</div>
 	</div>

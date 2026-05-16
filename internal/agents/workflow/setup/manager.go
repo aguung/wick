@@ -78,6 +78,7 @@ func New(layout config.Layout) *Manager {
 	eng.Register(workflow.NodeAgent, nodes.NewAgentExecutor(provReg))
 	eng.Register(workflow.NodeChannel, nodes.NewChannelExecutor(intReg))
 	eng.Register(workflow.NodeConnector, nodes.NewConnectorExecutor(conReg))
+	eng.Register(workflow.NodeDBQuery, nodes.NewDBQueryExecutor())
 	dsExec := nodes.NewDatasetExecutor(dsSvc)
 	for _, t := range []workflow.NodeType{
 		workflow.NodeDatasetGet, workflow.NodeDatasetExists, workflow.NodeDatasetQuery,
