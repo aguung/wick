@@ -12,7 +12,7 @@ import (
 // ExecutionsVM is the view model for the Executions panel.
 type ExecutionsVM struct {
 	Base        string
-	Slug        string
+	ID          string
 	Runs        []mcp.RunSummary
 	RunsHasMore bool
 	ActiveRun   *ExecutionDetailVM
@@ -180,7 +180,7 @@ templ ExecutionsPanel(vm ExecutionsVM) {
 							type="button"
 							class="wf-ex-row"
 							data-run-id={ r.ID }
-							data-ex-load={ vm.Base + "/workflows/edit/" + vm.Slug + "/executions/" + r.ID }
+							data-ex-load={ vm.Base + "/workflows/edit/" + vm.ID + "/executions/" + r.ID }
 						>
 							<!-- Status indicator bar on left -->
 							<span class={ "wf-ex-row-bar wf-ex-bar-" + exStatusKey(r.Status) }></span>
@@ -211,7 +211,7 @@ templ ExecutionsPanel(vm ExecutionsVM) {
 								type="button"
 								id="wf-ex-load-more"
 								class="wf-ex-load-more"
-								data-ex-more={ vm.Base + "/workflows/edit/" + vm.Slug + "/executions?page=2" }
+								data-ex-more={ vm.Base + "/workflows/edit/" + vm.ID + "/executions?page=2" }
 							>Load older runs ↓</button>
 						</div>
 					}
@@ -228,7 +228,7 @@ templ ExecutionsPanel(vm ExecutionsVM) {
 					<div class="text-[11px]">Click any execution on the left to inspect its output.</div>
 				</div>
 			} else {
-				@ExecutionDetail(vm.Base, vm.Slug, *vm.ActiveRun)
+				@ExecutionDetail(vm.Base, vm.ID, *vm.ActiveRun)
 			}
 		</div>
 	</div>

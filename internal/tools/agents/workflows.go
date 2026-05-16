@@ -1214,7 +1214,7 @@ func executionsPanel(c *tool.Ctx) {
 	runs, hasMore, _ := globalWorkflowMgr.MCP.GetRunSummaries(slug, page, 50)
 	vm := wfview.ExecutionsVM{
 		Base:        c.Base(),
-		Slug:        slug,
+		ID:          slug,
 		Runs:        runs,
 		RunsHasMore: hasMore,
 	}
@@ -1243,4 +1243,53 @@ func executionDetail(c *tool.Ctx) {
 	}
 	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = wfview.ExecutionDetail(c.Base(), slug, detail).Render(c.R.Context(), c.W)
+}
+
+// ── Copy run to editor ──────────────────────────────────────────────
+
+// copyRunToEditor restores the current published workflow as a new
+// draft and tags it with the source run ID. The run's node outputs
+// are written to runs/<runID>/mocks.json so Execute Step can pre-fill
+// inputs from that run's actual data.
+func copyRunToEditor(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	id := c.PathValue("id")
+	runID := c.PathValue("runID")
+
+	st, err := globalWorkflowMgr.StateStore.Load(id, runID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, map[string]any{"error": "run not found"})
+		return
+	}
+
+	svc := globalWorkflowMgr.Service
+	w, err := svc.Load(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]any{"error": "load workflow: " + err.Error()})
+		return
+	}
+
+	hadDraft := svc.HasDraft(id)
+
+	if err := svc.SaveDraft(id, w); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]any{"error": "save draft: " + err.Error()})
+		return
+	}
+
+	if len(st.Outputs) > 0 {
+		if mockData, merr := json.Marshal(st.Outputs); merr == nil {
+			_ = svc.WriteFile(id, "runs/"+runID+"/mocks.json", mockData)
+		}
+	}
+
+	_ = setup.HotReload(context.Background(), svc, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, id)
+
+	c.JSON(http.StatusOK, map[string]any{
+		"ok":       true,
+		"hadDraft": hadDraft,
+		"runID":    runID,
+		"id":       id,
+	})
 }
