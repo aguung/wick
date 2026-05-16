@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/yogasw/wick/internal/agents/workflow"
 	"github.com/yogasw/wick/internal/agents/workflow/canvas"
 	"github.com/yogasw/wick/internal/agents/workflow/channel"
@@ -117,20 +119,19 @@ func (m *Ops) SkillsList(ctx context.Context, providerName string) ([]provider.S
 	return out, nil
 }
 
-// List returns workflow slugs + metadata.
+// List returns workflow IDs + metadata.
 func (m *Ops) List() ([]Summary, error) {
-	slugs, err := m.Service.List()
+	ids, err := m.Service.List()
 	if err != nil {
 		return nil, err
 	}
 	out := []Summary{}
-	for _, slug := range slugs {
-		w, err := m.Service.Load(slug)
+	for _, id := range ids {
+		w, err := m.Service.Load(id)
 		if err != nil {
 			continue
 		}
 		out = append(out, Summary{
-			Slug:    slug,
 			ID:      w.ID,
 			Name:    w.Name,
 			Enabled: w.Enabled,
@@ -152,25 +153,31 @@ func (m *Ops) ReadFile(slug, path string) ([]byte, error) { return m.Service.Rea
 // ── Tier 2: write ────────────────────────────────────────────────────
 
 // CreateInput is the payload for `workflow_create`.
+//
+// Slug is the on-disk folder name. Optional — when empty, Create
+// generates a UUID so renaming the display name later doesn't break
+// run history, indexed logs, or shared edit URLs. Power users (MCP,
+// CLI, tests) may pin an explicit slug for human-readable folders.
 type CreateInput struct {
-	Slug     string `json:"slug"`
+	Slug     string `json:"slug,omitempty"`
 	Template string `json:"template,omitempty"`
 	Name     string `json:"name,omitempty"`
 }
 
 // Create scaffolds a new workflow from a template.
 func (m *Ops) Create(in CreateInput) (workflow.Workflow, error) {
-	if err := parse.ValidateSlug(in.Slug); err != nil {
+	slug := in.Slug
+	if slug == "" {
+		slug = uuid.NewString()
+	}
+	if err := parse.ValidateSlug(slug); err != nil {
 		return workflow.Workflow{}, err
 	}
-	w := scaffold.Workflow(in.Slug, in.Template)
-	if in.Name != "" {
-		w.Name = in.Name
-	}
-	if err := m.Service.Create(in.Slug, w, nil); err != nil {
+	w := scaffold.Workflow(slug, in.Name, in.Template)
+	if err := m.Service.Create(slug, w, nil); err != nil {
 		return workflow.Workflow{}, err
 	}
-	return m.Service.Load(in.Slug)
+	return m.Service.Load(slug)
 }
 
 // WriteFile atomically writes a file inside the workflow folder.
@@ -330,7 +337,6 @@ func (m *Ops) GetRunSummaries(slug string, page, pageSize int) ([]RunSummary, bo
 
 // Summary is the row shape for `workflow_list`.
 type Summary struct {
-	Slug    string `json:"slug"`
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`

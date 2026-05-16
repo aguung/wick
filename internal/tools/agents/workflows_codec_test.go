@@ -156,7 +156,7 @@ func TestTriggerWithNoOutgoing(t *testing.T) {
 // fold prev's metadata back in by ID.
 func TestPerTriggerRoundtrip(t *testing.T) {
 	in := wf.Workflow{
-		Slug:    "t",
+		ID:      "t",
 		Version: 1,
 		Triggers: []wf.Trigger{
 			{ID: "trigger-channel", Type: wf.TriggerChannel, ChannelName: "slack", EntryNode: "agent"},
@@ -351,7 +351,7 @@ func TestPickTriggerByID(t *testing.T) {
 // the workflow value supplied, not from any stale lookup.
 func TestDraftEntryWinsOverStalePublished(t *testing.T) {
 	draft := wf.Workflow{
-		Slug: "t",
+		ID: "t",
 		Triggers: []wf.Trigger{
 			{ID: "trigger-manual", Type: wf.TriggerManual, EntryNode: "http"},
 		},
@@ -571,8 +571,7 @@ func TestFlowPatternChain(t *testing.T) {
 // survive load (the int-vs-float YAML decode bug had wiped them).
 func TestCanvasPositionsRoundtrip(t *testing.T) {
 	w := wf.Workflow{
-		Slug:     "p",
-		ID:       "id-p",
+		ID:       "p",
 		Triggers: []wf.Trigger{{Type: wf.TriggerManual}},
 		Graph: wf.Graph{
 			Entry: "n1",

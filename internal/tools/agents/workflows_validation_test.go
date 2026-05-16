@@ -15,8 +15,7 @@ import (
 // per-node mapping.
 func TestValidationPathUsesNodeID(t *testing.T) {
 	w := wf.Workflow{
-		Slug: "t",
-		ID:   "id-1",
+		ID: "t",
 		Graph: wf.Graph{
 			Entry: "broken-classify",
 			Nodes: []wf.Node{

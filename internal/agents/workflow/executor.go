@@ -77,7 +77,6 @@ func (r *RunContext) RenderCtx() RenderCtx {
 		Env:    r.EnvValues,
 		Secret: r.Secrets,
 		Workflow: WorkflowRef{
-			Slug:    r.Workflow.Slug,
 			ID:      r.Workflow.ID,
 			Version: r.Workflow.Version,
 			Name:    r.Workflow.Name,
@@ -122,7 +121,6 @@ type RenderCtx struct {
 
 // WorkflowRef is the small subset of Workflow accessible to templates.
 type WorkflowRef struct {
-	Slug    string
 	ID      string
 	Version int
 	Name    string

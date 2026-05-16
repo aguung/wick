@@ -3478,4 +3478,60 @@
       setTimeout(() => window.location.reload(), 500);
     },
   });
+
+  // ── Workflow name click-to-edit ────────────────────────────────────
+  // Heading is the default surface so the URL bar / toolbar reads like
+  // text. Click swaps to an input; Enter or blur posts JSON to /rename
+  // and swaps back. Esc cancels with no save. POST stays out-of-band so
+  // the canvas isn't re-rendered for a metadata-only change.
+  const nameDisplay = document.getElementById('wf-name-display');
+  const nameInput = document.getElementById('wf-name-input');
+  if (nameDisplay && nameInput) {
+    const renameURL = nameDisplay.dataset.renameUrl || '';
+    const enterEdit = () => {
+      nameInput.value = nameDisplay.textContent.trim();
+      nameDisplay.classList.add('hidden');
+      nameInput.classList.remove('hidden');
+      nameInput.focus();
+      nameInput.select();
+    };
+    const exitEdit = (newName) => {
+      if (newName) nameDisplay.textContent = newName;
+      nameInput.classList.add('hidden');
+      nameDisplay.classList.remove('hidden');
+    };
+    const commit = async () => {
+      const next = nameInput.value.trim();
+      const prev = nameDisplay.textContent.trim();
+      if (!next || next === prev) {
+        exitEdit('');
+        return;
+      }
+      try {
+        const form = new URLSearchParams();
+        form.set('name', next);
+        const resp = await fetch(renameURL, {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form.toString(),
+        });
+        if (!resp.ok) {
+          const body = await resp.text();
+          alert('Rename failed: ' + body);
+          exitEdit('');
+          return;
+        }
+        exitEdit(next);
+      } catch (err) {
+        alert('Rename failed: ' + err.message);
+        exitEdit('');
+      }
+    };
+    nameDisplay.addEventListener('click', enterEdit);
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); exitEdit(''); }
+    });
+    nameInput.addEventListener('blur', commit);
+  }
 })();

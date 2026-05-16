@@ -81,8 +81,8 @@ func NewRouter(e *engine.Engine, svc service.Service) *Router {
 func (r *Router) Register(ctx context.Context, w workflow.Workflow) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.defs[w.Slug] = w
-	if _, ok := r.queues[w.Slug]; !ok {
+	r.defs[w.ID] = w
+	if _, ok := r.queues[w.ID]; !ok {
 		max := w.Queue.MaxSize
 		if max == 0 {
 			max = 20
@@ -91,16 +91,16 @@ func (r *Router) Register(ctx context.Context, w workflow.Workflow) {
 		if policy == "" {
 			policy = workflow.OverflowDropOldest
 		}
-		r.queues[w.Slug] = NewQueue(max, policy)
+		r.queues[w.ID] = NewQueue(max, policy)
 		dedupTTL := 24 * time.Hour
 		if t := firstChannelDedupTTL(w); t > 0 {
 			dedupTTL = time.Duration(t) * time.Second
 		}
-		r.dedups[w.Slug] = NewDedup(1024, dedupTTL)
+		r.dedups[w.ID] = NewDedup(1024, dedupTTL)
 		wctx, cancel := context.WithCancel(ctx)
-		r.workers[w.Slug] = cancel
+		r.workers[w.ID] = cancel
 		r.wg.Add(1)
-		go r.runWorker(wctx, w.Slug)
+		go r.runWorker(wctx, w.ID)
 	}
 	r.reindexLocked(w)
 }
@@ -428,10 +428,10 @@ func eventRouteKeys(evt workflow.Event) []string {
 // reindexLocked rebuilds the index entries for one workflow. Caller
 // must hold r.mu.
 func (r *Router) reindexLocked(w workflow.Workflow) {
-	r.removeFromIndexLocked(w.Slug)
+	r.removeFromIndexLocked(w.ID)
 	for i, tr := range w.Triggers {
 		for _, key := range triggerRouteKeys(tr) {
-			r.index[key] = append(r.index[key], triggerRef{Slug: w.Slug, TriggerIdx: i})
+			r.index[key] = append(r.index[key], triggerRef{Slug: w.ID, TriggerIdx: i})
 		}
 	}
 }
@@ -554,7 +554,7 @@ func (r *Router) fireErrorWorkflow(ctx context.Context, w workflow.Workflow, st 
 		return fmt.Errorf("error workflow chain depth %d exceeded", depth)
 	}
 	payload := map[string]any{
-		"source_workflow": w.Slug,
+		"source_workflow": w.ID,
 		"source_run_id":   st.RunID,
 		"error":           runErr.Error(),
 		"severity":        w.OnError.Severity,

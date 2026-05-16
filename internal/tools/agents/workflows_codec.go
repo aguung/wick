@@ -651,7 +651,7 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 	}
 
 	w := wf.Workflow{
-		Slug:     slug,
+		ID:       slug,
 		Version:  1,
 		Name:     slug,
 		Enabled:  true,

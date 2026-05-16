@@ -59,10 +59,9 @@ const (
 )
 
 type Workflow struct {
-    ID             uuid.UUID
-    Slug           string
+    ID             string // folder name; UUID for canvas-created, slug for legacy
     Version        int
-    Name           string
+    Name           string // display title — freely renameable via /rename
     Description    string
     Enabled        bool
     MaxDurationSec int
@@ -126,14 +125,16 @@ type Trigger struct {
     // ... type-specific fields per trigger type
 }
 
+// Service methods take `id` = folder name (UUID for new workflows).
+// Param is still string-typed; "slug" var names are legacy aliases.
 type Service interface {
     List() ([]Workflow, error)
-    Load(slug string) (Workflow, error)
-    Create(w Workflow, files map[string][]byte) error
-    Update(slug string, w Workflow, files map[string][]byte) error
-    Delete(slug string) error
-    Toggle(slug string, enabled bool) error
-    Approve(slug, userID string, override *Override) error
+    Load(id string) (Workflow, error)
+    Create(id string, w Workflow, files map[string][]byte) error
+    Update(id string, w Workflow, files map[string][]byte) error
+    Delete(id string) error
+    Toggle(id string, enabled bool) error
+    Approve(id, userID string, override *Override) error
 }
 ```
 

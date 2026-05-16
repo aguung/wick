@@ -15,11 +15,18 @@ import (
 // Workflow returns a starter workflow for a template name. Supported
 // templates: empty (default), support-triage, incident-response,
 // daily-digest.
-func Workflow(slug, template string) workflow.Workflow {
+//
+// `name` is the display title (Workflow.Name); when non-empty it
+// overrides whatever default the template would have set. `slug` is
+// the stable folder identifier — UUID for canvas-created workflows,
+// kebab for legacy hand-edited ones.
+func Workflow(id, name, template string) workflow.Workflow {
+	if id == "" {
+		id = uuid.NewString()
+	}
 	now := time.Now().UTC()
 	base := workflow.Workflow{
-		ID:        uuid.NewString(),
-		Slug:      slug,
+		ID:        id,
 		Version:   1,
 		Enabled:   false,
 		CreatedAt: now,
@@ -79,7 +86,7 @@ func Workflow(slug, template string) workflow.Workflow {
 			Edges: []workflow.Edge{{From: "fetch", To: "publish"}},
 		}
 	default:
-		base.Name = slug
+		base.Name = "Untitled workflow"
 		base.Description = "Empty workflow scaffold. Add nodes via canvas or YAML."
 		base.Triggers = []workflow.Trigger{{Type: workflow.TriggerManual, Label: "Run"}}
 		base.Graph = workflow.Graph{
@@ -87,6 +94,9 @@ func Workflow(slug, template string) workflow.Workflow {
 			Nodes: []workflow.Node{{ID: "start", Type: workflow.NodeEnd, Result: "ok"}},
 			Edges: []workflow.Edge{},
 		}
+	}
+	if name != "" {
+		base.Name = name
 	}
 	return base
 }

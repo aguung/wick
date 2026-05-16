@@ -38,7 +38,7 @@ to read state.json to sort.
 **Generic module:** [`internal/shardedlog`](../shardedlog/) is a
 reusable `Store[T any]` (generics-based). Workflow runs use it via
 [`state.IndexAppend`](../agents/workflow/state/index.go) +
-`IndexList(slug, page, pageSize)`. Future features (agent sessions,
+`IndexList(id, page, pageSize)`. Future features (agent sessions,
 log mirrors, …) can reuse the same store.
 
 **Migration:** old runs (saved before the index existed) won't be
@@ -52,7 +52,6 @@ for the scale win.
 {
   "id": "01938...",
   "workflow_id": "0193e2b4-...",
-  "workflow_slug": "support-triage",
   "workflow_version": 3,
   "trigger": {
     "type": "channel",
@@ -89,7 +88,7 @@ touching `runs/`:
 {
   "level": "info",
   "component": "wf",
-  "wf_slug": "support-triage",
+  "wf_id": "0193e2b4-...",
   "wf_run_id": "<uuid>",
   "request_id": "<from HTTP middleware>",
   "wf_node": "agent",
@@ -107,7 +106,7 @@ touching `runs/`:
 Grep targets:
 - `wf_run_id=<id>` — every event for one specific run
 - `request_id=<id>` — HTTP request → engine run correlation
-- `wf_slug=<slug>` — every event for one workflow
+- `wf_id=<id>` — every event for one workflow (folder name)
 
 Engine carries `request_id` across the queue boundary via
 `Event.Payload["request_id"]` because the queue-worker goroutine's

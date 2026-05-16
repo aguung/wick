@@ -59,8 +59,8 @@ func (e *ConnectorExecutor) Execute(ctx context.Context, n workflow.Node, rc *wo
 	resp, execErr := op.Execute(cctx)
 
 	e.Registry.WriteAudit(ctx, connector.RunRecord{
-		WorkflowSlug: rc.Workflow.Slug,
-		RunID:        rc.RunID,
+		WorkflowID: rc.Workflow.ID,
+		RunID:      rc.RunID,
 		NodeID:       n.ID,
 		Module:       n.Module,
 		Op:           n.Op,

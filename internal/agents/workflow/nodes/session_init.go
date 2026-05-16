@@ -80,9 +80,9 @@ func resolveSessionInitID(n workflow.Node, rc *workflow.RunContext) (string, err
 	}
 	switch preset {
 	case workflow.SessionPresetWorkflowRun:
-		return DefaultRunSessionID(rc.Workflow.Slug, rc.RunID), nil
+		return DefaultRunSessionID(rc.Workflow.ID, rc.RunID), nil
 	case workflow.SessionPresetWorkflowGlobal:
-		return fmt.Sprintf("wf_%s", rc.Workflow.Slug), nil
+		return fmt.Sprintf("wf_%s", rc.Workflow.ID), nil
 	case workflow.SessionPresetNew:
 		return "wf_adhoc_" + uuid.NewString(), nil
 	}

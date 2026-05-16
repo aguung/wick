@@ -23,7 +23,7 @@ templ EditorBottom(vm EditorVM) {
 			<button
 				type="button"
 				data-bottom-tab="tests"
-				data-wf-run-tests={ vm.Base + "/workflows/edit/" + vm.Slug + "/test" }
+				data-wf-run-tests={ vm.Base + "/workflows/edit/" + vm.ID + "/test" }
 				class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100"
 			>Tests</button>
 			<span id="wf-run-cancel-host" class="ml-auto"></span>
@@ -41,7 +41,7 @@ templ EditorBottom(vm EditorVM) {
 				<pre id="wf-yaml" class="p-4 font-mono text-xs text-white-100 bg-navy-800 dark:bg-black-900 overflow-x-auto leading-relaxed max-h-48">{ vm.YAML }</pre>
 			</div>
 			<div data-bottom-panel="runs" class="hidden p-4 max-h-72 overflow-y-auto">
-				@bottomRuns(vm.Base, vm.Slug, vm.Runs, vm.RunsPage, vm.RunsHasMore)
+				@bottomRuns(vm.Base, vm.ID, vm.Runs, vm.RunsPage, vm.RunsHasMore)
 			</div>
 			<div data-bottom-panel="guard" class="hidden p-4 max-h-48 overflow-y-auto">
 				@bottomGuard(vm.GuardReport)
@@ -57,7 +57,7 @@ templ EditorBottom(vm EditorVM) {
 	// Test case modal shell — rendered empty at page load so JS can
 	// open it. The modal body (form fields) is always present; the
 	// case list is loaded into #wf-test-results on tab click.
-	<div class="wf-tc-modal hidden" id="wf-tc-modal" data-slug={ vm.Slug } data-base={ vm.Base }>
+	<div class="wf-tc-modal hidden" id="wf-tc-modal" data-slug={ vm.ID } data-base={ vm.Base }>
 		<div class="wf-tc-backdrop" data-wf-tc-cancel></div>
 		<div class="wf-tc-shell">
 			<div class="wf-tc-header">

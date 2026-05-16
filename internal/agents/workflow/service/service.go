@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/storage"
 	"github.com/yogasw/wick/internal/agents/workflow"
@@ -112,10 +110,7 @@ func (s *FileService) Create(slug string, w workflow.Workflow, files map[string]
 	if err := os.MkdirAll(filepath.Join(dir, "nodes"), 0o755); err != nil {
 		return err
 	}
-	w.Slug = slug
-	if w.ID == "" {
-		w.ID = uuid.NewString()
-	}
+	w.ID = slug
 	if w.CreatedAt.IsZero() {
 		w.CreatedAt = time.Now().UTC()
 	}
@@ -138,15 +133,7 @@ func (s *FileService) Update(slug string, w workflow.Workflow, files map[string]
 	if !storage.PathExists(s.Layout.WorkflowDir(slug)) {
 		return fmt.Errorf("%w: %s", ErrNotFound, slug)
 	}
-	w.Slug = slug
-	if w.ID == "" {
-		prev, err := s.Load(slug)
-		if err == nil && prev.ID != "" {
-			w.ID = prev.ID
-		} else {
-			w.ID = uuid.NewString()
-		}
-	}
+	w.ID = slug
 	if err := s.writeWorkflowYAML(slug, w); err != nil {
 		return err
 	}
@@ -338,14 +325,7 @@ func (s *FileService) SaveDraft(slug string, w workflow.Workflow) error {
 	if !storage.PathExists(s.Layout.WorkflowDir(slug)) {
 		return fmt.Errorf("%w: %s", ErrNotFound, slug)
 	}
-	w.Slug = slug
-	if w.ID == "" {
-		if prev, err := s.Load(slug); err == nil && prev.ID != "" {
-			w.ID = prev.ID
-		} else {
-			w.ID = uuid.NewString()
-		}
-	}
+	w.ID = slug
 	if w.CreatedAt.IsZero() {
 		if prev, err := s.Load(slug); err == nil && !prev.CreatedAt.IsZero() {
 			w.CreatedAt = prev.CreatedAt

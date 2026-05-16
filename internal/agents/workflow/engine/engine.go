@@ -142,7 +142,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	}
 	reqID, _ := evt.Payload["request_id"].(string)
 	lg := base.With().
-		Str("wf_slug", w.Slug).
+		Str("wf_id", w.ID).
 		Str("wf_run_id", runID)
 	if reqID != "" {
 		lg = lg.Str("request_id", reqID)
@@ -152,7 +152,6 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	st := workflow.RunState{
 		RunID:      runID,
 		WorkflowID: w.ID,
-		Slug:       w.Slug,
 		Version:    w.Version,
 		Status:     workflow.StatusRunning,
 		Entry:      entry,
@@ -165,7 +164,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	if st.Entry == "" {
 		return st, errors.New("no entry node (graph.entry + no trigger entry_node)")
 	}
-	envVals, _ := e.Service.LoadEnvValues(w.Slug)
+	envVals, _ := e.Service.LoadEnvValues(w.ID)
 	rc := &workflow.RunContext{
 		Workflow:    w,
 		Event:       evt,
@@ -195,7 +194,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 		Event: workflow.EventWorkflowStarted,
 		Data:  startData,
 	}
-	if err := e.StateStore.AppendEvent(w.Slug, runID, startEv); err != nil {
+	if err := e.StateStore.AppendEvent(w.ID, runID, startEv); err != nil {
 		return st, err
 	}
 	// Funnel through emit so the started event lands in both the
@@ -203,15 +202,15 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	// every other event takes.
 	log.Ctx(ctx).Info().
 		Str("component", "wf").
-		Str("wf_slug", w.Slug).
+		Str("wf_id", w.ID).
 		Str("wf_run_id", runID).
 		Str("wf_event", workflow.EventWorkflowStarted).
 		Str("wf_id_source", idSource).
 		Msg("workflow run enqueued in engine")
 	if e.OnEvent != nil {
-		e.OnEvent(w.Slug, runID, startEv)
+		e.OnEvent(w.ID, runID, startEv)
 	}
-	if err := e.StateStore.Save(w.Slug, runID, st); err != nil {
+	if err := e.StateStore.Save(w.ID, runID, st); err != nil {
 		return st, err
 	}
 
@@ -228,16 +227,16 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 		if st.Error == nil {
 			st.Error = &workflow.NodeError{Message: err.Error()}
 		}
-		e.emit(ctx, w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowFailed, Data: map[string]any{"error": err.Error()}})
+		e.emit(ctx, w.ID, runID, workflow.RunEvent{Event: workflow.EventWorkflowFailed, Data: map[string]any{"error": err.Error()}})
 	} else {
 		st.Status = workflow.StatusSuccess
-		e.emit(ctx, w.Slug, runID, workflow.RunEvent{Event: workflow.EventWorkflowCompleted})
+		e.emit(ctx, w.ID, runID, workflow.RunEvent{Event: workflow.EventWorkflowCompleted})
 	}
 	end := e.Now()
 	st.EndedAt = &end
 	st.UpdatedAt = end
 	st.Current = nil
-	if err := e.StateStore.Save(w.Slug, runID, st); err != nil {
+	if err := e.StateStore.Save(w.ID, runID, st); err != nil {
 		return st, err
 	}
 	// Persist a one-line summary to the sharded index file. The Runs
@@ -246,7 +245,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	// the failure (warn) so a broken index doesn't hide silently;
 	// don't return the error — the run itself already finished, and
 	// missing index rows are a UX degradation, not a data loss.
-	if ierr := e.StateStore.IndexAppend(w.Slug, state.IndexEntry{
+	if ierr := e.StateStore.IndexAppend(w.ID, state.IndexEntry{
 		ID:         runID,
 		Status:     st.Status,
 		StartedAt:  st.StartedAt,
@@ -255,7 +254,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 	}); ierr != nil {
 		log.Ctx(ctx).Warn().Err(ierr).
 			Str("component", "wf").
-			Str("wf_slug", w.Slug).
+			Str("wf_id", w.ID).
 			Str("wf_run_id", runID).
 			Msg("index append failed; Runs panel may drop this run")
 	}
@@ -291,9 +290,9 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			started := e.Now()
 			out, err := runMerge(n, rc)
 			if err != nil {
-				return e.failNode(ctx, w.Slug, st, n, err)
+				return e.failNode(ctx, w.ID, st, n, err)
 			}
-			e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+			e.recordSuccess(ctx, w.ID, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 			queue = append(queue, e.nextNodes(w, n, out)...)
 			continue
 		}
@@ -302,9 +301,9 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			started := e.Now()
 			out, err := e.runParallel(ctx, w, n, rc)
 			if err != nil {
-				return e.failNode(ctx, w.Slug, st, n, err)
+				return e.failNode(ctx, w.ID, st, n, err)
 			}
-			e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+			e.recordSuccess(ctx, w.ID, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 			queue = append(queue, e.nextNodes(w, n, out)...)
 			continue
 		}
@@ -318,7 +317,7 @@ func (e *Engine) walk(ctx context.Context, w workflow.Workflow, start string, rc
 			}
 			return handled
 		}
-		e.recordSuccess(ctx, w.Slug, st, rc, n, out, e.Now().Sub(started).Milliseconds())
+		e.recordSuccess(ctx, w.ID, st, rc, n, out, e.Now().Sub(started).Milliseconds())
 		queue = append(queue, e.nextNodes(w, n, out)...)
 	}
 	return nil
@@ -341,7 +340,7 @@ func (e *Engine) runOne(ctx context.Context, n workflow.Node, rc *workflow.RunCo
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		e.emit(ctx, rc.Workflow.Slug, rc.RunID, workflow.RunEvent{
+		e.emit(ctx, rc.Workflow.ID, rc.RunID, workflow.RunEvent{
 			Event: workflow.EventNodeStarted,
 			Node:  n.ID,
 			Data: map[string]any{
@@ -400,22 +399,22 @@ func (e *Engine) applyOnFailure(ctx context.Context, w workflow.Workflow, st *wo
 	}
 	switch policy {
 	case workflow.FailHalt:
-		return e.failNode(ctx, w.Slug, st, n, err)
+		return e.failNode(ctx, w.ID, st, n, err)
 	case workflow.FailSkip:
 		st.Skipped = append(st.Skipped, n.ID)
-		e.emit(ctx, w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeSkipped, Node: n.ID, Data: map[string]any{"reason": err.Error()}})
+		e.emit(ctx, w.ID, st.RunID, workflow.RunEvent{Event: workflow.EventNodeSkipped, Node: n.ID, Data: map[string]any{"reason": err.Error()}})
 		return nil
 	case workflow.FailFallback:
 		if n.Fallback == "" {
-			return e.failNode(ctx, w.Slug, st, n, fmt.Errorf("on_failure=fallback but fallback is empty: %w", err))
+			return e.failNode(ctx, w.ID, st, n, fmt.Errorf("on_failure=fallback but fallback is empty: %w", err))
 		}
 		st.Failed = append(st.Failed, n.ID)
-		e.emit(ctx, w.Slug, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error(), "fallback": n.Fallback}})
-		_ = e.StateStore.Save(w.Slug, st.RunID, *st)
+		e.emit(ctx, w.ID, st.RunID, workflow.RunEvent{Event: workflow.EventNodeFailed, Node: n.ID, Data: map[string]any{"error": err.Error(), "fallback": n.Fallback}})
+		_ = e.StateStore.Save(w.ID, st.RunID, *st)
 		st.Current = append(st.Current, n.Fallback)
 		return nil
 	}
-	return e.failNode(ctx, w.Slug, st, n, err)
+	return e.failNode(ctx, w.ID, st, n, err)
 }
 
 func (e *Engine) nextNodes(w workflow.Workflow, n workflow.Node, out workflow.NodeOutput) []string {

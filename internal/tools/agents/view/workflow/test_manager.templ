@@ -17,7 +17,7 @@ type TestCaseItem struct {
 
 // TestManagerVM is the view model for the full tests tab panel.
 type TestManagerVM struct {
-	Slug  string
+	ID    string
 	Base  string
 	Items []TestCaseItem
 }
@@ -25,7 +25,7 @@ type TestManagerVM struct {
 // TestCaseRowVM is the view model for a single result row (returned
 // after running one case).
 type TestCaseRowVM struct {
-	Slug string
+	ID   string
 	Base string
 	Item TestCaseItem
 }
@@ -106,7 +106,7 @@ templ TestManager(vm TestManagerVM) {
 				<button
 					type="button"
 					class="px-2.5 py-1 text-xs rounded-md bg-green-600 hover:bg-green-700 text-white-100 font-medium transition-colors"
-					data-wf-tc-run-all={ vm.Base + "/workflows/edit/" + vm.Slug + "/test" }
+					data-wf-tc-run-all={ vm.Base + "/workflows/edit/" + vm.ID + "/test" }
 				>▶ Run All</button>
 			}
 		</div>
@@ -120,7 +120,7 @@ templ TestManager(vm TestManagerVM) {
 				</div>
 			} else {
 				for _, item := range vm.Items {
-					@TestCaseRow(TestCaseRowVM{Slug: vm.Slug, Base: vm.Base, Item: item})
+					@TestCaseRow(TestCaseRowVM{ID: vm.ID, Base: vm.Base, Item: item})
 				}
 			}
 		</div>
@@ -152,7 +152,7 @@ templ TestCaseRow(vm TestCaseRowVM) {
 				type="button"
 				title="Run this test"
 				class="shrink-0 text-xs px-2 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50 transition-colors"
-				data-wf-tc-run={ vm.Base + "/workflows/edit/" + vm.Slug + "/test-cases/" + vm.Item.Name + "/run" }
+				data-wf-tc-run={ vm.Base + "/workflows/edit/" + vm.ID + "/test-cases/" + vm.Item.Name + "/run" }
 				data-wf-tc-row={ tcSafeName(vm.Item.Name) }
 			>▶</button>
 			<button
@@ -166,7 +166,7 @@ templ TestCaseRow(vm TestCaseRowVM) {
 				type="button"
 				title="Delete"
 				class="shrink-0 text-xs px-2 py-0.5 rounded bg-white-300 dark:bg-navy-700 text-red-500 hover:text-red-700 dark:hover:text-red-400 transition-colors"
-				data-wf-tc-delete={ vm.Base + "/workflows/edit/" + vm.Slug + "/test-cases/" + vm.Item.Name }
+				data-wf-tc-delete={ vm.Base + "/workflows/edit/" + vm.ID + "/test-cases/" + vm.Item.Name }
 				data-wf-tc-row={ tcSafeName(vm.Item.Name) }
 			>✕</button>
 		</div>

@@ -106,8 +106,8 @@ func (e *DatasetExecutor) enforceAccess(n workflow.Node, rc *workflow.RunContext
 		return err
 	}
 	if len(sc.Access.Workflows) > 0 && isWriteOp(n.Type) {
-		if !containsStr(sc.Access.Workflows, rc.Workflow.Slug) {
-			return fmt.Errorf("dataset %q: workflow %q not in access.workflows", n.Dataset, rc.Workflow.Slug)
+		if !containsStr(sc.Access.Workflows, rc.Workflow.ID) {
+			return fmt.Errorf("dataset %q: workflow %q not in access.workflows", n.Dataset, rc.Workflow.ID)
 		}
 	}
 	return nil

@@ -21,8 +21,7 @@ func newTestService(t *testing.T) (*FileService, string) {
 
 func makeWorkflow(slug string) wf.Workflow {
 	return wf.Workflow{
-		Slug:     slug,
-		ID:       "id-" + slug,
+		ID:       slug,
 		Name:     slug,
 		Enabled:  true,
 		Triggers: []wf.Trigger{{Type: wf.TriggerManual}},
@@ -110,8 +109,7 @@ func TestServiceToggleSkipsValidation(t *testing.T) {
 	svc, _ := newTestService(t)
 	// Build a workflow that would fail validation (classify w/o prompt).
 	bad := wf.Workflow{
-		Slug:     "bad",
-		ID:       "id-bad",
+		ID:       "bad",
 		Triggers: []wf.Trigger{{Type: wf.TriggerManual}},
 		Graph: wf.Graph{
 			Entry: "c",

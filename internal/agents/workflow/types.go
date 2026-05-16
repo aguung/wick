@@ -70,9 +70,13 @@ const (
 )
 
 // Workflow is the root document parsed from `workflow.yaml`.
+//
+// ID is the stable folder name (UUID for canvas-created workflows,
+// arbitrary slug for legacy hand-edited ones). Display title lives in
+// Name and is freely renameable — the folder/URL/log paths stay
+// anchored to ID so run history survives a rename.
 type Workflow struct {
 	ID             string           `yaml:"id"`
-	Slug           string           `yaml:"-"` // derived from folder name
 	Version        int              `yaml:"version"`
 	Name           string           `yaml:"name"`
 	Description    string           `yaml:"description,omitempty"`
@@ -431,7 +435,6 @@ const (
 type RunState struct {
 	RunID      string                `json:"run_id"`
 	WorkflowID string                `json:"workflow_id"`
-	Slug       string                `json:"slug"`
 	Version    int                   `json:"version"`
 	Status     string                `json:"status"`
 	Entry      string                `json:"entry"`

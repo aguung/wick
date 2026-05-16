@@ -197,25 +197,27 @@ func Register(r tool.Router) {
 	// Workflows tab — visual DAG editor (mockup §3).
 	r.GET("/workflows", workflowsPage)
 	r.POST("/workflows", createWorkflow)
-	// Slug-bound routes live under /edit/ so Go 1.22's mux doesn't
-	// flag a conflict with /static/{path}.
-	r.GET("/workflows/edit/{slug}", workflowEditor)
-	r.POST("/workflows/edit/{slug}/save", saveWorkflow)
-	r.POST("/workflows/edit/{slug}/publish", publishWorkflow)
-	r.POST("/workflows/edit/{slug}/discard", discardWorkflowDraft)
-	r.POST("/workflows/edit/{slug}/toggle", toggleWorkflow)
-	r.POST("/workflows/edit/{slug}/run", runWorkflowNow)
-	r.POST("/workflows/edit/{slug}/exec-node", execNodeStep)
-	r.GET("/workflows/edit/{slug}/runs/{runID}/state", workflowRunStateAPI)
-	r.POST("/workflows/edit/{slug}/delete", deleteWorkflow)
-	r.GET("/workflows/edit/{slug}/runs/{runID}", workflowRunDetail)
+	// ID-bound routes live under /edit/ so Go 1.22's mux doesn't
+	// flag a conflict with /static/{path}. The ID is the folder name
+	// (UUID for canvas-created workflows) — stable across name renames.
+	r.GET("/workflows/edit/{id}", workflowEditor)
+	r.POST("/workflows/edit/{id}/save", saveWorkflow)
+	r.POST("/workflows/edit/{id}/rename", renameWorkflow)
+	r.POST("/workflows/edit/{id}/publish", publishWorkflow)
+	r.POST("/workflows/edit/{id}/discard", discardWorkflowDraft)
+	r.POST("/workflows/edit/{id}/toggle", toggleWorkflow)
+	r.POST("/workflows/edit/{id}/run", runWorkflowNow)
+	r.POST("/workflows/edit/{id}/exec-node", execNodeStep)
+	r.GET("/workflows/edit/{id}/runs/{runID}/state", workflowRunStateAPI)
+	r.POST("/workflows/edit/{id}/delete", deleteWorkflow)
+	r.GET("/workflows/edit/{id}/runs/{runID}", workflowRunDetail)
 	r.GET("/workflows/api/registry", workflowRegistryAPI)
 	r.GET("/workflows/api/lookup", workflowLookupAPI)
-	r.POST("/workflows/edit/{slug}/test", runWorkflowTests)
-	r.GET("/workflows/edit/{slug}/test-cases", listTestCases)
-	r.POST("/workflows/edit/{slug}/test-cases", saveTestCase)
-	r.POST("/workflows/edit/{slug}/test-cases/{name}/run", runOneTestCase)
-	r.DELETE("/workflows/edit/{slug}/test-cases/{name}", deleteTestCase)
+	r.POST("/workflows/edit/{id}/test", runWorkflowTests)
+	r.GET("/workflows/edit/{id}/test-cases", listTestCases)
+	r.POST("/workflows/edit/{id}/test-cases", saveTestCase)
+	r.POST("/workflows/edit/{id}/test-cases/{name}/run", runOneTestCase)
+	r.DELETE("/workflows/edit/{id}/test-cases/{name}", deleteTestCase)
 
 	r.GET("/stream", streamSSE)
 }

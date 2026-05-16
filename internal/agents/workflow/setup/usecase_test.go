@@ -43,12 +43,12 @@ func newMgr(t *testing.T) *Manager {
 // the run_id so tests can inspect state + events.
 func runWorkflow(t *testing.T, m *Manager, w workflow.Workflow, evt workflow.Event) string {
 	t.Helper()
-	require.NoError(t, m.Service.Create(w.Slug, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.Slug))
+	require.NoError(t, m.Service.Create(w.ID, w, nil))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
 
 	// Run via engine direct so we get a deterministic synchronous
 	// result — Router.RunNow + worker goroutine is async.
-	loaded, err := m.Service.Load(w.Slug)
+	loaded, err := m.Service.Load(w.ID)
 	require.NoError(t, err)
 	st, err := m.Engine.Run(context.Background(), loaded, evt)
 	require.NoError(t, err, "engine run")
@@ -82,7 +82,7 @@ func TestUseCase_ManualSingleTrigger_Shell(t *testing.T) {
 	}
 
 	w := workflow.Workflow{
-		Slug:    "uc-manual-shell",
+		ID:      "uc-manual-shell",
 		Version: 1,
 		Name:    "Manual single trigger",
 		Enabled: true,
@@ -101,12 +101,12 @@ func TestUseCase_ManualSingleTrigger_Shell(t *testing.T) {
 
 	runID := runWorkflow(t, m, w, workflow.Event{Type: string(workflow.TriggerManual), At: time.Now()})
 
-	events := readEvents(t, m, w.Slug, runID)
+	events := readEvents(t, m, w.ID, runID)
 	require.NotEmpty(t, events)
 	require.Equal(t, "workflow_started", events[0]["event"])
 	require.Equal(t, "workflow_completed", events[len(events)-1]["event"])
 
-	st, err := m.StateStore.Load(w.Slug, runID)
+	st, err := m.StateStore.Load(w.ID, runID)
 	require.NoError(t, err)
 	require.Equal(t, workflow.StatusSuccess, st.Status)
 	require.Contains(t, st.Completed, "step")
@@ -120,7 +120,7 @@ func TestUseCase_MultiTrigger_RouterRegistersAll(t *testing.T) {
 	require.NoError(t, m.Start(context.Background()))
 
 	w := workflow.Workflow{
-		Slug:    "uc-multi-trigger",
+		ID:      "uc-multi-trigger",
 		Version: 1,
 		Name:    "Multi trigger",
 		Enabled: true,
@@ -136,11 +136,11 @@ func TestUseCase_MultiTrigger_RouterRegistersAll(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, m.Service.Create(w.Slug, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.Slug))
+	require.NoError(t, m.Service.Create(w.ID, w, nil))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
 
 	// Verify validator accepts the multi-trigger shape.
-	loaded, err := m.Service.Load(w.Slug)
+	loaded, err := m.Service.Load(w.ID)
 	require.NoError(t, err)
 	require.True(t, parse.Validate(loaded).Ok())
 	require.Len(t, loaded.Triggers, 3)
@@ -178,7 +178,7 @@ func TestUseCase_TemplateRender_EventNodeEnv(t *testing.T) {
 	}
 
 	w := workflow.Workflow{
-		Slug:    "uc-template",
+		ID:      "uc-template",
 		Version: 1,
 		Name:    "Template render",
 		Enabled: true,
@@ -200,7 +200,7 @@ func TestUseCase_TemplateRender_EventNodeEnv(t *testing.T) {
 		Payload: map[string]any{"user": "alice"},
 	})
 
-	st, err := m.StateStore.Load(w.Slug, runID)
+	st, err := m.StateStore.Load(w.ID, runID)
 	require.NoError(t, err)
 	require.Equal(t, workflow.StatusSuccess, st.Status)
 	stop, ok := st.Outputs["stop"].(map[string]any)
@@ -237,7 +237,7 @@ func TestUseCase_Connector_StubModule(t *testing.T) {
 	require.NoError(t, m.Start(context.Background()))
 
 	w := workflow.Workflow{
-		Slug:    "uc-connector",
+		ID:      "uc-connector",
 		Version: 1,
 		Name:    "Connector test",
 		Enabled: true,
@@ -267,7 +267,7 @@ func TestUseCase_Connector_StubModule(t *testing.T) {
 	require.True(t, executed, "connector Execute should have fired")
 	require.Equal(t, "hello from event", receivedArgs["text"])
 
-	st, err := m.StateStore.Load(w.Slug, runID)
+	st, err := m.StateStore.Load(w.ID, runID)
 	require.NoError(t, err)
 	require.Equal(t, workflow.StatusSuccess, st.Status)
 }
@@ -279,7 +279,7 @@ func TestUseCase_RunNow_BypassesDisabled(t *testing.T) {
 	require.NoError(t, m.Start(context.Background()))
 
 	w := workflow.Workflow{
-		Slug:    "uc-disabled",
+		ID:      "uc-disabled",
 		Version: 1,
 		Name:    "Disabled workflow",
 		Enabled: false, // ← key: workflow disabled
@@ -291,15 +291,15 @@ func TestUseCase_RunNow_BypassesDisabled(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, m.Service.Create(w.Slug, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.Slug))
+	require.NoError(t, m.Service.Create(w.ID, w, nil))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
 
 	// Dispatch should NOT match a disabled workflow.
 	matched := m.Router.Dispatch(context.Background(), workflow.Event{Type: string(workflow.TriggerManual)})
 	require.Equal(t, 0, matched, "Dispatch must skip disabled workflows")
 
 	// RunNow MUST work — it's the UI Run Now button's contract.
-	err := m.Router.RunNow(context.Background(), w.Slug, workflow.Event{
+	err := m.Router.RunNow(context.Background(), w.ID, workflow.Event{
 		Type: string(workflow.TriggerManual), At: time.Now(),
 	})
 	require.NoError(t, err)

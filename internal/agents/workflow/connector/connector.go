@@ -24,8 +24,8 @@ type RunAuditor interface {
 
 // RunRecord captures one execution.
 type RunRecord struct {
-	WorkflowSlug string
-	RunID        string
+	WorkflowID string
+	RunID      string
 	NodeID       string
 	Module       string
 	Op           string

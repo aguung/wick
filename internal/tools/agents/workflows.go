@@ -230,22 +230,27 @@ func createWorkflow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
+	// UI passes display name only — folder/URL slug is the UUID
+	// MCP.Create generates so later renames can't break run history
+	// or shared edit links. Legacy `slug` field stays accepted (MCP /
+	// CLI / hand-edited fetches) but the form no longer offers it.
+	name := strings.TrimSpace(c.Form("name"))
 	slug := strings.TrimSpace(c.Form("slug"))
 	template := strings.TrimSpace(c.Form("template"))
 	if template == "" {
 		template = "empty"
 	}
-	w, err := globalWorkflowMgr.MCP.Create(mcp.CreateInput{Slug: slug, Template: template})
+	w, err := globalWorkflowMgr.MCP.Create(mcp.CreateInput{Slug: slug, Name: name, Template: template})
 	if err != nil {
-		log.Ctx(c.Context()).Error().Msgf("create workflow %s: %s", slug, err.Error())
+		log.Ctx(c.Context()).Error().Msgf("create workflow name=%q slug=%q: %s", name, slug, err.Error())
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Register the fresh workflow with the router so Run Now / triggers
 	// work without a manual restart. Bootstrap only registers existing
 	// folders at startup — first-time Create needs an explicit reload.
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, w.Slug)
-	c.Redirect(c.Base()+"/workflows/edit/"+w.Slug, http.StatusSeeOther)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, w.ID)
+	c.Redirect(c.Base()+"/workflows/edit/"+w.ID, http.StatusSeeOther)
 }
 
 // ── Editor + CRUD ──────────────────────────────────────────────────
@@ -254,7 +259,7 @@ func workflowEditor(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	// Editor always opens the draft if one exists, otherwise the
 	// published workflow — so in-progress edits survive page refresh.
 	w, err := globalWorkflowMgr.Service.LoadDraft(slug)
@@ -302,7 +307,7 @@ func workflowEditor(c *tool.Ctx) {
 	c.HTML(wfview.Editor(wfview.EditorVM{
 		Layout:         layoutVM,
 		Base:           c.Base(),
-		Slug:           slug,
+		ID:             slug,
 		Workflow:       w,
 		HasDraft:       hasDraft,
 		YAML:           string(yamlBytes),
@@ -322,7 +327,7 @@ func saveWorkflow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	body := c.Form("body")
 	w, err := drawflowJSONToWorkflow(slug, body)
 	if err != nil {
@@ -386,7 +391,7 @@ func saveResponse(c *tool.Ctx, status int, errMsg string, report *parse.Result) 
 		c.Error(status, errMsg)
 		return
 	}
-	c.Redirect(c.Base()+"/workflows/edit/"+c.PathValue("slug"), http.StatusSeeOther)
+	c.Redirect(c.Base()+"/workflows/edit/"+c.PathValue("id"), http.StatusSeeOther)
 }
 
 // validationPayload reshapes a parse.Result into a per-node lookup the
@@ -435,7 +440,7 @@ func publishWorkflow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	if !globalWorkflowMgr.Service.HasDraft(slug) {
 		c.Redirect(c.Base()+"/workflows/edit/"+slug, http.StatusSeeOther)
 		return
@@ -466,7 +471,7 @@ func discardWorkflowDraft(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	if err := globalWorkflowMgr.Service.DiscardDraft(slug); err != nil {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
@@ -474,11 +479,54 @@ func discardWorkflowDraft(c *tool.Ctx) {
 	c.Redirect(c.Base()+"/workflows/edit/"+slug, http.StatusSeeOther)
 }
 
+// renameWorkflow updates the display Name without touching the folder
+// or URL. Name is non-structural metadata so we sync it across BOTH
+// workflow.yaml AND workflow.draft.yaml when both exist — otherwise
+// the list page (which reads published) drifts behind the editor
+// (which reads draft) after a rename.
+func renameWorkflow(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	id := c.PathValue("id")
+	name := strings.TrimSpace(c.Form("name"))
+	if name == "" {
+		c.Error(http.StatusBadRequest, "name is required")
+		return
+	}
+	svc := globalWorkflowMgr.Service
+	if pub, err := svc.Load(id); err == nil {
+		pub.Name = name
+		if err := svc.Update(id, pub, nil); err != nil {
+			c.Error(http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		c.NotFound()
+		return
+	}
+	if svc.HasDraft(id) {
+		draft, err := svc.LoadDraft(id)
+		if err == nil {
+			draft.Name = name
+			if err := svc.SaveDraft(id, draft); err != nil {
+				c.Error(http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+	}
+	if strings.Contains(c.R.Header.Get("Accept"), "application/json") {
+		c.JSON(http.StatusOK, map[string]any{"ok": true, "name": name})
+		return
+	}
+	c.Redirect(c.Base()+"/workflows/edit/"+id, http.StatusSeeOther)
+}
+
 func toggleWorkflow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	// Read enabled from whichever copy the editor is showing (draft
 	// if present, otherwise published) so the toggle button reflects
 	// what the user clicked.
@@ -514,7 +562,7 @@ func runWorkflowNow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	// Run Now is a live test of the canvas — fire the draft if one
 	// exists, otherwise the published workflow. Bypasses Enabled
 	// so the admin can verify drafts before publishing.
@@ -622,7 +670,7 @@ func runResponse(c *tool.Ctx, status int, runID, errMsg string) {
 		c.Error(status, errMsg)
 		return
 	}
-	c.Redirect(c.Base()+"/workflows/edit/"+c.PathValue("slug"), http.StatusSeeOther)
+	c.Redirect(c.Base()+"/workflows/edit/"+c.PathValue("id"), http.StatusSeeOther)
 }
 
 // workflowRegistryAPI returns JSON catalog the editor uses to hydrate
@@ -762,7 +810,7 @@ func deleteWorkflow(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	if err := globalWorkflowMgr.MCP.Delete(slug); err != nil {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
@@ -779,7 +827,7 @@ func execNodeStep(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	var body struct {
 		Node  map[string]any `json:"node"`
 		Input map[string]any `json:"input"`
@@ -942,7 +990,7 @@ func workflowRunStateAPI(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	runID := c.PathValue("runID")
 	st, err := globalWorkflowMgr.StateStore.Load(slug, runID)
 	if err != nil {
@@ -962,7 +1010,7 @@ func workflowRunDetail(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	runID := c.PathValue("runID")
 	st, err := globalWorkflowMgr.StateStore.Load(slug, runID)
 	if err != nil {
@@ -973,7 +1021,7 @@ func workflowRunDetail(c *tool.Ctx) {
 	c.HTML(wfview.Run(wfview.RunVM{
 		Layout: sidebarVM(c, "workflows", ""),
 		Base:   c.Base(),
-		Slug:   slug,
+		ID:     slug,
 		RunID:  runID,
 		State:  st,
 		Events: events,
@@ -984,7 +1032,7 @@ func runWorkflowTests(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	runner := wftest.New(
 		globalWorkflowMgr.Engine,
 		globalWorkflowMgr.Service,
@@ -999,7 +1047,7 @@ func runWorkflowTests(c *tool.Ctx) {
 	// full page shell. The JS fetch injects this directly into #wf-test-results.
 	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = wfview.TestResultsPanel(wfview.TestResultsVM{
-		Slug:     slug,
+		ID:       slug,
 		Results:  results,
 		Coverage: cov,
 	}).Render(c.R.Context(), c.W)
@@ -1040,7 +1088,7 @@ func listTestCases(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	items, err := loadTestCaseItems(slug)
 	if err != nil {
 		c.Error(http.StatusInternalServerError, err.Error())
@@ -1048,7 +1096,7 @@ func listTestCases(c *tool.Ctx) {
 	}
 	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = wfview.TestManager(wfview.TestManagerVM{
-		Slug:  slug,
+		ID:    slug,
 		Base:  c.Base(),
 		Items: items,
 	}).Render(c.R.Context(), c.W)
@@ -1059,7 +1107,7 @@ func saveTestCase(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	var body struct {
 		Name       string           `json:"name"`
 		Input      wftest.Input     `json:"input"`
@@ -1104,7 +1152,7 @@ func runOneTestCase(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	name := c.PathValue("name")
 	path := "__tests__/" + name + ".json"
 	data, err := globalWorkflowMgr.MCP.ReadFile(slug, path)
@@ -1127,7 +1175,7 @@ func runOneTestCase(c *tool.Ctx) {
 	item := wfview.TestCaseItem{Name: name, Case: tc, Result: &result}
 	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = wfview.TestCaseRow(wfview.TestCaseRowVM{
-		Slug: slug,
+		ID:   slug,
 		Base: c.Base(),
 		Item: item,
 	}).Render(c.R.Context(), c.W)
@@ -1138,7 +1186,7 @@ func deleteTestCase(c *tool.Ctx) {
 	if notReadyWorkflow(c) {
 		return
 	}
-	slug := c.PathValue("slug")
+	slug := c.PathValue("id")
 	name := c.PathValue("name")
 	path := "__tests__/" + name + ".json"
 	if err := globalWorkflowMgr.MCP.DeleteFile(slug, path); err != nil {

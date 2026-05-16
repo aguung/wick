@@ -26,7 +26,7 @@ type ListVM struct {
 type EditorVM struct {
 	Layout      view.AgentsLayoutVM
 	Base        string
-	Slug        string
+	ID          string
 	Workflow    wf.Workflow
 	HasDraft    bool
 	YAML        string
@@ -45,7 +45,7 @@ type EditorVM struct {
 type RunVM struct {
 	Layout view.AgentsLayoutVM
 	Base   string
-	Slug   string
+	ID     string
 	RunID  string
 	State  wf.RunState
 	Events []wf.RunEvent

@@ -16,7 +16,7 @@ func TestResolveAgentSessionID_FallbackToEngineDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveAgentSessionID: %v", err)
 	}
-	want := DefaultRunSessionID(rc.Workflow.Slug, rc.RunID)
+	want := DefaultRunSessionID(rc.Workflow.ID, rc.RunID)
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

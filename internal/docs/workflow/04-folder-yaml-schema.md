@@ -3,7 +3,7 @@
 ### Folder per workflow
 
 ```
-<BaseDir>/workflows/<slug>/
+<BaseDir>/workflows/<id>/
   workflow.yaml          # graph + triggers (wajib) — published copy
   workflow.draft.yaml    # editor draft (lives only when user has unsaved edits)
   nodes/                 # per-node assets (opsional, kalau perlu)
@@ -25,7 +25,18 @@
   README.md              # 1-paragraph deskripsi
 ```
 
-Slug = `[a-z0-9-]+`, divalidasi sama kayak preset name.
+### Identity — folder name = workflow ID
+
+Folder name is the workflow `id` — UUID for canvas-created workflows,
+arbitrary `[a-z0-9-]+` slug for legacy hand-edited ones (the regex
+still accepts hex+dashes so UUIDs pass). Display title lives in
+`name:` and is freely renameable through the editor toolbar; the
+folder, URL (`/workflows/edit/<id>`), and run index all stay anchored
+to the original `id` so rename never invalidates history or links.
+
+`Parse(id, data)` overwrites `workflow.yaml > id` with the folder name
+on every load — the YAML value is informational, the folder is
+authoritative.
 
 ### `workflow.yaml` — common fields (edge-first)
 
@@ -192,16 +203,17 @@ empty config; the inspector editor fills it in.
 - Run Now LOADS the draft (`workflow.draft.yaml`) and passes it as
   an explicit override via `MCP.RunNowWith` → `Router.RunNowWith`
   → `WorkItem.Workflow`. The worker prefers the override over
-  `Router.defs[slug]`.
+  `Router.defs[id]`.
 - Live triggers (cron, channel, webhook) keep firing the published
-  copy registered in `Router.defs[slug]`. This separation lets the
+  copy registered in `Router.defs[id]`. This separation lets the
   user iterate on a draft via Run Now without re-publishing every
   edit.
 
 ### Identitas + governance
 
-- **`id`** — stable identitas. Rename folder atau ganti `name:` ga
-  pengaruh. Approval nempel ke `id`. Folder slug cuma alias.
+- **`id`** — stable identitas (= folder name). `name:` field freely
+  renameable; rename writes both `workflow.yaml` and the draft so list
+  page and editor never drift. Approval nempel ke `id`.
 - **`version`** — sinyal manual. User bump kalau perubahan material.
   AI guard juga lihat field ini buat keputusan re-approve.
 - **`approved` TIDAK di YAML.** Hidup di file `state.json` di folder

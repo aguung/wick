@@ -11,7 +11,7 @@ import (
 
 func newTestRC() *workflow.RunContext {
 	return &workflow.RunContext{
-		Workflow: workflow.Workflow{Slug: "it-ops", ID: "wf-1"},
+		Workflow: workflow.Workflow{ID: "it-ops"},
 		RunID:    "0d147eca-82ca-48e9-8d11-8d3eaa926865",
 		Outputs:  map[string]any{},
 		Event:    workflow.Event{Type: "manual", Payload: map[string]any{}},

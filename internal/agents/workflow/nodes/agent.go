@@ -178,7 +178,7 @@ func resolveAgentSessionID(n workflow.Node, rc *workflow.RunContext) (string, er
 	if rc.DefaultAgentSessionID != "" {
 		return rc.DefaultAgentSessionID, nil
 	}
-	return DefaultRunSessionID(rc.Workflow.Slug, rc.RunID), nil
+	return DefaultRunSessionID(rc.Workflow.ID, rc.RunID), nil
 }
 
 // DefaultRunSessionID is the engine fallback when neither a

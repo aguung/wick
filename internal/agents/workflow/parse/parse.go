@@ -65,15 +65,16 @@ func ValidateNodeID(id string) error {
 	return nil
 }
 
-// Parse decodes a workflow.yaml body. Slug is injected from the
-// folder name — the YAML never carries it. The returned workflow has
-// not yet been validated; call Validate after.
-func Parse(slug string, data []byte) (workflow.Workflow, error) {
+// Parse decodes a workflow.yaml body. The folder name is the
+// authoritative ID — it overwrites whatever `id:` happens to be in the
+// YAML so renaming a folder always wins over a stale value. The
+// returned workflow has not yet been validated; call Validate after.
+func Parse(id string, data []byte) (workflow.Workflow, error) {
 	var w workflow.Workflow
 	if err := yaml.Unmarshal(data, &w); err != nil {
 		return workflow.Workflow{}, Error{Path: "yaml", Message: err.Error()}
 	}
-	w.Slug = slug
+	w.ID = id
 	if w.ID == "" {
 		w.ID = uuid.NewString()
 	}
@@ -82,7 +83,6 @@ func Parse(slug string, data []byte) (workflow.Workflow, error) {
 
 // Marshal serializes a Workflow back to YAML.
 func Marshal(w workflow.Workflow) ([]byte, error) {
-	w.Slug = "" // slug lives in folder name, not YAML
 	return yaml.Marshal(w)
 }
 
@@ -116,7 +116,7 @@ func (r *Result) Ok() bool { return r == nil || len(r.Errors) == 0 }
 func Validate(w workflow.Workflow) *Result {
 	r := &Result{}
 
-	if err := ValidateSlug(w.Slug); err != nil {
+	if err := ValidateSlug(w.ID); err != nil {
 		r.Errors = append(r.Errors, err.(Error))
 	}
 	if w.Name == "" {
