@@ -1266,15 +1266,17 @@ result: "{{.Node.summary.text}}"</pre>
 
   <div class="grid md:grid-cols-2 gap-6 mb-8">
     <div class="bg-white border border-slate-200 rounded-xl p-6">
-      <h3 class="font-bold mb-3">Generic trigger (channel-agnostic)</h3>
+      <h3 class="font-bold mb-3">Channel trigger with MatchSchema filter</h3>
 <pre class="mono text-xs bg-slate-50 p-4 rounded border border-slate-200 leading-relaxed"><span class="yaml-key">triggers</span>:
   - <span class="yaml-key">type</span>: <span class="yaml-str">channel</span>
-    <span class="yaml-key">channel</span>: <span class="yaml-str">slack</span>      <span class="yaml-cmt"># or "*" = all channels</span>
-    <span class="yaml-key">target</span>: <span class="yaml-str">"#support"</span> <span class="yaml-cmt"># channel-specific format</span>
+    <span class="yaml-key">channel</span>: <span class="yaml-str">slack</span>
+    <span class="yaml-key">event</span>: <span class="yaml-str">message</span>
+    <span class="yaml-key">match_enabled</span>: <span class="yaml-bool">true</span>   <span class="yaml-cmt"># gate; false = dump-all</span>
     <span class="yaml-key">match</span>:
-      <span class="yaml-key">mention_bot</span>: <span class="yaml-bool">true</span>
-      <span class="yaml-key">app_id</span>: <span class="yaml-str">"A12345"</span> <span class="yaml-cmt"># Slack-specific, schema-validated</span></pre>
-      <p class="text-xs text-slate-600 mt-3">Channel extend <code>match:</code> dgn field unik. Schema dari <code>TriggerSpec.MatchSchema</code> → UI form auto-render.</p>
+      <span class="yaml-key">mode</span>: <span class="yaml-str">whitelist</span>
+      <span class="yaml-key">channel_id</span>: <span class="yaml-str">'[{"id":"C123","name":"general"}]'</span>
+      <span class="yaml-key">text_contains</span>: <span class="yaml-str">"support"</span></pre>
+      <p class="text-xs text-slate-600 mt-3">Form rendered from <code>EventDescriptor.MatchSchema</code> — each event declares a wick-tagged Go struct via <code>entity.StructToConfigs</code>. Picker chips serialize as <code>[{id,name}]</code> JSON; router does id-membership at dispatch time.</p>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-xl p-6">

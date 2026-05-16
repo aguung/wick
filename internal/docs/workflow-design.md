@@ -952,30 +952,63 @@ dgn schema-nya sendiri.
   type: channel
   entry_node: classify-intent
   channel: slack                    # nama channel di registry; "*" = semua channel
-  event: message                    # event sub-type, default: message
-                                    # future: reaction, mention, join, leave, ...
-                                    # channel boleh declare event types via TriggerSpec
-  target: "#support"                # channel-specific addressing (channel name/ID/JID/...)
-  match:
-    keywords: ["help", "bug"]       # case-insensitive substring, OR
-    regex: "^!support\\b"           # optional
-    mention_bot: true               # generic across channels yang support mention
-    from_threads_only: false        # ignore parent msg, cuma reply
-  whitelist:
+  event: message                    # event subtype the channel emits;
+                                    # each EventDescriptor in
+                                    # internal/agents/channels/<name>/
+                                    # workflow registers one
+  target: "#support"                # channel-specific addressing
+                                    # (channel ID, JID, etc.)
+  match_enabled: true               # gate: false = dump-all (default)
+  match:                            # MatchSchema-driven filter form
+    mode: whitelist                 # dropdown rendered from
+                                    #   SlackMessageMatch struct
+    channel_id: '[{"id":"C123","name":"general"}]'   # picker output
+    user: '[{"id":"U987","name":"yoga"}]'             # picker output
+    text_contains: "support"        # case-insensitive substring
+  match_modes:                      # per-key Fixed/Expression toggle
+    text_contains: fixed
+  whitelist:                        # legacy field, still honoured
     users: ["U123"]
     groups: ["@support-team"]
   dedup_ttl_sec: 86400              # default 24h
 ```
 
-**Channel-specific match fields**. Channel boleh extend `match:` dgn
-field unik (Slack `app_id`, Telegram `chat_type`, REST `header.*`).
-Schema discoverable via `channel.TriggerSpec()` — UI form auto-render
-dari schema.
+**Per-event MatchSchema**. Every event descriptor under
+`internal/agents/channels/<name>/workflow/event_*.go` declares a
+wick-tagged Go struct via `entity.StructToConfigs`. The workflow API
+renders the schema to HTML and ships it as `match_html`; the trigger
+inspector innerHTML-injects + hydrates it. Adding a new filter field
+= one extra struct field on the event's MatchSchema — no router or
+inspector edit.
 
-**Event sub-types**. Channel boleh declare event types yang dia support
-di `TriggerSpec.Events`. V1 = `message` saja (cover use case sekarang);
-channel future bisa expose `reaction`, `mention`, `join`, `leave`,
-`file_upload`, dst. AI/admin pilih event di UI dropdown atau YAML.
+```go
+// internal/agents/channels/slack/workflow/event_message.go
+type SlackMessageMatch struct {
+    Mode            string `wick:"dropdown=all|whitelist;default=all"`
+    AllowedChannels string `wick:"picker=slack.channels;visible_when=mode:whitelist;key=channel_id"`
+    AllowedUsers    string `wick:"picker=slack.users;visible_when=mode:whitelist;key=user"`
+    TextContains    string `wick:"desc=Substring filter"`
+}
+```
+
+**Match evaluation** lives in
+`internal/agents/workflow/trigger/router.go matchEventPayload`. The
+router runs match only when `match_enabled: true` (dump-all stays the
+safer default). Semantics:
+
+- empty / missing spec value → key skipped (no filter)
+- string spec → payload[key] equals spec
+- JSON array (picker output, `[{id,name},...]`) → payload[key] is in
+  the id list; empty array = "no chips selected yet → no filter"
+
+Events that need fancier semantics (regex, set difference, custom
+transform) fall back to dump-all + filter inside the graph (branch /
+transform node).
+
+**Event sub-types** are descriptor-driven. Slack ships eight events
+today (message, app_mention, app_home_opened, block_action,
+view_submission, view_closed, shortcut, command). Telegram, Discord,
+etc. register their own.
 
 **`webhook`** — HTTP POST eksternal.
 ```yaml

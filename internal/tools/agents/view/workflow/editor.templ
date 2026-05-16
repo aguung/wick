@@ -24,8 +24,11 @@ templ Editor(vm EditorVM) {
 
 // editorBootstrap injects the graph JSON via a hidden data attribute
 // (templ blocks raw <script> bodies, so we round-trip through a div
-// dataset) and loads editor.js.
+// dataset) and loads editor.js + the standalone widget scripts the
+// inspector hydrate flow calls into (picker.js exposes
+// wickInitPickers; future widgets land alongside).
 templ editorBootstrap(vm EditorVM) {
 	<div id="wf-graph-data" class="hidden" data-graph={ vm.GraphJSON } data-validation={ vm.ValidationJSON }></div>
+	<script src={ vm.Base + "/static/js/widgets/picker.js" } defer></script>
 	<script src={ vm.Base + "/static/js/workflow/editor.js" } defer></script>
 }

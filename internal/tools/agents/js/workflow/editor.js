@@ -281,11 +281,18 @@
         w.dataset.pickerLookupUrl = lookupURL;
       });
     }
-    // Browsers don't execute <script> tags added via innerHTML.
-    // Server-rendered widgets (picker, kvlist, …) embed their
-    // behavior as inline <script>; re-create each one with
-    // createElement so the browser actually runs them. Runs AFTER
-    // the lookup URL stamp so the picker init reads the correct URL.
+    // Widget scripts no longer ride inline inside the templ HTML
+    // (browsers don't execute <script> tags added via innerHTML
+    // anyway). Each widget exports a global init function loaded
+    // once via <script src=…> in the editor bootstrap; call them
+    // here after the lookup URL has been stamped on every picker
+    // wrap. Add a new widget = new init function call below.
+    if (typeof window.wickInitPickers === 'function') {
+      window.wickInitPickers(container);
+    }
+    // Backward compat: any leftover inline scripts get re-executed
+    // (kvlist still uses the inline pattern). Remove once every
+    // widget moves to the loaded-once approach.
     reExecInlineScripts(container);
     wireVisibleWhen(container);
     container.querySelectorAll('.wf-arg-field').forEach((wrap) => {
