@@ -171,23 +171,44 @@ func workflowToDrawflowJSON(w wf.Workflow) (string, error) {
 		innerData := map[string]any{
 			"triggerKind": string(tr.Type),
 		}
-		if tr.ChannelName != "" {
-			innerData["channel"] = tr.ChannelName
-		}
-		if tr.Event != "" {
-			innerData["event"] = tr.Event
-		}
-		if tr.Target != "" {
-			innerData["target"] = tr.Target
-		}
-		if len(tr.Match) > 0 {
-			innerData["match"] = tr.Match
-		}
-		if tr.MatchEnabled {
-			innerData["match_enabled"] = true
-		}
-		if len(tr.MatchModes) > 0 {
-			innerData["__match_modes"] = tr.MatchModes
+		switch tr.Type {
+		case wf.TriggerChannel:
+			if tr.ChannelName != "" {
+				innerData["channel"] = tr.ChannelName
+			}
+			if tr.Event != "" {
+				innerData["event"] = tr.Event
+			}
+			if tr.Target != "" {
+				innerData["target"] = tr.Target
+			}
+			if len(tr.Match) > 0 {
+				innerData["match"] = tr.Match
+			}
+			if tr.MatchEnabled {
+				innerData["match_enabled"] = true
+			}
+			if len(tr.MatchModes) > 0 {
+				innerData["__match_modes"] = tr.MatchModes
+			}
+		case wf.TriggerCron:
+			if tr.Schedule != "" {
+				innerData["schedule"] = tr.Schedule
+			}
+			if tr.Timezone != "" {
+				innerData["timezone"] = tr.Timezone
+			}
+		case wf.TriggerWebhook:
+			if tr.Path != "" {
+				innerData["path"] = tr.Path
+			}
+			if tr.Method != "" {
+				innerData["method"] = tr.Method
+			}
+		case wf.TriggerManual:
+			if tr.Label != "" {
+				innerData["label"] = tr.Label
+			}
 		}
 		nodes[strconv.Itoa(nextID)] = drawflowNode{
 			ID:    nextID,
@@ -543,15 +564,19 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 		// channel="slack", event="message"). Without this lift the
 		// codec emits a bare `type: channel` trigger that fails
 		// validation with "channel is required".
-		if tr.Type == wf.TriggerChannel {
-			for _, dn := range nodes {
-				if dn.Name != ct.NodeID {
-					continue
-				}
-				inner, ok := dn.Data["data"].(map[string]any)
-				if !ok {
-					break
-				}
+		// Lift per-trigger-kind fields from the canvas node data block.
+		// Each trigger kind reads its own subset; channel triggers
+		// additionally carry the match filter form state.
+		for _, dn := range nodes {
+			if dn.Name != ct.NodeID {
+				continue
+			}
+			inner, ok := dn.Data["data"].(map[string]any)
+			if !ok {
+				break
+			}
+			switch tr.Type {
+			case wf.TriggerChannel:
 				if v, ok := inner["channel"].(string); ok {
 					tr.ChannelName = v
 				}
@@ -565,8 +590,26 @@ func drawflowJSONToWorkflow(slug, body string) (wf.Workflow, error) {
 					tr.MatchEnabled = v
 				}
 				tr.MatchModes = stringMapFromAny(inner["__match_modes"])
-				break
+			case wf.TriggerCron:
+				if v, ok := inner["schedule"].(string); ok {
+					tr.Schedule = v
+				}
+				if v, ok := inner["timezone"].(string); ok {
+					tr.Timezone = v
+				}
+			case wf.TriggerWebhook:
+				if v, ok := inner["path"].(string); ok {
+					tr.Path = v
+				}
+				if v, ok := inner["method"].(string); ok {
+					tr.Method = v
+				}
+			case wf.TriggerManual:
+				if v, ok := inner["label"].(string); ok {
+					tr.Label = v
+				}
 			}
+			break
 		}
 		triggers = append(triggers, tr)
 	}

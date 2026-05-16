@@ -198,13 +198,15 @@ func TestPerTriggerRoundtrip(t *testing.T) {
 	}
 }
 
-// TestMergeTriggersPreservesPrevMetadata — the save handler folds
-// per-trigger config (channel name, schedule, …) from the prior
-// draft into the canvas-derived list using Trigger.ID. Canvas
-// owns Type + EntryNode; prev owns everything else.
-func TestMergeTriggersPreservesPrevMetadata(t *testing.T) {
+// TestMergeTriggersCanvasWinsForEditorFields — the trigger inspector
+// owns ChannelName / Event / Match / Schedule / Path etc. now, so
+// canvas values are the source of truth. Prev only carries fields
+// the inspector doesn't model (DedupTTLSec, Whitelist, RequireRole,
+// SecretRef, …) so hand-edited YAML survives a canvas save.
+func TestMergeTriggersCanvasWinsForEditorFields(t *testing.T) {
 	canvas := []wf.Trigger{
-		{ID: "trigger-channel", Type: wf.TriggerChannel, EntryNode: "agent"},
+		{ID: "trigger-channel", Type: wf.TriggerChannel, EntryNode: "agent",
+			ChannelName: "slack", Event: "message"},
 	}
 	prev := []wf.Trigger{
 		{ID: "trigger-channel", Type: wf.TriggerChannel, ChannelName: "slack",
@@ -215,11 +217,35 @@ func TestMergeTriggersPreservesPrevMetadata(t *testing.T) {
 		t.Fatalf("expected 1 trigger, got %d", len(got))
 	}
 	tr := got[0]
-	if tr.ChannelName != "slack" || tr.Event != "message" || tr.DedupTTLSec != 60 {
-		t.Errorf("prev metadata lost: %+v", tr)
+	if tr.ChannelName != "slack" || tr.Event != "message" {
+		t.Errorf("canvas channel/event should survive: %+v", tr)
+	}
+	if tr.DedupTTLSec != 60 {
+		t.Errorf("prev DedupTTLSec should carry over (canvas doesn't model it): got %d", tr.DedupTTLSec)
 	}
 	if tr.EntryNode != "agent" {
 		t.Errorf("canvas EntryNode should win; got %q", tr.EntryNode)
+	}
+}
+
+// TestMergeTriggersCanvasOverridesPrev — user edits the trigger
+// inspector (e.g. switches channel from slack to telegram). Canvas
+// must overwrite prev so the new selection sticks on the next load.
+func TestMergeTriggersCanvasOverridesPrev(t *testing.T) {
+	canvas := []wf.Trigger{
+		{ID: "trigger-channel", Type: wf.TriggerChannel, EntryNode: "agent",
+			ChannelName: "telegram", Event: "callback_query"},
+	}
+	prev := []wf.Trigger{
+		{ID: "trigger-channel", Type: wf.TriggerChannel, ChannelName: "slack",
+			Event: "message", EntryNode: "old"},
+	}
+	got := mergeTriggers(canvas, prev)
+	if got[0].ChannelName != "telegram" {
+		t.Errorf("canvas channel switch lost: got %q", got[0].ChannelName)
+	}
+	if got[0].Event != "callback_query" {
+		t.Errorf("canvas event switch lost: got %q", got[0].Event)
 	}
 }
 
@@ -563,6 +589,194 @@ func TestCanvasPositionsRoundtrip(t *testing.T) {
 	got := canvasPositions(w)
 	if got["n1"][0] != 320 || got["n1"][1] != 180 {
 		t.Errorf("position lost: %+v", got)
+	}
+}
+
+// TestChannelTriggerFieldsRoundtrip — full round-trip of the new
+// trigger inspector data: canvas → workflow.Trigger → canvas JSON.
+// Channel + event + match map + match_enabled + __arg_modes must
+// all survive both directions so a save/refresh cycle keeps the
+// inspector populated.
+func TestChannelTriggerFieldsRoundtrip(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger","class":"node-trigger","html":"",
+	       "data":{"id":"trigger","type":"trigger","data":{
+	         "triggerKind":"channel",
+	         "channel":"slack",
+	         "event":"message",
+	         "match":{"mode":"whitelist","channel_id":"[{\"id\":\"C123\",\"name\":\"general\"}]"},
+	         "match_enabled":true,
+	         "__match_modes":{"mode":"fixed","channel_id":"fixed"}
+	       }},
+	       "pos_x":0,"pos_y":0,"inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"2","output":"input_1"}]}}},
+	  "2":{"id":2,"name":"end","class":"node-end","html":"",
+	       "data":{"id":"end","type":"end","data":{}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
+	       "outputs":{}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("c", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tr := findTriggerByType(w, wf.TriggerChannel)
+	if tr == nil {
+		t.Fatalf("channel trigger missing")
+	}
+	if tr.ChannelName != "slack" {
+		t.Errorf("ChannelName lost: %+v", tr)
+	}
+	if tr.Event != "message" {
+		t.Errorf("Event lost: %+v", tr)
+	}
+	if !tr.MatchEnabled {
+		t.Errorf("MatchEnabled lost")
+	}
+	if tr.Match["mode"] != "whitelist" {
+		t.Errorf("Match[mode] lost: %+v", tr.Match)
+	}
+	if tr.MatchModes["mode"] != "fixed" {
+		t.Errorf("MatchModes[mode] lost: %+v", tr.MatchModes)
+	}
+	// Re-emit. Canvas inner data must contain the same fields so
+	// hydrate restores the inspector on the next open.
+	out, err := workflowToDrawflowJSON(w)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"slack"`, `"message"`, `"match_enabled":true`, `"whitelist"`, `"__match_modes"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("re-emitted JSON missing %s: %s", want, out)
+		}
+	}
+}
+
+// TestCronTriggerFieldsRoundtrip — schedule + timezone survive
+// canvas → wf.Trigger → canvas. Regression guard against the bug
+// where mergeTriggers used to clobber canvas-driven cron config.
+func TestCronTriggerFieldsRoundtrip(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger-cron","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-cron","type":"trigger","data":{
+	         "triggerKind":"cron",
+	         "schedule":"0 */15 * * * *",
+	         "timezone":"Asia/Jakarta"
+	       }},
+	       "pos_x":0,"pos_y":0,"inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"2","output":"input_1"}]}}},
+	  "2":{"id":2,"name":"end","class":"node-end","html":"",
+	       "data":{"id":"end","type":"end","data":{}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
+	       "outputs":{}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("c", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tr := findTriggerByType(w, wf.TriggerCron)
+	if tr == nil {
+		t.Fatalf("cron trigger missing")
+	}
+	if tr.Schedule != "0 */15 * * * *" {
+		t.Errorf("Schedule lost: %+v", tr)
+	}
+	if tr.Timezone != "Asia/Jakarta" {
+		t.Errorf("Timezone lost: %+v", tr)
+	}
+	out, err := workflowToDrawflowJSON(w)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"0 */15 * * * *"`, `"Asia/Jakarta"`, `"triggerKind":"cron"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("re-emitted JSON missing %s: %s", want, out)
+		}
+	}
+}
+
+// TestChannelTriggerMatchValuesRoundtrip — guards the specific user
+// scenario where the operator fills the match form (mode=all,
+// text_contains=test) and reloads. Without the delegated input
+// listener bound on document.body, edits inside the trigger match
+// panel never fired updateNodeData, so the form looked blank after
+// save+reload. This test covers the codec half — the JS half is
+// asserted manually since it depends on DOM event delivery.
+func TestChannelTriggerMatchValuesRoundtrip(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger","class":"node-trigger","html":"",
+	       "data":{"id":"trigger","type":"trigger","data":{
+	         "triggerKind":"channel",
+	         "channel":"slack",
+	         "event":"message",
+	         "match_enabled":true,
+	         "match":{"mode":"all","text_contains":"test"}
+	       }},
+	       "pos_x":0,"pos_y":0,"inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"2","output":"input_1"}]}}},
+	  "2":{"id":2,"name":"end","class":"node-end","html":"",
+	       "data":{"id":"end","type":"end","data":{}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
+	       "outputs":{}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("c", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tr := findTriggerByType(w, wf.TriggerChannel)
+	if tr == nil {
+		t.Fatalf("channel trigger missing")
+	}
+	if tr.Match["mode"] != "all" {
+		t.Errorf("mode lost: %+v", tr.Match)
+	}
+	if tr.Match["text_contains"] != "test" {
+		t.Errorf("text_contains lost: %+v", tr.Match)
+	}
+	out, err := workflowToDrawflowJSON(w)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"mode":"all"`, `"text_contains":"test"`, `"match_enabled":true`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("re-emitted JSON missing %s: %s", want, out)
+		}
+	}
+}
+
+// TestWebhookTriggerFieldsRoundtrip — path + method survive canvas
+// → wf.Trigger → canvas.
+func TestWebhookTriggerFieldsRoundtrip(t *testing.T) {
+	body := `{"drawflow":{"Home":{"data":{
+	  "1":{"id":1,"name":"trigger-webhook","class":"node-trigger","html":"",
+	       "data":{"id":"trigger-webhook","type":"trigger","data":{
+	         "triggerKind":"webhook",
+	         "path":"/hooks/pagerduty",
+	         "method":"POST"
+	       }},
+	       "pos_x":0,"pos_y":0,"inputs":{},
+	       "outputs":{"output_1":{"connections":[{"node":"2","output":"input_1"}]}}},
+	  "2":{"id":2,"name":"end","class":"node-end","html":"",
+	       "data":{"id":"end","type":"end","data":{}},
+	       "pos_x":200,"pos_y":0,
+	       "inputs":{"input_1":{"connections":[{"node":"1","input":"output_1"}]}},
+	       "outputs":{}}
+	}}}}`
+	w, err := drawflowJSONToWorkflow("c", body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tr := findTriggerByType(w, wf.TriggerWebhook)
+	if tr == nil {
+		t.Fatalf("webhook trigger missing")
+	}
+	if tr.Path != "/hooks/pagerduty" {
+		t.Errorf("Path lost: %+v", tr)
+	}
+	if tr.Method != "POST" {
+		t.Errorf("Method lost: %+v", tr)
 	}
 }
 

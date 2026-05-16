@@ -310,10 +310,16 @@ func matchOne(specVal, gotVal any) bool {
 		}
 		// Picker output rides through as a JSON string when the canvas
 		// serializes inner.match — parse it back to []map[string]any
-		// before treating as plain string equality.
+		// before treating as plain string equality. An empty parsed
+		// list means "no chips selected" → no filter on this key
+		// (inspector UX: toggling Filter on without picking chips
+		// shouldn't kill the trigger).
 		if isJSONArray(s) {
 			var arr []map[string]any
-			if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
+			if err := json.Unmarshal([]byte(s), &arr); err == nil {
+				if len(arr) == 0 {
+					return true
+				}
 				return idMembership(arr, gotVal)
 			}
 		}

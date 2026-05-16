@@ -508,25 +508,21 @@
     hydrateArgsForm(chanArgsEl, op.args_html, currentArgs || {}, modes || {});
   }
 
-  // Delegated change listener — one per args container. Catches every
-  // edit inside server-rendered widgets without per-input wiring.
-  // Matches the same selector argEditable uses so input/select/
-  // textarea events bubble correctly; hidden inputs (checkbox's
-  // "false" sibling) are excluded.
+  // Delegated change listener — installed once on document.body so it
+  // catches every .wf-arg-field edit regardless of which container
+  // wraps it (connector args, channel args, trigger match form, future
+  // node panels). Per-container attachment used to miss the trigger
+  // match panel which lives outside both ins-conn-args and
+  // ins-channel-args. The arg-field wrapper class is unique enough to
+  // scope safely.
   const editableSelector = 'input:not([type="hidden"]), select, textarea';
-  [connArgsEl, chanArgsEl].forEach((el) => {
-    if (!el) return;
-    el.addEventListener('input', (e) => {
-      if (!e.target.matches(editableSelector)) return;
-      if (!e.target.closest('.wf-arg-field')) return;
-      if (selectedID) updateNodeData(selectedID);
-    });
-    el.addEventListener('change', (e) => {
-      if (!e.target.matches(editableSelector)) return;
-      if (!e.target.closest('.wf-arg-field')) return;
-      if (selectedID) updateNodeData(selectedID);
-    });
-  });
+  function deliverArgEdit(e) {
+    if (!e.target.matches(editableSelector)) return;
+    if (!e.target.closest('.wf-arg-field')) return;
+    if (selectedID) updateNodeData(selectedID);
+  }
+  document.body.addEventListener('input', deliverArgEdit);
+  document.body.addEventListener('change', deliverArgEdit);
 
   // Cascade refresh when parent picker changes.
   f.channel?.addEventListener('change', () => { hydrateChannelOps(); refreshChannelArgs(); if (selectedID) updateNodeData(selectedID); });
@@ -1249,13 +1245,49 @@
     refreshOutputRefs();
   }
 
-  // hydrateTriggerPanel fills the trigger node inspector: channel +
-  // event dropdown, optional match-filter form rendered from
-  // EventDescriptor.MatchSchema. Channels are sourced from the live
-  // registry — only channels that registered at least one event show
-  // up. Toggle .match_enabled gates whether router applies filter at
-  // dispatch time.
+  // hydrateTriggerPanel fills the trigger node inspector. The visible
+  // subpanel swaps based on inner.triggerKind:
+  //   channel     → channel + event dropdown + MatchSchema filter form
+  //   cron        → schedule + timezone fields
+  //   webhook     → path + method
+  //   manual      → button label
+  //   * (default) → empty-state caption
   function hydrateTriggerPanel(inner) {
+    const kind = inner.triggerKind || 'manual';
+    const sections = {
+      channel: document.getElementById('ins-trig-channel-section'),
+      cron:    document.getElementById('ins-trig-cron-section'),
+      webhook: document.getElementById('ins-trig-webhook-section'),
+      manual:  document.getElementById('ins-trig-manual-section'),
+    };
+    const empty = document.getElementById('ins-trig-empty-section');
+    Object.values(sections).forEach((el) => el && el.classList.add('hidden'));
+    if (empty) empty.classList.add('hidden');
+
+    if (kind === 'channel') {
+      sections.channel?.classList.remove('hidden');
+      hydrateChannelTrigger(inner);
+      return;
+    }
+    if (kind === 'cron') {
+      sections.cron?.classList.remove('hidden');
+      hydrateCronTrigger(inner);
+      return;
+    }
+    if (kind === 'webhook') {
+      sections.webhook?.classList.remove('hidden');
+      hydrateWebhookTrigger(inner);
+      return;
+    }
+    if (kind === 'manual') {
+      sections.manual?.classList.remove('hidden');
+      hydrateManualTrigger(inner);
+      return;
+    }
+    if (empty) empty.classList.remove('hidden');
+  }
+
+  function hydrateChannelTrigger(inner) {
     const chSel = document.getElementById('ins-trig-channel');
     const evSel = document.getElementById('ins-trig-event');
     const desc = document.getElementById('ins-trig-event-desc');
@@ -1264,8 +1296,6 @@
     const matchPanel = document.getElementById('ins-trig-match');
     if (!chSel || !evSel) return;
 
-    // Populate channel dropdown from registry (only channels with at
-    // least one registered event).
     chSel.innerHTML = '<option value="">(select channel)</option>';
     (registry.channels || []).forEach((ch) => {
       if (!ch.events || !ch.events.length) return;
@@ -1302,7 +1332,6 @@
       matchWrap.classList.remove('hidden');
       const enabled = !!inner.match_enabled;
       matchEnabled.checked = enabled;
-      matchPanel.innerHTML = html;
       matchPanel.classList.toggle('hidden', !enabled);
       hydrateArgsForm(matchPanel, html, inner.match || {}, inner.__match_modes || {}, chSel.value);
     }
@@ -1321,6 +1350,40 @@
     };
 
     populateEvents(inner.channel || '', inner.event || '');
+  }
+
+  function hydrateCronTrigger(inner) {
+    const sched = document.getElementById('ins-trig-schedule');
+    const tz = document.getElementById('ins-trig-timezone');
+    if (sched) {
+      sched.value = inner.schedule || '';
+      sched.oninput = () => { if (selectedID) updateNodeData(selectedID); };
+    }
+    if (tz) {
+      tz.value = inner.timezone || '';
+      tz.oninput = () => { if (selectedID) updateNodeData(selectedID); };
+    }
+  }
+
+  function hydrateWebhookTrigger(inner) {
+    const path = document.getElementById('ins-trig-path');
+    const method = document.getElementById('ins-trig-method');
+    if (path) {
+      path.value = inner.path || '';
+      path.oninput = () => { if (selectedID) updateNodeData(selectedID); };
+    }
+    if (method) {
+      method.value = inner.method || '';
+      method.onchange = () => { if (selectedID) updateNodeData(selectedID); };
+    }
+  }
+
+  function hydrateManualTrigger(inner) {
+    const label = document.getElementById('ins-trig-manual-label');
+    if (label) {
+      label.value = inner.label || '';
+      label.oninput = () => { if (selectedID) updateNodeData(selectedID); };
+    }
   }
   function hideInspector() {
     insEmpty.classList.remove('hidden');
@@ -1640,27 +1703,31 @@
       }
     }
     if (kind === 'trigger') {
-      const chSel = document.getElementById('ins-trig-channel');
-      const evSel = document.getElementById('ins-trig-event');
-      const matchEnabled = document.getElementById('ins-trig-match-enabled');
-      const matchPanel = document.getElementById('ins-trig-match');
-      const channelName = chSel?.value || '';
-      const eventName = evSel?.value || '';
-      if (channelName) {
-        inner.channel = channelName;
-        inner.triggerKind = 'channel';
-      } else {
-        inner.channel = '';
-      }
-      inner.event = eventName;
-      const enabled = !!(matchEnabled && matchEnabled.checked);
-      inner.match_enabled = enabled;
-      if (enabled && matchPanel) {
-        inner.match = collectArgs(matchPanel);
-        inner.__match_modes = collectArgModes(matchPanel);
-      } else {
-        inner.match = {};
-        inner.__match_modes = {};
+      const triggerKind = inner.triggerKind || 'manual';
+      if (triggerKind === 'channel') {
+        const chSel = document.getElementById('ins-trig-channel');
+        const evSel = document.getElementById('ins-trig-event');
+        const matchEnabled = document.getElementById('ins-trig-match-enabled');
+        const matchPanel = document.getElementById('ins-trig-match');
+        inner.channel = chSel?.value || '';
+        inner.event = evSel?.value || '';
+        const enabled = !!(matchEnabled && matchEnabled.checked);
+        inner.match_enabled = enabled;
+        if (enabled && matchPanel) {
+          inner.match = collectArgs(matchPanel);
+          inner.__match_modes = collectArgModes(matchPanel);
+        } else {
+          inner.match = {};
+          inner.__match_modes = {};
+        }
+      } else if (triggerKind === 'cron') {
+        inner.schedule = document.getElementById('ins-trig-schedule')?.value || '';
+        inner.timezone = document.getElementById('ins-trig-timezone')?.value || '';
+      } else if (triggerKind === 'webhook') {
+        inner.path = document.getElementById('ins-trig-path')?.value || '';
+        inner.method = document.getElementById('ins-trig-method')?.value || '';
+      } else if (triggerKind === 'manual') {
+        inner.label = document.getElementById('ins-trig-manual-label')?.value || '';
       }
     }
     editor.updateNodeDataFromId(id, { id: d.id, type: kind, data: inner });

@@ -124,13 +124,33 @@ func mergeTriggers(canvas, prev []wf.Trigger) []wf.Trigger {
 	out := make([]wf.Trigger, 0, len(canvas))
 	for _, c := range canvas {
 		if p, ok := byID[c.ID]; ok {
-			// Overlay canvas-owned fields onto prev so the user's
-			// inspector edits (Schedule, ChannelName, Match, …) survive.
-			p.ID = c.ID
-			p.Type = c.Type
-			p.EntryNode = c.EntryNode
-			out = append(out, p)
-			continue
+			// Canvas wins for every editor-driven field
+			// (ChannelName, Event, Match, Schedule, Path, …). Prev
+			// only carries metadata the canvas doesn't model so the
+			// operator's hand-edited YAML or earlier config isn't
+			// wiped: whitelist, dedup TTL, reply-source flag,
+			// require-role, webhook secret, schedule_at metadata,
+			// error severity/source filters.
+			c.Whitelist = p.Whitelist
+			c.DedupTTLSec = p.DedupTTLSec
+			c.ReplySource = p.ReplySource
+			c.RequireRole = p.RequireRole
+			c.SecretRef = p.SecretRef
+			c.ParseBody = p.ParseBody
+			c.BodyToVar = p.BodyToVar
+			if c.At.IsZero() {
+				c.At = p.At
+			}
+			c.DeleteAfter = p.DeleteAfter
+			if c.SourceWorkflow == "" {
+				c.SourceWorkflow = p.SourceWorkflow
+			}
+			if len(c.Severity) == 0 {
+				c.Severity = p.Severity
+			}
+			if len(c.NodeTypes) == 0 {
+				c.NodeTypes = p.NodeTypes
+			}
 		}
 		out = append(out, c)
 	}

@@ -134,27 +134,61 @@ templ EditorInspector(vm EditorVM) {
 							<div id="ins-conn-args" class="space-y-2"></div>
 						</div>
 
-						// Trigger node panel — channel/event picker + filter form.
-						// Inspector hydrates from the live integration registry so
-						// each event's MatchSchema-rendered form drops in via
-						// innerHTML. Operator toggles match_enabled to gate the
-						// filter; values save to Trigger.Match through the codec.
+						// Trigger node panel — content swaps based on triggerKind.
+						// Channel triggers show channel + event picker + match
+						// filter form. Cron / webhook / manual / schedule_at /
+						// error each get their own sub-panel; only the matching
+						// section is unhidden when the inspector opens.
 						<div id="ins-trigger-panel" class="hidden">
-							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Channel</label>
-							<select id="ins-trig-channel" class="wf-input">
-								<option value="">(select channel)</option>
-							</select>
-							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Event</label>
-							<select id="ins-trig-event" class="wf-input">
-								<option value="">(select event)</option>
-							</select>
-							<div id="ins-trig-event-desc" class="mt-1 text-[11px] text-black-700 dark:text-black-600"></div>
-							<div id="ins-trig-match-wrap" class="hidden mt-3">
-								<label class="inline-flex items-center gap-2 cursor-pointer mb-2">
-									<input id="ins-trig-match-enabled" type="checkbox" class="w-4 h-4 accent-green-500 cursor-pointer rounded"/>
-									<span class="text-xs font-medium text-black-800 dark:text-black-600">Filter events (whitelist)</span>
-								</label>
-								<div id="ins-trig-match" class="hidden"></div>
+							// Channel-trigger subpanel.
+							<div id="ins-trig-channel-section" class="hidden">
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Channel</label>
+								<select id="ins-trig-channel" class="wf-input">
+									<option value="">(select channel)</option>
+								</select>
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Event</label>
+								<select id="ins-trig-event" class="wf-input">
+									<option value="">(select event)</option>
+								</select>
+								<div id="ins-trig-event-desc" class="mt-1 text-[11px] text-black-700 dark:text-black-600"></div>
+								<div id="ins-trig-match-wrap" class="hidden mt-3">
+									<label class="inline-flex items-center gap-2 cursor-pointer mb-2">
+										<input id="ins-trig-match-enabled" type="checkbox" class="w-4 h-4 accent-green-500 cursor-pointer rounded"/>
+										<span class="text-xs font-medium text-black-800 dark:text-black-600">Filter events (whitelist)</span>
+									</label>
+									<div id="ins-trig-match" class="hidden"></div>
+								</div>
+							</div>
+							// Cron-trigger subpanel.
+							<div id="ins-trig-cron-section" class="hidden">
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Schedule (cron)</label>
+								<input id="ins-trig-schedule" type="text" placeholder="0 */15 * * * *" class="wf-input font-mono"/>
+								<div class="mt-1 text-[11px] text-black-700 dark:text-black-600">6-field cron: sec min hour dom mon dow</div>
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Timezone</label>
+								<input id="ins-trig-timezone" type="text" placeholder="Asia/Jakarta" class="wf-input font-mono"/>
+							</div>
+							// Webhook-trigger subpanel.
+							<div id="ins-trig-webhook-section" class="hidden">
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Path</label>
+								<input id="ins-trig-path" type="text" placeholder="/hooks/my-hook" class="wf-input font-mono"/>
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Method</label>
+								<select id="ins-trig-method" class="wf-input">
+									<option value="">(any)</option>
+									<option>GET</option>
+									<option>POST</option>
+									<option>PUT</option>
+									<option>DELETE</option>
+									<option>PATCH</option>
+								</select>
+							</div>
+							// Manual-trigger subpanel.
+							<div id="ins-trig-manual-section" class="hidden">
+								<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Button label</label>
+								<input id="ins-trig-manual-label" type="text" placeholder="Run now" class="wf-input"/>
+							</div>
+							// Default fallback (no extra fields).
+							<div id="ins-trig-empty-section" class="hidden mt-3 text-[11px] italic text-black-700 dark:text-black-600">
+								No extra configuration for this trigger type.
 							</div>
 						</div>
 
