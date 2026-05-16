@@ -1,5 +1,7 @@
 package workflow
 
+import wfnodes "github.com/yogasw/wick/internal/tools/agents/workflow/nodes"
+
 // EditorInspector — full-screen overlay modal that pops on top of the
 // editor when a node is selected. Mirrors n8n's debug experience: three
 // columns (Input | Parameters | Output) so the operator can iterate on
@@ -92,6 +94,18 @@ templ EditorInspector(vm EditorVM) {
 						<div id="ins-command-panel" class="hidden">
 							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Command (one arg per line)</label>
 							<textarea id="ins-command" class="wf-input font-mono" rows="3"></textarea>
+						</div>
+
+						@nodeModulePartials()
+
+						<div id="ins-agent-session-panel" class="hidden">
+							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Session override</label>
+							<select id="ins-agent-session" class="wf-input">
+								<option value="">(use default from session_init or engine)</option>
+								<option value="new">new — fresh subprocess per call</option>
+							</select>
+							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Reuse session from node</label>
+							<input id="ins-agent-session-from" type="text" placeholder="(node id of an upstream agent/session_init)" class="wf-input font-mono"/>
 						</div>
 
 						<div id="ins-url-panel" class="hidden">
@@ -234,4 +248,27 @@ templ EditorInspector(vm EditorVM) {
 			</div>
 		</div>
 	</div>
+}
+
+// nodeModulePartials iterates the per-node registry and emits each
+// module's inspector partial. The partials are sibling div blocks
+// inside the parameters tab — editor.js shows/hides them based on
+// the selected node's data-node-type attribute. Empty registry =
+// nothing emitted.
+templ nodeModulePartials() {
+	for _, m := range wfnodes.All() {
+		@m.InspectorPartial()
+	}
+}
+
+// NodeModuleScripts emits <script> tags for every per-node module
+// that declares an InspectorScript path. Called from editor.templ
+// next to the main editor.js load so the per-node modules attach
+// before the user opens the inspector.
+templ NodeModuleScripts(base string) {
+	for _, m := range wfnodes.All() {
+		if path := m.InspectorScript(); path != "" {
+			<script src={ base + "/static/nodes/" + path } defer></script>
+		}
+	}
 }

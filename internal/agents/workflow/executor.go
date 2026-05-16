@@ -33,6 +33,19 @@ type RunContext struct {
 	Secrets     map[string]string
 	RunID       string
 	NodeOutputs map[string]NodeOutput
+
+	// DefaultAgentSessionID is set by an upstream `session_init` node
+	// and consumed by downstream `agent` nodes that don't override
+	// session: themselves. Empty = engine falls back to the per-run
+	// pattern "wf:<slug>:run:<runID>". See pool.md for the resolver
+	// order.
+	DefaultAgentSessionID string
+
+	// AgentSessionIDs maps node ID → resolved sessionID for every
+	// agent / session_init node that has run. Lets downstream agent
+	// nodes opt into "reuse this upstream's subprocess" via
+	// `session_from: <node-id>` without re-resolving the template.
+	AgentSessionIDs map[string]string
 }
 
 // RenderCtx materializes a RenderCtx from the RunContext for template

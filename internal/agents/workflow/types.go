@@ -38,6 +38,7 @@ const (
 	NodeDatasetUpsert  NodeType = "dataset_upsert"
 	NodeDatasetDelete  NodeType = "dataset_delete"
 	NodeDatasetCount   NodeType = "dataset_count"
+	NodeSessionInit    NodeType = "session_init"
 )
 
 // IsDatasetNode reports whether t is one of the dataset_* variants.
@@ -144,7 +145,16 @@ type Node struct {
 	Preset     string `yaml:"preset,omitempty"`
 	Prompt     string `yaml:"prompt,omitempty"`
 	PromptFile string `yaml:"prompt_file,omitempty"`
-	Session    string `yaml:"session,omitempty"`
+	Session    string `yaml:"session,omitempty"` // agent: "new" → fresh UUID; "" → inherit rc.DefaultAgentSessionID. Also used by session_init for legacy aliasing.
+
+	// agent override — copy resolved sessionID from another node in
+	// this run. Must reference an upstream agent or session_init node.
+	SessionFrom string `yaml:"session_from,omitempty"`
+
+	// session_init — preset shortcut OR rendered template id. Mutually
+	// exclusive; SessionID wins when both set. `Preset` reuses the
+	// classify/agent Preset field above for YAML brevity.
+	SessionID string `yaml:"session_id,omitempty"`
 
 	// classify
 	OutputCases         []string          `yaml:"output_cases,omitempty"`
@@ -234,11 +244,38 @@ const (
 )
 
 // Session modes for agent/classify nodes.
+//
+// Legacy values "root" and "persistent" predate the pool-integration
+// design; they remain in the constant list so loaders that touch old
+// YAML round-trip cleanly, but the engine treats them as equivalent to
+// the per-run default (no override). New workflows should use the
+// `session_init` node instead — see internal/docs/workflow/pool.md.
 const (
 	SessionNew        = "new"
 	SessionRoot       = "root"
 	SessionPersistent = "persistent"
 )
+
+// Session preset values for the `session_init` node. `preset:` and `id:`
+// are mutually exclusive — when `id:` is set the executor renders it as
+// a template; otherwise it falls back to the preset pattern.
+const (
+	SessionPresetWorkflowRun    = "workflow_run"
+	SessionPresetWorkflowGlobal = "workflow_global"
+	SessionPresetNew            = "new"
+)
+
+// NodeSession is the per-agent-node session override. Empty struct
+// means "use rc.DefaultAgentSessionID (or the engine fallback)".
+//
+//   - From  — copy the resolved sessionID from another node in this run
+//             (must be an upstream agent/session_init node, validator
+//             rejects forward refs + cycles)
+//   - Mode  — "new" forces a fresh UUID per call; empty inherits
+type NodeSession struct {
+	From string `yaml:"from,omitempty"`
+	Mode string `yaml:"mode,omitempty"`
+}
 
 // RetryPolicy on a node.
 type RetryPolicy struct {

@@ -17,9 +17,21 @@ import (
 // gemini CLI) to the workflow provider.Provider interface. One-shot
 // subprocess per call — `<bin> --output-format json --print <prompt>`
 // for structured + agent calls.
+//
+// Claude lives behind the agent pool in production (see
+// internal/docs/workflow/pool.md), but cliProvider stays as the
+// fallback for codex/gemini and for any path that runs without the
+// pool wired (tests, headless MCP).
 type cliProvider struct {
 	ins agentprovider.Instance
 }
+
+// nonPoolSem caps concurrent cliProvider.AgentCall invocations so a
+// burst of workflow runs doesn't fork N subprocesses at once. Claude
+// path uses the agent pool's MaxConcurrent (separate cap); this
+// semaphore protects only the codex/gemini path. Size matches the
+// pool default; tweak via wick.yml if you have a powerful machine.
+var nonPoolSem = make(chan struct{}, 2)
 
 // NewCLIProviders returns one workflow.Provider per healthy CLI
 // runtime declared by the agent provider package. Caller registers
@@ -89,14 +101,23 @@ func (p *cliProvider) StructuredCall(ctx context.Context, req provider.Structure
 }
 
 // AgentCall runs the CLI with `--print` and returns stdout as text.
+//
+// Bounded by nonPoolSem so concurrent codex/gemini calls don't blow
+// up the machine. Respects ctx.Done() while waiting for a slot. No
+// hardcoded timeout — caller's ctx (engine.Run wraps with the
+// workflow MaxDurationSec) carries the cancel signal end-to-end.
 func (p *cliProvider) AgentCall(ctx context.Context, req provider.AgentRequest) (provider.AgentResult, error) {
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
+	select {
+	case nonPoolSem <- struct{}{}:
+		defer func() { <-nonPoolSem }()
+	case <-ctx.Done():
+		return provider.AgentResult{}, ctx.Err()
+	}
 	bin := p.ins.Bin()
 	args := append([]string(nil), p.ins.ExtraArgs...)
 	args = append(args, "--print", req.Prompt)
 	start := time.Now()
-	out, err := exec.CommandContext(cctx, bin, args...).Output()
+	out, err := exec.CommandContext(ctx, bin, args...).Output()
 	usage := provider.Usage{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
 		return provider.AgentResult{Text: string(out), Usage: usage}, fmt.Errorf("%s: %w", p.ins.Name, err)

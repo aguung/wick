@@ -30,5 +30,6 @@ templ Editor(vm EditorVM) {
 templ editorBootstrap(vm EditorVM) {
 	<div id="wf-graph-data" class="hidden" data-graph={ vm.GraphJSON } data-validation={ vm.ValidationJSON }></div>
 	<script src={ vm.Base + "/static/js/widgets/picker.js" } defer></script>
+	@NodeModuleScripts(vm.Base)
 	<script src={ vm.Base + "/static/js/workflow/editor.js" } defer></script>
 }

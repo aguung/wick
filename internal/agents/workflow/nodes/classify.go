@@ -111,9 +111,9 @@ func classifySchema(cases []string) map[string]any {
 func classifySessionID(n workflow.Node, rc *workflow.RunContext) string {
 	switch n.Session {
 	case workflow.SessionRoot:
-		return fmt.Sprintf("workflow:%s:run:%s:root", rc.Workflow.Slug, rc.RunID)
+		return fmt.Sprintf("workflow_%s_run_%s_root", rc.Workflow.Slug, rc.RunID)
 	case workflow.SessionPersistent:
-		return fmt.Sprintf("workflow:%s:persistent", rc.Workflow.Slug)
+		return fmt.Sprintf("workflow_%s_persistent", rc.Workflow.Slug)
 	}
 	return ""
 }

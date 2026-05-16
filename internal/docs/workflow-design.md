@@ -77,7 +77,9 @@ Update terakhir: 2026-05-16.
 
 | File | Status | Catatan |
 |---|---|---|
-| [Pool integration](workflow/pool.md) | 🆕 proposed | Agent node → `agentpool.Pool` (queue, FIFO, session reuse, sidebar) |
+| [Pool integration](workflow/pool.md) | 🟢 implemented | Agent node → `agentpool.Pool` (queue, FIFO, session reuse, sidebar) + `session_init` node |
+| [Plugin arch](workflow/plugin-arch.md) | 🟢 implemented | Per-node folder pattern (registry, embed, templ partial, JS module) — drop folder = add node |
+| [Skill: node-builder](workflow/skill-node-builder.md) | 🟡 template | Claude Code skill spec untuk AI bantu bikin node/workflow baru (template; skill belum dibuat) |
 | [Mockup HTML](workflow/mockup.html) | 🟢 reference | Visual reference — canvas + run timeline + inspector + anatomy |
 | [Audit TODO](workflow/audit-todo.md) | 🟡 working | Gap audit doc-vs-code (2026-05-15) |
 | [Editor roadmap](workflow/editor-roadmap.md) | 🟡 working | Canvas editor roadmap |

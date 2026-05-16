@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	wf "github.com/yogasw/wick/internal/agents/workflow"
+	wfnodes "github.com/yogasw/wick/internal/tools/agents/workflow/nodes"
 )
 
 // drawflowNode mirrors Drawflow's editor.export() per-node shape.
@@ -74,6 +75,12 @@ func renderFor(t wf.NodeType) nodeRender {
 	case wf.NodeTransform:
 		return nodeRender{head: "transform", hint: "gotemplate", cssType: "transform", inputs: 1, outputs: 1}
 	}
+	// Registry fallback: per-node module (internal/tools/agents/workflow/nodes/<type>/)
+	// provides its own card render. New node types live here exclusively.
+	if mod := wfnodes.ByType(t); mod != nil {
+		r := mod.Render()
+		return nodeRender{head: r.Head, hint: r.Hint, cssType: r.CSSType, inputs: r.Inputs, outputs: r.Outputs}
+	}
 	return nodeRender{head: string(t), hint: "", cssType: "shell", inputs: 1, outputs: 1}
 }
 
@@ -102,6 +109,8 @@ func nodeDataFromWorkflow(n wf.Node) map[string]any {
 	case wf.NodeAgent:
 		data["prompt"] = n.Prompt
 		data["preset"] = n.Preset
+		data["session"] = n.Session
+		data["session_from"] = n.SessionFrom
 	case wf.NodeShell:
 		data["command"] = n.Command
 	case wf.NodeHTTP:
@@ -132,6 +141,15 @@ func nodeDataFromWorkflow(n wf.Node) map[string]any {
 		data["expression"] = n.Expression
 	case wf.NodeEnd:
 		data["result"] = n.Result
+	default:
+		// Registry fallback: per-node module owns its own field
+		// projection. Loop preserves any keys the module hasn't
+		// claimed so partial-fields still round-trip.
+		if mod := wfnodes.ByType(n.Type); mod != nil {
+			for k, v := range mod.DrawflowDataFromYAML(n) {
+				data[k] = v
+			}
+		}
 	}
 	return map[string]any{
 		"id":   n.ID,
@@ -727,6 +745,8 @@ func workflowNodeFromDrawflow(dn drawflowNode) wf.Node {
 	case wf.NodeAgent:
 		wn.Prompt, _ = inner["prompt"].(string)
 		wn.Preset, _ = inner["preset"].(string)
+		wn.Session, _ = inner["session"].(string)
+		wn.SessionFrom, _ = inner["session_from"].(string)
 	case wf.NodeShell:
 		wn.Command = stringSliceFromAny(inner["command"])
 	case wf.NodeHTTP:
@@ -749,6 +769,16 @@ func workflowNodeFromDrawflow(dn drawflowNode) wf.Node {
 		wn.Expression, _ = inner["expression"].(string)
 	case wf.NodeEnd:
 		wn.Result, _ = inner["result"].(string)
+	default:
+		// Registry fallback. The module returns a wf.Node with the
+		// type-specific fields populated; carry the ID over since the
+		// switch path sets it before this point.
+		if mod := wfnodes.ByType(wn.Type); mod != nil {
+			fromMod := mod.YAMLFromDrawflowData(wn.ID, inner)
+			fromMod.ID = wn.ID
+			fromMod.Type = wn.Type
+			wn = fromMod
+		}
 	}
 	return wn
 }

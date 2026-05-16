@@ -22,9 +22,12 @@ import (
 // path templates must match.
 var SlugRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// NodeIDRe accepts the same charset as slugs — keeps grep/diff
-// tooling consistent.
-var NodeIDRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+// NodeIDRe accepts slug charset plus underscore. Underscore is allowed
+// because palette node-type names (e.g. `session_init`, `dataset_query`)
+// are reused as the seeded ID on drop — rejecting `_` here would force
+// every Go const to dual-spell as `session-init` solely for the
+// validator. Folder names still use SlugRe (hyphen-only).
+var NodeIDRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // Error is returned by Parse with a path-style locator for the
 // offending field so callers (UI, MCP) can surface "yaml: graph.edges[2]: ...".
@@ -57,7 +60,7 @@ func ValidateNodeID(id string) error {
 		return Error{Path: "node.id", Message: "is empty"}
 	}
 	if !NodeIDRe.MatchString(id) {
-		return Error{Path: "node.id", Message: fmt.Sprintf("%q is not [a-z0-9-]+", id)}
+		return Error{Path: "node.id", Message: fmt.Sprintf("%q is not [a-z0-9_-]+", id)}
 	}
 	return nil
 }
@@ -369,6 +372,11 @@ func validateNodeBody(r *Result, path string, n workflow.Node) {
 		}
 	case workflow.NodeEnd, workflow.NodePython:
 		// no required fields
+	case workflow.NodeSessionInit:
+		// session_init has no required fields: both `preset` and
+		// `session_id` are optional — empty preset falls back to
+		// workflow_run; empty session_id falls back to preset. Engine
+		// resolves at runtime.
 	default:
 		if n.Type.IsDatasetNode() {
 			if n.Dataset == "" {

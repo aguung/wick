@@ -11,6 +11,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/workflow/guard"
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/tools/agents/view"
+	wfnodes "github.com/yogasw/wick/internal/tools/agents/workflow/nodes"
 )
 
 // ListVM carries the workflow list page payload.
@@ -196,7 +197,7 @@ func BuildPalette(channels []wfchannel.Info, connectors []wfconnector.Info) []Pa
 		})
 	}
 
-	return []PaletteSection{
+	sections := []PaletteSection{
 		{Title: "Triggers", Items: triggers},
 		{
 			Title: "AI",
@@ -215,5 +216,30 @@ func BuildPalette(channels []wfchannel.Info, connectors []wfconnector.Info) []Pa
 			},
 		},
 	}
+	// Append items contributed by per-node modules (see
+	// internal/tools/agents/workflow/nodes/). Each module declares its
+	// PaletteSection so the loop slots it into the existing section
+	// list — adding a new node = drop a folder, no edit here.
+	for _, m := range wfnodes.All() {
+		item := PaletteItem{
+			Type:  m.PaletteItem().Type,
+			Label: m.PaletteItem().Label,
+			Dot:   m.PaletteItem().Dot,
+			Hint:  m.PaletteItem().Hint,
+			Group: m.PaletteItem().Group,
+		}
+		matched := false
+		for i := range sections {
+			if sections[i].Title == m.PaletteSection() {
+				sections[i].Items = append(sections[i].Items, item)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			sections = append(sections, PaletteSection{Title: m.PaletteSection(), Items: []PaletteItem{item}})
+		}
+	}
+	return sections
 }
 

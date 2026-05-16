@@ -58,6 +58,7 @@ import (
 	"github.com/yogasw/wick/internal/tags"
 	"github.com/yogasw/wick/internal/tools"
 	wfguard "github.com/yogasw/wick/internal/agents/workflow/guard"
+	wfnodes "github.com/yogasw/wick/internal/agents/workflow/nodes"
 	wftrigger "github.com/yogasw/wick/internal/agents/workflow/trigger"
 	wfsetup "github.com/yogasw/wick/internal/agents/workflow/setup"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
@@ -410,6 +411,22 @@ func NewServer() *Server {
 	// session key is "wf:<slug>"; client opens
 	// /stream?session=wf:<slug>.
 	wfMgr.Engine.SetEventHook(agentstool.WorkflowEventHook(agentsBcast))
+	// Wire the shared agent pool + an adapter that translates
+	// tools/agents.Broadcaster events into the slim AgentEvent the
+	// workflow executor consumes. Pool-routed agent nodes go through
+	// the FIFO queue + session reuse machinery — see
+	// internal/docs/workflow/pool.md.
+	wfMgr.WithAgentRuntime(agentsPool, func(sessionID string) (<-chan wfnodes.AgentEvent, func()) {
+		raw, unsub := agentsBcast.Subscribe(sessionID)
+		out := make(chan wfnodes.AgentEvent, 256)
+		go func() {
+			defer close(out)
+			for ev := range raw {
+				out <- wfnodes.AgentEvent{Type: ev.Type, Data: ev.Data}
+			}
+		}()
+		return out, unsub
+	})
 	if err := wfMgr.Start(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("workflow bootstrap failed; workflows tab will be empty")
 	}

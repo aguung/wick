@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yogasw/wick/internal/agents/config"
+	"github.com/yogasw/wick/internal/agents/pool"
 	"github.com/yogasw/wick/internal/agents/workflow"
 	"github.com/yogasw/wick/internal/agents/workflow/canvas"
 	"github.com/yogasw/wick/internal/agents/workflow/channel"
@@ -43,6 +44,13 @@ type Manager struct {
 	Guard      *guard.Guard
 	Cost       *cost.Tracker
 	MCP        *mcp.Ops
+
+	// AgentPool + AgentSubscribe route the `agent` + `session_init`
+	// node types through the shared agent pool. Nil = engine still
+	// runs (codex/gemini via cliProvider), but claude path skips the
+	// queue/sidebar/session-reuse benefits. See workflow/pool.md.
+	AgentPool      *pool.Pool
+	AgentSubscribe nodes.AgentSubscribeFn
 }
 
 // New constructs every dependency wired to a single Layout. Channels,
@@ -75,7 +83,8 @@ func New(layout config.Layout) *Manager {
 	eng.Register(workflow.NodeTransform, nodes.NewTransformExecutor())
 	eng.Register(workflow.NodeEnd, nodes.NewEndExecutor())
 	eng.Register(workflow.NodeClassify, nodes.NewClassifyExecutor(provReg))
-	eng.Register(workflow.NodeAgent, nodes.NewAgentExecutor(provReg))
+	eng.Register(workflow.NodeAgent, nodes.NewAgentExecutor(provReg, nil, nil))
+	eng.Register(workflow.NodeSessionInit, nodes.NewSessionInitExecutor(nil))
 	eng.Register(workflow.NodeChannel, nodes.NewChannelExecutor(intReg))
 	eng.Register(workflow.NodeConnector, nodes.NewConnectorExecutor(conReg))
 	dsExec := nodes.NewDatasetExecutor(dsSvc)
@@ -125,6 +134,23 @@ func (m *Manager) WithProvider(p provider.Provider) *Manager {
 // WithGuardConfig replaces the guard configuration.
 func (m *Manager) WithGuardConfig(cfg guard.Config) *Manager {
 	m.Guard = guard.New(cfg)
+	return m
+}
+
+// WithAgentRuntime wires the shared agent pool + a subscribe adapter
+// into the workflow engine so `agent` and `session_init` nodes route
+// through the queue/session machinery. The subscribe function is the
+// thin adapter around tools/agents.Broadcaster (kept out of this
+// package to avoid an import cycle).
+//
+// Calling re-registers the agent + session_init executors so the
+// dependency takes effect immediately. Idempotent; nil arguments
+// disable the pool path (engine reverts to the cliProvider one-shot).
+func (m *Manager) WithAgentRuntime(p *pool.Pool, sub nodes.AgentSubscribeFn) *Manager {
+	m.AgentPool = p
+	m.AgentSubscribe = sub
+	m.Engine.Register(workflow.NodeAgent, nodes.NewAgentExecutor(m.Providers, p, sub))
+	m.Engine.Register(workflow.NodeSessionInit, nodes.NewSessionInitExecutor(p))
 	return m
 }
 

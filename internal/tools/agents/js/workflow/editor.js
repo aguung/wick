@@ -566,7 +566,28 @@
     channel: document.getElementById('ins-channel-panel'),
     connector: document.getElementById('ins-connector-panel'),
     trigger: document.getElementById('ins-trigger-panel'),
+    agentSession: document.getElementById('ins-agent-session-panel'),
   };
+  // Hand control of any wf-inspector-panel block to the per-node JS
+  // module that owns it (see internal/tools/agents/workflow/nodes/<type>/inspector.js).
+  // editor.js only handles the show/hide dispatch by data-node-type;
+  // hydrate/save/onDrop hooks live in window.WickNodes[type].
+  function nodeModule(kind) {
+    return (window.WickNodes && window.WickNodes[kind]) || null;
+  }
+  function showModulePanelFor(kind) {
+    document.querySelectorAll('.wf-inspector-panel').forEach((el) => {
+      el.classList.toggle('hidden', el.dataset.nodeType !== kind);
+    });
+  }
+  // attach() on each module wires DOM listeners once at boot (regen
+  // buttons, mode dropdowns, etc.) so the dispatcher doesn't repeat
+  // them. requestUpdate flushes the inspector → node data on demand.
+  Object.values(window.WickNodes || {}).forEach((mod) => {
+    if (mod && typeof mod.attach === 'function') {
+      mod.attach({ requestUpdate: () => { if (selectedID) updateNodeData(selectedID); } });
+    }
+  });
   let selectedID = null;
 
   // Single click on a node only tracks selection — it does NOT open
@@ -605,6 +626,31 @@
   Object.values(f).forEach((el) => {
     if (!el || el === f.cases || el === f.refs) return;
     el.addEventListener('input', () => { if (selectedID) updateNodeData(selectedID); });
+  });
+  // session_init + agent session controls live outside the `f`
+  // object (defined ad-hoc inside the modal), so they need explicit
+  // listeners to flush their state into node data on every edit.
+  // Agent override controls live in editor_inspector.templ (not
+  // migrated to a per-node module yet); wire their input/change
+  // listeners here.
+  ['ins-agent-session', 'ins-agent-session-from'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', () => { if (selectedID) updateNodeData(selectedID); });
+    el.addEventListener('change', () => { if (selectedID) updateNodeData(selectedID); });
+  });
+  // Per-node modules register their own input/change listeners via
+  // attach() above — no global wiring needed for session_init or any
+  // future module that owns its own inspector partial. We also
+  // delegate input events at the document level so dynamically
+  // rendered inputs inside module panels still trigger updates.
+  document.addEventListener('input', (e) => {
+    const panel = e.target.closest('.wf-inspector-panel');
+    if (panel && selectedID) updateNodeData(selectedID);
+  });
+  document.addEventListener('change', (e) => {
+    const panel = e.target.closest('.wf-inspector-panel');
+    if (panel && selectedID) updateNodeData(selectedID);
   });
 
   document.getElementById('ins-add-case').addEventListener('click', () => {
@@ -1495,12 +1541,33 @@
     return { x: (x - cx) / zoom, y: (y - cy) / zoom };
   }
 
+  // generateUUID returns a v4-ish UUID string. crypto.randomUUID is
+  // present in modern browsers; fall back to a templated random for
+  // file:// or older environments.
+  function generateUUID() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
   function addNodeOfType(type, x, y, defaults) {
     const id = uniqueID(type);
     const meta = nodeMeta(type);
     // Merge palette-supplied defaults (e.g. {channel:"slack",op:"send_message"})
     // over the generic kind defaults so level-2 drops land already wired.
     const data = Object.assign({}, meta.defaults, defaults || {});
+    // Per-node module onDrop hook seeds type-specific defaults
+    // (session_init's preset/session_id, etc). Modules without an
+    // onDrop fn skip silently.
+    const mod = window.WickNodes && window.WickNodes[type];
+    if (mod && typeof mod.onDrop === 'function') {
+      mod.onDrop(data);
+    }
     let hint = meta.hint;
     if (defaults) {
       if (defaults.channel && defaults.op) hint = `${defaults.channel} · ${defaults.op}`;
@@ -1528,6 +1595,16 @@
     return `<div class="node-head">${head}</div><div class="node-body"><div class="title">${title}</div><div class="meta">${hint}</div></div>`;
   }
 
+  // nodeMetaRegistry caches per-node module fixtures contributed via
+  // window.WickNodes[type].meta. Each module declares head/hint/css/
+  // port info so the canvas card renders consistently with what the
+  // Go-side codec expects.
+  function nodeMetaFromModule(t) {
+    const mod = window.WickNodes && window.WickNodes[t];
+    if (mod && mod.meta) return mod.meta;
+    return null;
+  }
+
   function nodeMeta(type) {
     const t = type.startsWith('trigger-') ? 'trigger' : type;
     const fixtures = {
@@ -1544,7 +1621,7 @@
       end:       { kind: 'end', head: 'end', hint: 'terminator', cssType: 'end', inputs: 1, outputs: 0, defaults: { result: '' } },
       transform: { kind: 'transform', head: 'transform', hint: 'gotemplate', cssType: 'transform', inputs: 1, outputs: 1, defaults: { engine: 'gotemplate', expression: '' } },
     };
-    return fixtures[t] || fixtures.shell;
+    return fixtures[t] || nodeMetaFromModule(t) || fixtures.shell;
   }
 
   function seedEmptyGraph() {
@@ -1592,6 +1669,22 @@
       f.prompt.value = inner.prompt || '';
       f.preset.value = inner.preset || '';
       if (f.provider) f.provider.value = inner.provider || '';
+    }
+    if (kind === 'agent') {
+      panels.agentSession?.classList.remove('hidden');
+      const sel = document.getElementById('ins-agent-session');
+      const from = document.getElementById('ins-agent-session-from');
+      if (sel) sel.value = inner.session || '';
+      if (from) from.value = inner.session_from || '';
+    }
+    // Hand off to the per-node module's hydrate hook (registered via
+    // window.WickNodes by /static/nodes/<type>/inspector.js). The
+    // module owns its inspector partial + DOM IDs; editor.js just
+    // toggles which panel is visible.
+    showModulePanelFor(kind);
+    const mod = nodeModule(kind);
+    if (mod && typeof mod.hydrate === 'function') {
+      mod.hydrate(inner);
     }
     if (kind === 'classify') {
       panels.cases.classList.remove('hidden');
@@ -2056,6 +2149,19 @@
       inner.prompt = f.prompt.value;
       inner.preset = f.preset.value;
       if (f.provider) inner.provider = f.provider.value;
+    }
+    if (kind === 'agent') {
+      const sel = document.getElementById('ins-agent-session');
+      const from = document.getElementById('ins-agent-session-from');
+      inner.session = sel ? sel.value : '';
+      inner.session_from = from ? from.value.trim() : '';
+    }
+    // Mirror of showInspectorFor — delegate save to the per-node
+    // module so legacy switch cases above stay scoped to the
+    // not-yet-migrated node types.
+    const mod = nodeModule(kind);
+    if (mod && typeof mod.save === 'function') {
+      mod.save(inner);
     }
     if (kind === 'shell') {
       inner.command = f.command.value.split('\n').filter(Boolean);
