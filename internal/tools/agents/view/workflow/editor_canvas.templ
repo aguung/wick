@@ -9,10 +9,16 @@ templ EditorCanvas(vm EditorVM) {
 		// the top-right Add-node button and the bottom-centre Execute
 		// pill for screen real estate.
 		<div class="wf-canvas-controls wf-canvas-controls-bl">
-			<button type="button" id="wf-zoom-in" title="Zoom in">+</button>
-			<button type="button" id="wf-zoom-out" title="Zoom out">−</button>
+			<button type="button" id="wf-zoom-in" title="Zoom in (Ctrl + Scroll)">+</button>
+			<button type="button" id="wf-zoom-out" title="Zoom out (Ctrl + Scroll)">−</button>
 			<button type="button" id="wf-zoom-reset" title="Reset view">⤢</button>
-			<button type="button" id="wf-layout" title="Auto-format (layered L→R)">⇒</button>
+			<button type="button" id="wf-layout" title="Auto-format (layered T→B)">⇒</button>
+			// Lock toggle. When on: nodes can be selected (inspector still
+			// opens) but can't be dragged, deleted, or have connections
+			// rewired. Scroll/trackpad pan + zoom still work so the
+			// operator can review the graph without nudging it. Persisted
+			// per-browser via localStorage so reloads keep the state.
+			<button type="button" id="wf-lock" title="Lock canvas — disable node edits" aria-pressed="false">🔒</button>
 		</div>
 		// Add-node trigger top-right — opens the palette drawer
 		// (which now lives as a left slide-in modal). Pattern mirrors

@@ -2,7 +2,7 @@
 
 Status: **proposed** — belum ada kode. Doc ini kontrak desain sebelum
 implementasi.
-Update terakhir: 2026-05-14.
+Update terakhir: 2026-05-16.
 
 > **Pas implement, baca DUA file:**
 > - **`workflow-design.md` (ini)** — developer contract, spec lengkap
@@ -46,6 +46,7 @@ Jangan skip — phase N+1 butuh phase N. Tiap phase **WAJIB include unit
 | 16. Per-trigger routing | ✅ done | each canvas trigger node = one wf.Trigger entry with own EntryNode; multi-trigger workflows route via `evt.Type` match; Execute workflow picker on canvas replaces toolbar Run Now |
 | 17. Sharded run index | ✅ done | `runs/index/YYYY-MM-DD-NN.jsonl` keeps Runs panel pagination constant-time at any history size; generic `internal/shardedlog/` module reusable for sessions / log views |
 | 18. Inspector debug shell | ✅ done | n8n-style 3-col modal (Input \| Parameters \| Output) opens on dblclick/right-click; Execute step runs one node in isolation; output preview JSON/Schema tabs |
+| 19. Canvas UX polish | ✅ done | Lock toggle (drawflow `fixed` mode + manual selection rewire so inspector still opens); Figma-style scroll/trackpad pan (replaces drag-pan); marquee box-select + multi-drag + multi-delete; fit-to-view on load with `[zoom_min..1.0x]` clamp + double-RAF measure + `.wf-fitting` opacity gate to kill the corner→centre flash; native `confirm()` / `alert()` replaced by reusable `ui.Dialog` + `wickConfirm` / `wickAlert` Promise helpers mounted globally in `ui.Layout` |
 
 Deferred from above (out-of-scope for the package, wire when concrete UIs land):
 - fsnotify watcher (Bootstrap + HotReload entrypoints sudah ada; watcher
@@ -3096,8 +3097,28 @@ Tabel: Name, Triggers (badges), Nodes count, Last Run, Status. Filter
 - Logic: branch, parallel, merge, transform, end
 
 **Canvas** (center): Drawflow instance. Edge labels show case names
-(bug/question/...) for classify/branch. Right-click node → menu.
+(bug/question/...) for classify/branch. Right-click node → inspector.
 Double-click → open prompt/script in editor modal.
+
+**Canvas interactions** (post-Phase 19, see `editor.js`):
+
+| Gesture | Behaviour |
+|---|---|
+| Drag empty canvas | Marquee box-select — every node intersecting the rect joins the multi-selection set |
+| Shift+drag empty | Additive marquee (keeps prior selection) |
+| Shift+click node | Toggle membership without dragging |
+| Drag node in multi-set (≥2) | Multi-drag — all selected nodes move with the same delta; `editor.updateConnectionNodes` re-renders edges live |
+| Delete / Cmd+Backspace | Removes every multi-selected node (focus-gated so typing in inspector inputs doesn't trigger) |
+| Mouse wheel / 2-finger trackpad | Pan canvas (Figma-style); replaces drawflow's drag-pan |
+| Ctrl/⌘+wheel or pinch | Zoom (drawflow's native `zoom_enter`) |
+| Lock toggle (🔒) | Switch drawflow into `editor_mode='fixed'` — node drag/delete/connect/palette-drop all disabled; click still opens inspector via manual `nodeSelected` dispatch; state persisted to `localStorage['wf-canvas-locked']` |
+| Reset view button (⤢) | Fit-to-view: compute bbox of all nodes (via `offsetWidth/Height`, unscaled), zoom = `min((vw − 160) / bboxW, (vh − 160) / bboxH)` clamped to `[zoom_min .. 1.0]`, pan to centre. Same routine fires on initial page load behind a `.wf-fitting` opacity gate so the canvas never paints at the wrong origin before fitting |
+
+The marquee/multi-drag and pan-replacement listeners run at capture
+phase on `canvasEl` so they preempt drawflow's bubble-phase
+mousedown handler. Anything that lands on a `.drawflow-node`,
+`.input`, or `.output` falls through unchanged — drawflow keeps
+owning single-node drag and connection drawing.
 
 **Inspector** (right): schema-driven form. Untuk classify: prompt
 textarea, `output_cases` chip list (engine derive edge case labels).

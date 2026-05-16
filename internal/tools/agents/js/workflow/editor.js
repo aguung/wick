@@ -98,11 +98,28 @@
     try { initialGraph = JSON.parse(raw); }
     catch (err) { console.warn('[wf] graph json parse', err); }
   }
+  // Hide the inner canvas surface during the brief import + fit
+  // window. Without this the page renders at default scale/origin
+  // for ~2 frames before fitToView snaps it into place — visible
+  // as a "jump from corner to centre". The grid stays visible (the
+  // wrap div keeps its background) so the page doesn't flash empty.
+  if (editor.precanvas) editor.precanvas.classList.add('wf-fitting');
   if (initialGraph && initialGraph.drawflow) {
     editor.import(initialGraph);
   } else {
     seedEmptyGraph();
   }
+  // Double RAF: drawflow's import inserts node DOM synchronously
+  // but the browser hasn't laid out their box sizes yet — first
+  // RAF lets layout commit, second RAF measures. After fitting,
+  // remove the hiding class and CSS fades the canvas in.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try { fitToView(); }
+      catch (err) { console.warn('[wf] fit-to-view', err); }
+      if (editor.precanvas) editor.precanvas.classList.remove('wf-fitting');
+    });
+  });
 
   // Initial validation report — server renders it into data-validation
   // so badges show up immediately on page load (not just after the
@@ -137,6 +154,10 @@
   });
   canvasEl.addEventListener('drop', (e) => {
     e.preventDefault();
+    // Lock guard — palette drag-drop no-ops while the canvas is
+    // locked. canvasLocked is initialized below in the lock toggle
+    // block but resolved at call time (drop fires post-load).
+    if (canvasLocked) return;
     const type = e.dataTransfer.getData('node-type');
     if (!type) return;
     const rect = canvasEl.getBoundingClientRect();
@@ -591,16 +612,370 @@
     appendCaseRow('', '');
     persistCases(selectedID);
   });
-  document.getElementById('ins-delete').addEventListener('click', () => {
+  document.getElementById('ins-delete').addEventListener('click', async () => {
     if (!selectedID) return;
-    if (!confirm('Delete this node?')) return;
+    if (canvasLocked) {
+      await wickAlert('Unlock the canvas to delete nodes.', { title: 'Canvas locked' });
+      return;
+    }
+    const ok = await wickConfirm('Delete this node?', { title: 'Delete node', ok: 'Delete', danger: true });
+    if (!ok) return;
     editor.removeNodeId('node-' + selectedID);
   });
 
   // ── Zoom controls ──────────────────────────────────────────────
+  // fitToView centres + scales every node into the viewport with a
+  // small padding ring. Clamp range keeps the graph readable: huge
+  // graphs floor at drawflow's zoom_min (0.5x) so nodes stay legible
+  // even when the workflow grows wide; small graphs cap at 1.0x so a
+  // single node doesn't blow up to fill the whole canvas.
+  function fitToView() {
+    if (!editor.precanvas) return;
+    const graph = editor.drawflow.drawflow.Home.data;
+    const ids = Object.keys(graph);
+    const vw = canvasEl.clientWidth || 800;
+    const vh = canvasEl.clientHeight || 600;
+    if (ids.length === 0) {
+      editor.zoom = 1;
+      editor.zoom_last_value = 1;
+      editor.canvas_x = 0;
+      editor.canvas_y = 0;
+      editor.precanvas.style.transform = 'translate(0px, 0px) scale(1)';
+      return;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    ids.forEach((id) => {
+      const n = graph[id];
+      if (!n) return;
+      // offsetWidth/Height are layout-box pixels — unaffected by the
+      // precanvas CSS transform, so we get true unscaled dimensions
+      // even when the page loads with leftover zoom state.
+      const el = document.getElementById('node-' + id);
+      const w = el ? el.offsetWidth : 200;
+      const h = el ? el.offsetHeight : 120;
+      if (n.pos_x < minX) minX = n.pos_x;
+      if (n.pos_y < minY) minY = n.pos_y;
+      if (n.pos_x + w > maxX) maxX = n.pos_x + w;
+      if (n.pos_y + h > maxY) maxY = n.pos_y + h;
+    });
+    const bboxW = Math.max(1, maxX - minX);
+    const bboxH = Math.max(1, maxY - minY);
+    const pad = 80;
+    const fitZoom = Math.min((vw - pad * 2) / bboxW, (vh - pad * 2) / bboxH);
+    const zMin = editor.zoom_min || 0.5;
+    const zMax = 1.0;
+    let z = fitZoom;
+    if (z > zMax) z = zMax;
+    if (z < zMin) z = zMin;
+    const bcx = (minX + maxX) / 2;
+    const bcy = (minY + maxY) / 2;
+    editor.zoom = z;
+    editor.zoom_last_value = z;
+    editor.canvas_x = vw / 2 - bcx * z;
+    editor.canvas_y = vh / 2 - bcy * z;
+    editor.precanvas.style.transform = `translate(${editor.canvas_x}px, ${editor.canvas_y}px) scale(${z})`;
+    // Re-fire drawflow's zoom dispatch so any zoom listeners (edge
+    // arrow refresh, etc.) re-evaluate against the new scale.
+    editor.dispatch('zoom', z);
+  }
+
   document.getElementById('wf-zoom-in').addEventListener('click', () => editor.zoom_in());
   document.getElementById('wf-zoom-out').addEventListener('click', () => editor.zoom_out());
-  document.getElementById('wf-zoom-reset').addEventListener('click', () => editor.zoom_reset());
+  document.getElementById('wf-zoom-reset').addEventListener('click', fitToView);
+
+  // ── Lock toggle ────────────────────────────────────────────────
+  // Drawflow's stock 'fixed' mode disables node-drag/delete/connect
+  // but ALSO swallows clicks on .drawflow-node — so the inspector
+  // can't be opened by clicking a locked node. Re-wire selection
+  // manually: when locked, intercept clicks on .drawflow-node and
+  // dispatch nodeSelected ourselves to keep the inspector reactive.
+  const LOCK_KEY = 'wf-canvas-locked';
+  let canvasLocked = localStorage.getItem(LOCK_KEY) === '1';
+  const lockBtn = document.getElementById('wf-lock');
+  function applyLockState() {
+    editor.editor_mode = canvasLocked ? 'fixed' : 'edit';
+    if (lockBtn) {
+      lockBtn.classList.toggle('is-on', canvasLocked);
+      lockBtn.setAttribute('aria-pressed', canvasLocked ? 'true' : 'false');
+      lockBtn.title = canvasLocked ? 'Canvas locked — click to unlock' : 'Lock canvas — disable node edits';
+    }
+    canvasEl.classList.toggle('wf-canvas-locked', canvasLocked);
+  }
+  applyLockState();
+  if (lockBtn) {
+    lockBtn.addEventListener('click', () => {
+      canvasLocked = !canvasLocked;
+      localStorage.setItem(LOCK_KEY, canvasLocked ? '1' : '0');
+      applyLockState();
+    });
+  }
+  // Manual selection while locked. Drawflow's click handler returns
+  // early in fixed mode (only parent-drawflow clicks count, for
+  // pan-drag start). Replicate the selection dispatch the editor
+  // would normally emit so nodeSelected listeners (inspector) still
+  // fire.
+  canvasEl.addEventListener('click', (e) => {
+    if (!canvasLocked) return;
+    const nodeEl = e.target.closest('.drawflow-node');
+    if (!nodeEl) {
+      // Click on empty canvas while locked → clear selection.
+      if (editor.node_selected) {
+        editor.node_selected.classList.remove('selected');
+        editor.node_selected = null;
+        editor.dispatch('nodeUnselected', true);
+      }
+      return;
+    }
+    if (editor.node_selected === nodeEl) return;
+    if (editor.node_selected) editor.node_selected.classList.remove('selected');
+    editor.node_selected = nodeEl;
+    nodeEl.classList.add('selected');
+    editor.dispatch('nodeSelected', nodeEl.id.slice(5));
+  });
+
+  // ── Figma-style scroll/trackpad pan ─────────────────────────────
+  // Default browser behaviour for a wheel event over the canvas is
+  // to scroll the surrounding page. Two-finger trackpad scrolls and
+  // mouse-wheel ticks should pan the canvas instead — matching the
+  // Figma/Miro/excalidraw convention. Ctrl+wheel (or trackpad pinch,
+  // which the browser reports as ctrlKey-true) falls through to
+  // drawflow's existing zoom_enter for zoom.
+  //
+  // Pan math: subtract the raw delta from canvas_x/canvas_y, then
+  // restamp the transform drawflow already maintains on precanvas.
+  // We bypass editor.zoom_refresh so the canvas_x/canvas_y/zoom
+  // accounting drawflow does on zoom transitions stays intact.
+  canvasEl.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) return; // let drawflow / browser handle zoom
+    if (!editor.precanvas) return;
+    e.preventDefault();
+    // Normalize Firefox line mode to ~16px per line. deltaMode 0 =
+    // pixels (default in chromium/edge/trackpads), 1 = lines, 2 =
+    // pages. Page mode is rare; treat as a big chunk.
+    let dx = e.deltaX;
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) { dx *= 16; dy *= 16; }
+    else if (e.deltaMode === 2) { dx *= canvasEl.clientWidth; dy *= canvasEl.clientHeight; }
+    editor.canvas_x -= dx;
+    editor.canvas_y -= dy;
+    editor.precanvas.style.transform = `translate(${editor.canvas_x}px, ${editor.canvas_y}px) scale(${editor.zoom})`;
+  }, { passive: false });
+
+  // ── Marquee box-select + multi-drag ─────────────────────────────
+  // Default Drawflow behaviour: drag on empty canvas pans the
+  // viewport. We replace that with a Figma-style marquee — drag on
+  // empty space paints a selection rectangle and every node it
+  // intersects joins the "multi-selection" set. Once 2+ nodes are
+  // multi-selected:
+  //   - Drag any one node → all selected nodes move together (delta
+  //     applies to each).
+  //   - Delete / Backspace → all selected nodes removed in one shot.
+  //   - Shift-click a node → toggle membership without dropping the
+  //     rest of the set.
+  // Pan stays on scroll/trackpad only (handled by the wheel listener
+  // above) so removing drag-pan doesn't strand operators on a long
+  // graph.
+  //
+  // We preempt drawflow's mousedown via a capture-phase listener on
+  // canvasEl and call stopImmediatePropagation so drawflow's bubble-
+  // phase handler never sees the event when it lands on empty
+  // canvas. Node-targeted clicks fall through unchanged (drawflow
+  // still handles single-node drag, port hover, connection draw).
+  const multiSelected = new Set();
+
+  function addToMultiSelection(id) {
+    if (!id) return;
+    multiSelected.add(id);
+    const el = document.getElementById('node-' + id);
+    if (el) el.classList.add('wf-multi-selected');
+  }
+  function removeFromMultiSelection(id) {
+    if (!id) return;
+    multiSelected.delete(id);
+    const el = document.getElementById('node-' + id);
+    if (el) el.classList.remove('wf-multi-selected');
+  }
+  function clearMultiSelection() {
+    multiSelected.forEach((id) => {
+      const el = document.getElementById('node-' + id);
+      if (el) el.classList.remove('wf-multi-selected');
+    });
+    multiSelected.clear();
+  }
+
+  // isCanvasBackground returns true for clicks that should start a
+  // marquee — anywhere inside the canvas wrap that isn't a node,
+  // port, or connection line.
+  function isCanvasBackground(el) {
+    if (!el) return false;
+    if (el.closest('.drawflow-node')) return false;
+    if (el.closest('.input') || el.closest('.output')) return false;
+    if (el.closest('svg.connection')) return false;
+    return !!el.closest('#wf-canvas');
+  }
+
+  canvasEl.addEventListener('mousedown', (e) => {
+    if (canvasLocked) return;
+    if (e.button !== 0) return; // primary button only
+    const nodeEl = e.target.closest('.drawflow-node');
+    if (nodeEl) {
+      const nodeID = nodeEl.id.replace(/^node-/, '');
+      // Don't intercept drags that start on a port — drawflow needs
+      // those to draw a new connection.
+      if (e.target.closest('.input') || e.target.closest('.output')) {
+        return;
+      }
+      // Shift-click toggles membership without starting a drag.
+      if (e.shiftKey) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (multiSelected.has(nodeID)) removeFromMultiSelection(nodeID);
+        else addToMultiSelection(nodeID);
+        return;
+      }
+      // Mousedown on a node inside an existing multi-selection →
+      // take over from drawflow and move the whole group.
+      if (multiSelected.size > 1 && multiSelected.has(nodeID)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        beginMultiDrag(e);
+        return;
+      }
+      // Plain click on a node outside the multi-set — drop the
+      // multi-selection so the new node becomes the lone target,
+      // then let drawflow handle the single-node drag.
+      clearMultiSelection();
+      return;
+    }
+    if (!isCanvasBackground(e.target)) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    beginMarquee(e);
+  }, true); // capture phase — fire before drawflow's bubble listener
+
+  function beginMarquee(e) {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const additive = e.shiftKey;
+    if (!additive) clearMultiSelection();
+    const overlay = document.createElement('div');
+    overlay.className = 'wf-marquee';
+    overlay.style.left = startX + 'px';
+    overlay.style.top = startY + 'px';
+    overlay.style.width = '0px';
+    overlay.style.height = '0px';
+    document.body.appendChild(overlay);
+    const onMove = (ev) => {
+      const x = ev.clientX;
+      const y = ev.clientY;
+      const left = Math.min(startX, x);
+      const top = Math.min(startY, y);
+      overlay.style.left = left + 'px';
+      overlay.style.top = top + 'px';
+      overlay.style.width = Math.abs(x - startX) + 'px';
+      overlay.style.height = Math.abs(y - startY) + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const mrect = overlay.getBoundingClientRect();
+      const drag = mrect.width > 2 || mrect.height > 2;
+      if (drag) {
+        // Use DOM rects — drawflow paints each node inside the
+        // zoomed/panned precanvas, so getBoundingClientRect already
+        // accounts for both. No need to convert back to flow coords.
+        document.querySelectorAll('#wf-canvas .drawflow-node').forEach((el) => {
+          const r = el.getBoundingClientRect();
+          const hit = !(r.right < mrect.left || r.left > mrect.right || r.bottom < mrect.top || r.top > mrect.bottom);
+          if (hit) addToMultiSelection(el.id.replace(/^node-/, ''));
+        });
+      } else if (!additive) {
+        // Click on empty canvas (no real drag) — already cleared on
+        // mousedown. Nothing more to do.
+      }
+      overlay.remove();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  function beginMultiDrag(e) {
+    // Snapshot the starting pos for every multi-selected node so we
+    // can translate each one by the same delta. Drawflow stores
+    // pos_x/pos_y in flow space (unscaled by zoom); the inline
+    // style.top/style.left mirror those values in CSS pixels and
+    // get re-applied via the precanvas's CSS transform for visual
+    // zoom. Hence we divide screen-space delta by zoom before
+    // applying.
+    const graph = editor.drawflow.drawflow.Home.data;
+    const start = new Map();
+    multiSelected.forEach((id) => {
+      const n = graph[id];
+      if (!n) return;
+      start.set(id, { x: n.pos_x, y: n.pos_y });
+    });
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const z = editor.zoom || 1;
+    const onMove = (ev) => {
+      const dx = (ev.clientX - startX) / z;
+      const dy = (ev.clientY - startY) / z;
+      start.forEach((p, id) => {
+        const el = document.getElementById('node-' + id);
+        if (!el) return;
+        el.style.left = (p.x + dx) + 'px';
+        el.style.top = (p.y + dy) + 'px';
+        // Re-render connections live so edges follow each node card.
+        editor.updateConnectionNodes('node-' + id);
+      });
+    };
+    const onUp = (ev) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const dx = (ev.clientX - startX) / z;
+      const dy = (ev.clientY - startY) / z;
+      let changed = false;
+      start.forEach((p, id) => {
+        const n = graph[id];
+        if (!n) return;
+        const nx = p.x + dx;
+        const ny = p.y + dy;
+        if (n.pos_x !== nx || n.pos_y !== ny) changed = true;
+        n.pos_x = nx;
+        n.pos_y = ny;
+      });
+      if (changed) scheduleAutoSave();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  // Delete / Backspace removes every node in the multi-selection
+  // (Drawflow's default key handler only deletes its single
+  // node_selected). We gate on focus so typing in inspector inputs
+  // doesn't blow away nodes mid-edit.
+  document.addEventListener('keydown', async (e) => {
+    if (canvasLocked) return;
+    if (multiSelected.size === 0) return;
+    if (e.key !== 'Delete' && !(e.key === 'Backspace' && (e.metaKey || e.ctrlKey))) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    e.preventDefault();
+    const count = multiSelected.size;
+    const ok = await wickConfirm(`Delete ${count} node${count > 1 ? 's' : ''}?`, { title: 'Delete nodes', ok: 'Delete', danger: true });
+    if (!ok) return;
+    const ids = Array.from(multiSelected);
+    clearMultiSelection();
+    ids.forEach((id) => editor.removeNodeId('node-' + id));
+  });
+
+  // Single-node drawflow selection drops the multi-set (the click
+  // path that lands on a node outside the multi already calls
+  // clearMultiSelection in the capture handler — this catches edge
+  // cases like programmatic selection from inspector deep links).
+  editor.on('nodeSelected', (id) => {
+    if (!multiSelected.has(id)) clearMultiSelection();
+  });
 
   // ── Auto-layout ──────────────────────────────────────────────
   // Layered left→right layout via topological ranks. Roots (no
@@ -2545,7 +2920,10 @@
     if (!form) return;
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (opts.confirmText && !confirm(opts.confirmText)) return;
+      if (opts.confirmText) {
+        const ok = await wickConfirm(opts.confirmText, { title: opts.confirmTitle || 'Confirm', danger: !!opts.confirmDanger, ok: opts.confirmOK });
+        if (!ok) return;
+      }
       try {
         const resp = await fetch(form.action, {
           method: form.method || 'POST',

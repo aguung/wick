@@ -26,6 +26,14 @@
   background-image: radial-gradient(circle, #2c3a5a 1px, transparent 1px);
 }
 
+/* Hide the precanvas during the initial import+fit window so the
+ * graph never paints at the wrong origin/scale. editor.js stamps
+ * `.wf-fitting` before import, then removes it after fitToView; the
+ * 120ms fade re-reveals everything in its final position so there's
+ * no visible jump from corner to centre. */
+.drawflow.wf-fitting { opacity: 0; }
+.drawflow { transition: opacity 0.12s ease-out; }
+
 /* Drawflow node card. */
 .drawflow .drawflow-node {
   border-radius: 12px;
@@ -308,6 +316,53 @@
   color: #c9d1de;
 }
 .dark .wf-canvas-controls button:hover { background: #131c2f; }
+/* Lock toggle active state — green-500 fill mirrors the Save pill so
+ * the on-state reads as "engaged" rather than "warning". */
+.wf-canvas-controls button.is-on {
+  background: #16a34a;
+  border-color: #15803d;
+  color: #ffffff;
+}
+.wf-canvas-controls button.is-on:hover { background: #15803d; }
+.dark .wf-canvas-controls button.is-on {
+  background: #16a34a;
+  border-color: #15803d;
+  color: #ffffff;
+}
+.dark .wf-canvas-controls button.is-on:hover { background: #15803d; }
+
+/* Canvas lock visual — subtle "not editable" cursor. Node drag is
+ * already blocked by drawflow fixed mode; this is only feedback so
+ * the operator knows a click won't move anything. */
+#wf-canvas.wf-canvas-locked .drawflow-node { cursor: pointer; }
+#wf-canvas.wf-canvas-locked .drawflow-node .input,
+#wf-canvas.wf-canvas-locked .drawflow-node .output { cursor: not-allowed; }
+
+/* ── Marquee box-select overlay ───────────────────────────────────
+ * Painted at the document level (fixed position) so it sits above
+ * every transformed canvas child without inheriting the precanvas
+ * scale. pointer-events: none keeps the underlying canvas reactive
+ * to the mousemove that drives this rect. */
+.wf-marquee {
+  position: fixed;
+  pointer-events: none;
+  background: rgba(22, 163, 74, 0.10);
+  border: 1px dashed #16a34a;
+  border-radius: 2px;
+  z-index: 1000;
+}
+.dark .wf-marquee {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: #22c55e;
+}
+
+/* Multi-selection ring — drawn alongside drawflow's `.selected`
+ * green outline. Same hue so the affordance reads as "selected"
+ * regardless of which selection mechanism produced it. */
+.drawflow .drawflow-node.wf-multi-selected {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.22);
+}
 
 /* Validation error badge — a small red dot in the node's top-right
  * corner. Hover shows the violation messages via title. Save stays

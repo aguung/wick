@@ -377,11 +377,21 @@ classify-1: question | statement
       <div class="flex-1 relative">
         <!-- Zoom controls live bottom-left so they don't fight the
              top-right Add-node button and the bottom-centre Execute pill. -->
+        <!-- Canvas controls (bottom-left stack):
+             +/−  : zoom
+             ⤢    : fit-to-view (re-runs the same routine that auto-
+                    centres on page load with [zoom_min..1.0] clamp)
+             ⇒    : auto-format (layered T→B topological)
+             🔒   : lock toggle — drawflow switches to fixed mode,
+                    nodes can still be clicked (inspector opens) but
+                    not dragged/deleted/connected. State persists via
+                    localStorage. -->
         <div class="canvas-controls" style="bottom:12px;left:12px;top:auto;right:auto;flex-direction:column-reverse;">
-          <button title="Zoom in">+</button>
-          <button title="Zoom out">−</button>
-          <button title="Reset view">⤢</button>
-          <button title="Auto-format">⇒</button>
+          <button title="Zoom in (Ctrl + Scroll)">+</button>
+          <button title="Zoom out (Ctrl + Scroll)">−</button>
+          <button title="Reset view (fit to canvas)">⤢</button>
+          <button title="Auto-format (layered T→B)">⇒</button>
+          <button title="Lock canvas — disable node edits">🔒</button>
         </div>
         <!-- Add-node floating button — opens the palette as a right
              slide-in drawer. Replaces the always-on sidebar so the
