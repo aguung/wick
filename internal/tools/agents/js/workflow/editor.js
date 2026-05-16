@@ -251,111 +251,134 @@
   // before invoking the connector/channel.
   const connArgsEl = document.getElementById('ins-conn-args');
   const chanArgsEl = document.getElementById('ins-channel-args');
-  function renderArgsForm(container, inputs, args, modes) {
-    container.innerHTML = '';
-    if (!inputs || !inputs.length) {
+
+  // hydrateArgsForm wires up the server-rendered args HTML. The
+  // workflow API ships every op's input form as `args_html` (rendered
+  // by view/workflow.ArgForm), so the JS side never builds widget
+  // markup — it only:
+  //   - injects the HTML into the container
+  //   - sets each editable's value from the saved args map
+  //   - wires the Fixed/Expression toggle, drop target, preview
+  //   - attaches a delegated input listener to drive updateNodeData
+  //
+  // Adding a new widget type lives entirely in
+  // internal/manager/view/type/<widget>.templ + the ArgField switch —
+  // no JS edit required.
+  function hydrateArgsForm(container, html, args, modes) {
+    if (!container) return;
+    if (!html) {
       container.innerHTML = '<div class="text-xs italic text-black-600 dark:text-black-700">No args required.</div>';
       return;
     }
-    inputs.forEach((spec) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'mb-2';
-
-      // Header row: arg label on the left + Fixed | Expression
-      // toggle pill on the right. Pill is the n8n-style mode switch:
-      //   Fixed      → input value is literal text, no template scan,
-      //                no preview, drop-target inserts the ref but
-      //                immediately flips the field to Expression
-      //   Expression → value is treated as a Go template, preview
-      //                renders live against the INPUT pane data
-      // Mode persists per arg key under `__arg_modes` on the node so
-      // the next inspector open restores it. Auto-detected on first
-      // load: a value containing `{{` opens in Expression, plain text
-      // opens in Fixed.
-      const head = document.createElement('div');
-      head.className = 'flex items-center justify-between mb-1';
-      const label = document.createElement('label');
-      label.className = 'text-xs font-medium text-black-800 dark:text-black-600';
-      label.textContent = spec.key + (spec.required ? ' *' : '');
-      if (spec.description) label.title = spec.description;
-      head.appendChild(label);
-
-      const initialValue = (args && args[spec.key] != null) ? String(args[spec.key]) : '';
-      // Default = Fixed (literal). Operator must explicitly switch to
-      // Expression to enable template rendering. Mirrors n8n's safer
-      // default: drag-drop and `{{ }}` literals don't accidentally get
-      // evaluated as code paths.
-      const initialMode = (modes && modes[spec.key]) || 'fixed';
-
-      const toggle = document.createElement('div');
-      toggle.className = 'wf-arg-mode';
-      const fixedBtn = document.createElement('button');
-      fixedBtn.type = 'button';
-      fixedBtn.dataset.argMode = 'fixed';
-      fixedBtn.textContent = 'Fixed';
-      const exprBtn = document.createElement('button');
-      exprBtn.type = 'button';
-      exprBtn.dataset.argMode = 'expression';
-      exprBtn.textContent = 'Expression';
-      toggle.appendChild(fixedBtn);
-      toggle.appendChild(exprBtn);
-      head.appendChild(toggle);
-
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.dataset.argKey = spec.key;
-      input.dataset.argInput = '1';
-      input.value = initialValue;
-      input.placeholder = spec.description || '';
-      input.className = 'w-full bg-white-100 dark:bg-navy-700 border border-white-300 dark:border-navy-600 rounded-lg p-2 text-xs text-black-900 dark:text-white-100';
-      input.addEventListener('input', () => {
-        if (selectedID) updateNodeData(selectedID);
-        updatePreview(input);
+    container.innerHTML = html;
+    container.querySelectorAll('.wf-arg-field').forEach((wrap) => {
+      const key = wrap.dataset.fieldKey;
+      const editable = argEditable(wrap);
+      if (!editable) return;
+      // Restore stored value. Checkboxes use .checked from "true"/"false".
+      const stored = (args && args[key] != null) ? String(args[key]) : '';
+      if (editable.type === 'checkbox') {
+        editable.checked = stored === 'true';
+      } else if (stored !== '' || editable.tagName === 'SELECT') {
+        editable.value = stored;
+      }
+      // Initial mode — Fixed by default. Operator opts into Expression.
+      const initialMode = (modes && modes[key]) || 'fixed';
+      setArgFieldMode(wrap, initialMode, /*persist*/ false);
+      // Wire toggle pill buttons.
+      wrap.querySelectorAll('[data-arg-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => setArgFieldMode(wrap, btn.dataset.argMode, true));
       });
-      attachTemplateDropTarget(input, () => setArgMode(input, 'expression'));
-
-      const preview = document.createElement('div');
-      preview.dataset.argPreview = '1';
-      preview.className = 'wf-arg-preview';
-
-      wrap.appendChild(head);
-      wrap.appendChild(input);
-      wrap.appendChild(preview);
-      container.appendChild(wrap);
-
-      fixedBtn.addEventListener('click', () => setArgMode(input, 'fixed'));
-      exprBtn.addEventListener('click', () => setArgMode(input, 'expression'));
-
-      // Apply initial mode (sets dataset + button state + preview vis).
-      setArgMode(input, initialMode);
+      // Drop target — INPUT pane JSON leaves drop here, auto-switching
+      // the field into Expression mode.
+      if (editable.tagName !== 'SELECT' && editable.type !== 'checkbox') {
+        attachTemplateDropTarget(editable, () => setArgFieldMode(wrap, 'expression', true));
+      }
+      // Live-template preview hook — fires for text-like inputs.
+      editable.addEventListener('input', () => updateArgPreview(wrap));
+      updateArgPreview(wrap);
     });
   }
 
-  // setArgMode flips an arg input between fixed and expression modes
-  // and updates the wrap's UI accordingly. Persists the choice to the
-  // node's data block so reopening the inspector keeps the mode.
-  function setArgMode(input, mode) {
-    if (!input) return;
-    input.dataset.argMode = mode;
-    const wrap = input.parentElement;
-    if (wrap) {
-      wrap.querySelectorAll('[data-arg-mode]').forEach((btn) => {
-        btn.classList.toggle('is-on', btn.dataset.argMode === mode);
-      });
-    }
-    updatePreview(input);
-    if (selectedID) updateNodeData(selectedID);
+  // argEditable returns the value-bearing element inside an arg
+  // wrapper. Widget templ files (admin fieldtype.*) emit the editable
+  // as a plain input/select/textarea with `name="value"`. The
+  // checkbox widget also emits a sibling hidden "false" input; the
+  // selector skips hidden inputs so we always land on the visible
+  // editable.
+  function argEditable(wrap) {
+    return wrap.querySelector('input:not([type="hidden"]), select, textarea');
   }
 
-  // collectArgModes mirrors collectArgs but for the per-arg mode
-  // toggle. Used by updateNodeData to round-trip the mode map under
-  // `__arg_modes` so future re-renders restore the right toggle.
+  // setArgFieldMode flips the wrap's Fixed/Expression state, updates
+  // the toggle buttons + preview, and persists to node data when
+  // requested (skipped during initial hydration).
+  function setArgFieldMode(wrap, mode, persist) {
+    if (!wrap) return;
+    wrap.dataset.argMode = mode;
+    wrap.querySelectorAll('[data-arg-mode]').forEach((btn) => {
+      btn.classList.toggle('is-on', btn.dataset.argMode === mode);
+    });
+    updateArgPreview(wrap);
+    if (persist && selectedID) updateNodeData(selectedID);
+  }
+
+  // updateArgPreview rewrites the preview slot beneath one arg field
+  // — empty in Fixed mode, rendered template result in Expression
+  // mode against the INPUT pane's cached data.
+  function updateArgPreview(wrap) {
+    const preview = wrap.querySelector('[data-arg-preview]');
+    if (!preview) return;
+    const editable = argEditable(wrap);
+    if (!editable || editable.type === 'checkbox' || editable.tagName === 'SELECT') {
+      preview.textContent = '';
+      preview.classList.remove('wf-arg-preview-active');
+      return;
+    }
+    const tpl = editable.value || '';
+    if (tpl === '' || wrap.dataset.argMode !== 'expression') {
+      preview.textContent = '';
+      preview.classList.remove('wf-arg-preview-active');
+      return;
+    }
+    preview.textContent = '→ ' + renderTemplatePreview(tpl);
+    preview.classList.add('wf-arg-preview-active');
+  }
+
+  // collectArgs scans all wf-arg-field wrappers and returns the value
+  // map the codec persists under node.data.args. Checkbox value is
+  // emitted as "true"/"false" string to match how Go templates and
+  // engine helpers read it. Empty strings are skipped so YAML
+  // omitempty kicks in.
+  function collectArgs(container) {
+    const out = {};
+    if (!container) return out;
+    container.querySelectorAll('.wf-arg-field').forEach((wrap) => {
+      const editable = argEditable(wrap);
+      if (!editable) return;
+      const k = wrap.dataset.fieldKey || editable.dataset.fieldKey;
+      if (!k) return;
+      let v;
+      if (editable.type === 'checkbox') {
+        v = editable.checked ? 'true' : 'false';
+      } else {
+        v = editable.value;
+      }
+      if (v !== '') out[k] = v;
+    });
+    return out;
+  }
+
+  // collectArgModes reads the persisted Fixed/Expression mode for
+  // each arg from the wrapper's dataset. updateNodeData stores this
+  // under `__arg_modes` so future inspector opens restore the toggle.
   function collectArgModes(container) {
     const out = {};
-    container.querySelectorAll('input[data-arg-key]').forEach((el) => {
-      const k = el.dataset.argKey;
-      const m = el.dataset.argMode;
-      if (m) out[k] = m;
+    if (!container) return out;
+    container.querySelectorAll('.wf-arg-field').forEach((wrap) => {
+      const k = wrap.dataset.fieldKey;
+      const m = wrap.dataset.argMode;
+      if (k && m) out[k] = m;
     });
     return out;
   }
@@ -391,46 +414,20 @@
     });
   }
 
-  // updatePreview rewrites the preview span beneath an arg input. In
-  // Fixed mode the preview stays hidden — the value is whatever the
-  // user typed, nothing to render. In Expression mode the value is
-  // run through renderTemplatePreview against the current INPUT data
-  // and `lastRunOutputs`. Empty inputs hide the preview either way.
-  function updatePreview(input) {
-    const wrap = input.parentElement;
-    const preview = wrap && wrap.querySelector('[data-arg-preview]');
-    if (!preview) return;
-    const tpl = input.value || '';
-    const mode = input.dataset.argMode || 'fixed';
-    if (tpl === '' || mode !== 'expression') {
-      preview.textContent = '';
-      preview.classList.remove('wf-arg-preview-active');
-      return;
-    }
-    const out = renderTemplatePreview(tpl);
-    preview.textContent = '→ ' + out;
-    preview.classList.add('wf-arg-preview-active');
-  }
-  function collectArgs(container) {
-    const out = {};
-    container.querySelectorAll('input[data-arg-key]').forEach((el) => {
-      const k = el.dataset.argKey;
-      const v = el.value;
-      if (v !== '') out[k] = v;
-    });
-    return out;
-  }
   function refreshConnArgs(currentArgs, modes) {
     if (!connArgsEl) return;
     const mod = registry.connectors.find((m) => m.module === f.module?.value);
     const op = mod?.ops.find((o) => o.id === f.connOp?.value);
-    renderArgsForm(connArgsEl, op?.input || [], currentArgs || {}, modes || {});
+    hydrateArgsForm(connArgsEl, op?.args_html || '', currentArgs || {}, modes || {});
   }
   function refreshChannelArgs(currentArgs, modes) {
     if (!chanArgsEl) return;
     const ch = registry.channels.find((c) => c.name === f.channel?.value);
     const op = ch?.ops.find((o) => o.id === f.op?.value);
-    if (!op?.input || !op.input.length) {
+    // Channels don't ship args_html yet (their WorkflowActionSpec
+    // input shape predates the wick-tag form). Fall back to the
+    // free-text JSON textarea until they migrate to entity.Config.
+    if (!op?.args_html) {
       chanArgsEl.innerHTML = '';
       const ta = document.createElement('textarea');
       ta.id = 'ins-channel-args-json';
@@ -442,8 +439,28 @@
       chanArgsEl.appendChild(ta);
       return;
     }
-    renderArgsForm(chanArgsEl, op.input, currentArgs || {}, modes || {});
+    hydrateArgsForm(chanArgsEl, op.args_html, currentArgs || {}, modes || {});
   }
+
+  // Delegated change listener — one per args container. Catches every
+  // edit inside server-rendered widgets without per-input wiring.
+  // Matches the same selector argEditable uses so input/select/
+  // textarea events bubble correctly; hidden inputs (checkbox's
+  // "false" sibling) are excluded.
+  const editableSelector = 'input:not([type="hidden"]), select, textarea';
+  [connArgsEl, chanArgsEl].forEach((el) => {
+    if (!el) return;
+    el.addEventListener('input', (e) => {
+      if (!e.target.matches(editableSelector)) return;
+      if (!e.target.closest('.wf-arg-field')) return;
+      if (selectedID) updateNodeData(selectedID);
+    });
+    el.addEventListener('change', (e) => {
+      if (!e.target.matches(editableSelector)) return;
+      if (!e.target.closest('.wf-arg-field')) return;
+      if (selectedID) updateNodeData(selectedID);
+    });
+  });
 
   // Cascade refresh when parent picker changes.
   f.channel?.addEventListener('change', () => { hydrateChannelOps(); refreshChannelArgs(); if (selectedID) updateNodeData(selectedID); });

@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,10 +18,27 @@ import (
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/agents/workflow/parse"
 	"github.com/yogasw/wick/internal/agents/workflow/setup"
+	"github.com/yogasw/wick/internal/entity"
 	"github.com/yogasw/wick/internal/pkg/config"
 	wfview "github.com/yogasw/wick/internal/tools/agents/view/workflow"
 	"github.com/yogasw/wick/pkg/tool"
 )
+
+// renderArgFormHTML serializes the wfview.ArgForm templ into the HTML
+// fragment the workflow editor injects when the user picks a
+// connector module + op. Kept here next to the only caller — separate
+// templ render into a buffer is cheap, ~50µs per op, and avoids
+// pre-computing a giant map at boot time.
+func renderArgFormHTML(ctx context.Context, rows []entity.Config) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := wfview.ArgForm(rows).Render(ctx, &buf); err != nil {
+		return ""
+	}
+	return buf.String()
+}
 
 // WorkflowSSESession returns the broadcaster session key used for
 // workflow run events. The editor JS subscribes to /stream?session=<key>
@@ -604,8 +622,14 @@ func workflowRegistryAPI(c *tool.Ctx) {
 	}
 	connectors := []map[string]any{}
 	for _, info := range globalWorkflowMgr.MCP.ConnectorsList() {
+		// Resolve back to the raw connector.Module so we can hand the
+		// full []entity.Config rows to the ArgForm renderer — the
+		// stripped OpInput shape (key/description/required only) drops
+		// the widget metadata (Type, Options, IsSecret, …) the form
+		// needs to pick the right widget.
+		mod, modOK := globalWorkflowMgr.Connectors.Module(info.Module)
 		ops := []map[string]any{}
-		for _, op := range info.Operations {
+		for i, op := range info.Operations {
 			inputs := make([]map[string]any, 0, len(op.Input))
 			for _, in := range op.Input {
 				inputs = append(inputs, map[string]any{
@@ -614,13 +638,17 @@ func workflowRegistryAPI(c *tool.Ctx) {
 					"required":    in.Required,
 				})
 			}
-			ops = append(ops, map[string]any{
+			row := map[string]any{
 				"id":          op.Key,
 				"name":        op.Name,
 				"description": op.Description,
 				"destructive": op.Destructive,
 				"input":       inputs,
-			})
+			}
+			if modOK && i < len(mod.Operations) {
+				row["args_html"] = renderArgFormHTML(c.Context(), mod.Operations[i].Input)
+			}
+			ops = append(ops, row)
 		}
 		connectors = append(connectors, map[string]any{
 			"module": info.Module,

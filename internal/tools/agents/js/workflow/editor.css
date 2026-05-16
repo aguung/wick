@@ -845,6 +845,52 @@
   background: rgba(255,255,255,0.02);
 }
 
+/* ── Workflow arg field wrapper ──────────────────────────────────
+ * .wf-arg-field is the scope class the ArgField templ stamps on
+ * each rendered arg row. The admin widgets (fieldtype.Text /
+ * Dropdown / Textarea / Number / …) ship intentional widths
+ * (w-72 / w-96 / w-40 / w-48) tuned for the Settings page two-column
+ * grid — too small for the workflow inspector which is one wide
+ * lane. Override here so the same widget HTML renders full-width
+ * inside the inspector without modifying the widget itself. */
+.wf-arg-field {
+  margin-bottom: 12px;
+}
+.wf-arg-field input[type="text"],
+.wf-arg-field input[type="email"],
+.wf-arg-field input[type="url"],
+.wf-arg-field input[type="password"],
+.wf-arg-field input[type="number"],
+.wf-arg-field input[type="date"],
+.wf-arg-field input[type="datetime-local"],
+.wf-arg-field select,
+.wf-arg-field textarea {
+  width: 100%;
+}
+.wf-arg-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.wf-arg-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1f2937;
+}
+.dark .wf-arg-field-label { color: #94a3b8; }
+.wf-arg-field-required {
+  color: #ef4444;
+  margin-left: 2px;
+}
+.wf-arg-field-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+.dark .wf-arg-field-desc { color: #9ca3af; }
+
 /* ── Interactive INPUT JSON + arg preview ────────────────────────
  * Each JSON leaf in the inspector's INPUT pane is a draggable span
  * carrying a `{{<template-path>}}` payload. Drop on any arg input
