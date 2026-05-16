@@ -728,6 +728,21 @@
     });
   }
 
+  // Tests tab — POST to run fixtures, inject result into #wf-test-results.
+  const testsBtn = document.querySelector('[data-wf-run-tests]');
+  if (testsBtn) {
+    testsBtn.addEventListener('click', () => {
+      const url = testsBtn.dataset.wfRunTests;
+      const target = document.getElementById('wf-test-results');
+      if (!url || !target) return;
+      target.innerHTML = '<span class="italic text-black-600 dark:text-black-700">Running tests…</span>';
+      fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then((r) => r.text())
+        .then((html) => { target.innerHTML = html; })
+        .catch((err) => { target.innerHTML = '<span class="text-red-600">' + err.message + '</span>'; });
+    });
+  }
+
   // ── Save: serialize Drawflow → JSON ────────────────────────────
   // Manual click: classic form post (server redirects back).
   document.getElementById('save-form').addEventListener('submit', () => {

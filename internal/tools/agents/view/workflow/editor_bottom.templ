@@ -23,10 +23,7 @@ templ EditorBottom(vm EditorVM) {
 			<button
 				type="button"
 				data-bottom-tab="tests"
-				hx-post={ vm.Base + "/workflows/edit/" + vm.Slug + "/test" }
-				hx-target="#wf-test-results"
-				hx-swap="innerHTML"
-				hx-trigger="click"
+				data-wf-run-tests={ vm.Base + "/workflows/edit/" + vm.Slug + "/test" }
 				class="px-4 py-2 text-black-700 dark:text-black-600 hover:text-black-900 dark:hover:text-white-100"
 			>Tests</button>
 			<span id="wf-run-cancel-host" class="ml-auto"></span>
