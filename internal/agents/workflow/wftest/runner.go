@@ -50,6 +50,27 @@ type Result struct {
 	Duration   time.Duration
 }
 
+// Coverage summarises which nodes were touched across all test runs.
+type Coverage struct {
+	// TotalNodes is the count of non-trigger nodes in the workflow graph.
+	TotalNodes int
+	// HitNodes is the set of node IDs that completed in at least one run.
+	HitNodes map[string]bool
+	// Untested is the list of node IDs that never ran.
+	Untested []string
+}
+
+// HitCount returns the number of nodes hit.
+func (c Coverage) HitCount() int { return len(c.HitNodes) }
+
+// Percent returns coverage as 0–100.
+func (c Coverage) Percent() int {
+	if c.TotalNodes == 0 {
+		return 100
+	}
+	return 100 * len(c.HitNodes) / c.TotalNodes
+}
+
 // Runner loads cases from `__tests__/` and runs them.
 type Runner struct {
 	Engine  *engine.Engine
@@ -95,19 +116,59 @@ func (r *Runner) LoadCases(slug string) ([]Case, error) {
 
 // RunAll executes every test case and returns per-case results.
 func (r *Runner) RunAll(ctx context.Context, slug string) ([]Result, error) {
+	results, _, err := r.RunAllWithCoverage(ctx, slug)
+	return results, err
+}
+
+// RunAllWithCoverage runs all cases and computes node coverage.
+func (r *Runner) RunAllWithCoverage(ctx context.Context, slug string) ([]Result, Coverage, error) {
 	cases, err := r.LoadCases(slug)
 	if err != nil {
-		return nil, err
+		return nil, Coverage{}, err
 	}
 	w, err := r.Service.Load(slug)
 	if err != nil {
-		return nil, err
+		return nil, Coverage{}, err
 	}
+
+	// Build the set of all non-trigger nodes in the graph.
+	allNodes := map[string]bool{}
+	for _, n := range w.Graph.Nodes {
+		allNodes[n.ID] = true
+	}
+
+	hitNodes := map[string]bool{}
 	results := []Result{}
 	for _, tc := range cases {
-		results = append(results, r.runOne(ctx, w, tc))
+		res := r.runOne(ctx, w, tc)
+		results = append(results, res)
+		for id := range res.State.Outputs {
+			hitNodes[id] = true
+		}
+		for _, id := range res.State.Completed {
+			hitNodes[id] = true
+		}
 	}
-	return results, nil
+
+	untested := []string{}
+	for id := range allNodes {
+		if !hitNodes[id] {
+			untested = append(untested, id)
+		}
+	}
+
+	cov := Coverage{
+		TotalNodes: len(allNodes),
+		HitNodes:   hitNodes,
+		Untested:   untested,
+	}
+	return results, cov, nil
+}
+
+// RunOne runs a single test case against a loaded workflow. Used by the
+// per-case "▶" button in the UI.
+func (r *Runner) RunOne(ctx context.Context, w workflow.Workflow, tc Case) Result {
+	return r.runOne(ctx, w, tc)
 }
 
 func (r *Runner) runOne(ctx context.Context, w workflow.Workflow, tc Case) Result {
