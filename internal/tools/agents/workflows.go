@@ -19,6 +19,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/workflow/mcp"
 	"github.com/yogasw/wick/internal/agents/workflow/parse"
 	"github.com/yogasw/wick/internal/agents/workflow/setup"
+	"github.com/yogasw/wick/internal/agents/workflow/wftest"
 	"github.com/yogasw/wick/internal/entity"
 	"github.com/yogasw/wick/internal/pkg/config"
 	wfview "github.com/yogasw/wick/internal/tools/agents/view/workflow"
@@ -977,4 +978,172 @@ func workflowRunDetail(c *tool.Ctx) {
 		State:  st,
 		Events: events,
 	}))
+}
+
+func runWorkflowTests(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	runner := wftest.New(
+		globalWorkflowMgr.Engine,
+		globalWorkflowMgr.Service,
+		globalWorkflowMgr.Layout,
+	)
+	results, cov, err := runner.RunAllWithCoverage(context.Background(), slug)
+	if err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Render as a raw HTML fragment — not c.HTML() which wraps in the
+	// full page shell. The JS fetch injects this directly into #wf-test-results.
+	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = wfview.TestResultsPanel(wfview.TestResultsVM{
+		Slug:     slug,
+		Results:  results,
+		Coverage: cov,
+	}).Render(c.R.Context(), c.W)
+}
+
+// ── Test Case Manager ───────────────────────────────────────────────
+
+// loadTestCaseItems reads __tests__/*.json for a slug and returns items.
+func loadTestCaseItems(slug string) ([]wfview.TestCaseItem, error) {
+	files, err := globalWorkflowMgr.MCP.ListFiles(slug)
+	if err != nil {
+		return nil, err
+	}
+	var items []wfview.TestCaseItem
+	for _, f := range files {
+		if !strings.HasPrefix(f, "__tests__/") || !strings.HasSuffix(f, ".json") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(f, "__tests__/"), ".json")
+		data, err := globalWorkflowMgr.MCP.ReadFile(slug, f)
+		if err != nil {
+			continue
+		}
+		var tc wftest.Case
+		if err := json.Unmarshal(data, &tc); err != nil {
+			continue
+		}
+		if tc.Name == "" {
+			tc.Name = name
+		}
+		items = append(items, wfview.TestCaseItem{Name: name, Case: tc})
+	}
+	return items, nil
+}
+
+// listTestCases returns the test manager panel HTML fragment.
+func listTestCases(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	items, err := loadTestCaseItems(slug)
+	if err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = wfview.TestManager(wfview.TestManagerVM{
+		Slug:  slug,
+		Base:  c.Base(),
+		Items: items,
+	}).Render(c.R.Context(), c.W)
+}
+
+// saveTestCase creates or updates a test case fixture file.
+func saveTestCase(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	var body struct {
+		Name       string           `json:"name"`
+		Input      wftest.Input     `json:"input"`
+		Assertions []wftest.Assertion `json:"assertions"`
+	}
+	if err := json.NewDecoder(c.R.Body).Decode(&body); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		c.JSON(http.StatusBadRequest, map[string]any{"error": "name is required"})
+		return
+	}
+	// Sanitise name: allow alphanumeric, dash, underscore only.
+	for _, ch := range body.Name {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
+			c.JSON(http.StatusBadRequest, map[string]any{"error": "name must be slug-safe (a-z, 0-9, dash, underscore)"})
+			return
+		}
+	}
+	tc := wftest.Case{
+		Name:       body.Name,
+		Input:      body.Input,
+		Assertions: body.Assertions,
+	}
+	data, err := json.MarshalIndent(tc, "", "  ")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	path := "__tests__/" + body.Name + ".json"
+	if err := globalWorkflowMgr.MCP.WriteFile(slug, path, data); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"ok": true, "name": body.Name})
+}
+
+// runOneTestCase runs a single named test case and returns the row HTML fragment.
+func runOneTestCase(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	name := c.PathValue("name")
+	path := "__tests__/" + name + ".json"
+	data, err := globalWorkflowMgr.MCP.ReadFile(slug, path)
+	if err != nil {
+		c.Error(http.StatusNotFound, "test case not found")
+		return
+	}
+	var tc wftest.Case
+	if err := json.Unmarshal(data, &tc); err != nil {
+		c.Error(http.StatusBadRequest, "invalid test case JSON")
+		return
+	}
+	w, err := globalWorkflowMgr.Service.Load(slug)
+	if err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	runner := wftest.New(globalWorkflowMgr.Engine, globalWorkflowMgr.Service, globalWorkflowMgr.Layout)
+	result := runner.RunOne(context.Background(), w, tc)
+	item := wfview.TestCaseItem{Name: name, Case: tc, Result: &result}
+	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = wfview.TestCaseRow(wfview.TestCaseRowVM{
+		Slug: slug,
+		Base: c.Base(),
+		Item: item,
+	}).Render(c.R.Context(), c.W)
+}
+
+// deleteTestCase removes a test case fixture file.
+func deleteTestCase(c *tool.Ctx) {
+	if notReadyWorkflow(c) {
+		return
+	}
+	slug := c.PathValue("slug")
+	name := c.PathValue("name")
+	path := "__tests__/" + name + ".json"
+	if err := globalWorkflowMgr.MCP.DeleteFile(slug, path); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
