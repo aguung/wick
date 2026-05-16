@@ -1,6 +1,6 @@
-# Command Gate — Fix Kompatibilitas Claude 2.1.x
+# Command Gate — Fix Kompatibilitas Claude 2.1.x + Bypass Path & Socket
 
-Status: **shipped** 2026-05-10
+Status: **shipped** 2026-05-10 (bug asli) · **updated** 2026-05-16 (bypass path & socket)
 Stage: hotfix pasca-Stage-9, biar gate tetap jalan di Claude Code ≥ 2.1.138.
 Pendamping [command-gate-architecture.md](command-gate-architecture.md).
 
@@ -10,7 +10,7 @@ aku jalanin.
 
 ## Ringkasan singkat
 
-Tiga bug independen kombinasi bikin gate keliatan rusak di sesi nyata,
+**Versi original (2026-05-10):** Tiga bug independen kombinasi bikin gate keliatan rusak di sesi nyata,
 walaupun unit test + tombol "Test gate" semua hijau:
 
 1. **Kontrak block salah.** Gate exit kode 2 + stderr saja. Claude
@@ -116,14 +116,20 @@ Allow envelope short-circuit jalur itu.
 
 Allow path yg di-cover:
 
-| Jalur                             | Reason field   |
-| --------------------------------- | -------------- |
-| Whitelist match                   | `whitelist`    |
-| Auto-approved (always-allow)      | `auto_approved`|
-| Daemon socket ngga ke-reach       | `no_socket`    |
-| User klik Approve                 | the decision   |
-| Path masih dalam DefaultScope     | `scope`        |
-| Path relatif (ngga butuh abs)     | `relative_path`|
+| Jalur                             | Reason field    |
+| --------------------------------- | --------------- |
+| Whitelist match                   | `whitelist`     |
+| Auto-approved (always-allow)      | `auto_approved` |
+| Daemon socket ngga ke-reach       | `no_socket`     |
+| User klik Approve                 | the decision    |
+| Path masih dalam DefaultScope     | `scope`         |
+| Path kosong (no-op tool call)     | `no_path`       |
+| Path relatif → resolve CWD → dalam scope | `scope`  |
+
+`relative_path` reason lama **dihapus** — sebelumnya semua path relatif
+langsung di-allow tanpa scope check. Sekarang path relatif di-resolve
+terhadap `in.CWD` lebih dulu, lalu masuk scope check normal (lihat
+"Fix 2026-05-16 #2" di bawah).
 
 ## Yg dihapus: `--permission-mode bypassPermissions`
 
@@ -244,3 +250,112 @@ sinyal kalau berubah lagi:
 Kalau gitu kejadian, fetch ulang <https://code.claude.com/docs/en/hooks>
 dan diff schema vs `emitBlock` / `emitAllow`. Tambah field shape baru
 + ship binary; sisa plumbing wick udah decouple dari schema.
+
+---
+
+## Fix 2026-05-16: Gate bypass — socket & path
+
+Tiga celah bypass yang ditemukan setelah audit menyeluruh gate system:
+
+### #1 — GateLoader tidak cek apakah socket benar-benar running
+
+**File:** `internal/pkg/api/server.go`
+
+**Masalah:** `GateLoader` (closure yang di-call tiap spawn) hanya cek
+`gate_enabled` config + `resolvedGateBin != ""`. Kalau `approvalMgr.Start()`
+gagal (socket bind error — stale file, permission, port conflict), `gateStatus.Enabled`
+di-set false tapi GateLoader tetap return `GateConfig` valid. Akibatnya:
+- Hook tetap ditulis ke workspace `.claude/settings.local.json`
+- Claude spawn dengan hook aktif
+- Gate binary jalan, dial socket, gagal → `emitAllow("no_socket")` ← **bypass total**
+
+**Fix:** Tambah flag `gateSocketOK bool` yang di-set `true` hanya setelah
+`approvalMgr.Start()` sukses. GateLoader cek flag ini:
+
+```go
+var gateSocketOK bool
+agentsFactory.GateLoader = func() *agentpool.GateConfig {
+    if !gateSocketOK { return nil }   // ← guard baru
+    ...
+}
+// ... lalu di blok else setelah Start() berhasil:
+gateSocketOK = true
+```
+
+Kalau socket gagal start → `gateSocketOK = false` → GateLoader return `nil`
+→ hooks tidak ditulis → spawner tahu gate tidak aktif → tidak ada fail-open
+yang tersembunyi.
+
+### #2 — Path relatif di `runPathGate` langsung di-allow tanpa scope check
+
+**File:** `cmd/gate/main.go` — fungsi `runPathGate`
+
+**Masalah:** Tool non-Bash (`Read`, `Write`, `Edit`, `Glob`) dengan path relatif
+langsung dapat `emitAllow("relative_path")` tanpa melewati scope check.
+Contoh bypass nyata:
+```
+scope = /home/user/.wick/agents/workspaces/default/files
+agent call: Edit("../../../../../../etc/passwd")
+→ path relatif → emitAllow langsung  ← bypass scope
+```
+Komentar lama *"safe (CWD = workspace)"* salah asumsi — path dengan `..`
+bisa escape workspace walau CWD correct.
+
+**Fix:** Resolve path relatif terhadap `in.CWD` sebelum scope check:
+
+```go
+// Sebelum (buggy):
+if path == "" || (!strings.HasPrefix(path, "/") && !filepath.IsAbs(path)) {
+    emitAllow("relative_path")
+    return 0
+}
+
+// Sesudah (fixed):
+if path == "" {
+    emitAllow("no_path")
+    return 0
+}
+if !strings.HasPrefix(path, "/") && !filepath.IsAbs(path) {
+    if in.CWD != "" {
+        path = filepath.Clean(filepath.Join(in.CWD, path))
+    }
+    // path sekarang absolut → lanjut ke scope check normal
+}
+```
+
+`filepath.Clean` resolve semua `..` sebelum `PathWithinScope` dipanggil,
+jadi traversal escape tertangkap konsisten (sama seperti Bash tool yang
+sudah punya `argsWithinScope` + `filepath.Join(scope, a)`).
+
+### #3 — `splitCommand` pecah quoted path ber-spasi jadi token salah
+
+**File:** `internal/agents/gate/rule.go` — fungsi `splitCommand`
+
+**Masalah:** Implementasi lama pakai `strings.Fields` + strip quote per-token.
+Path dengan spasi dalam quotes dipecah salah:
+```
+cat "/workspace/my file.txt"
+→ fields: ["cat", '"/workspace/my', 'file.txt"']
+→ setelah strip: ["cat", "/workspace/my", "file.txt"]
+→ scope check cek "/workspace/my" (bukan path asli)
+```
+Ini scope check false positive — yang dicek bukan path yang sebenarnya diakses.
+
+**Fix:** Tokenizer sederhana yang hormati quote pair (`"..."` dan `'...'`):
+
+```go
+func splitCommand(cmd string) ([]string, error) {
+    // Track inDouble / inSingle state
+    // Whitespace di dalam quotes → bagian token, bukan separator
+    // Unclosed quote → error
+}
+```
+
+Sekarang `cat "/workspace/my file.txt"` → `["cat", "/workspace/my file.txt"]`
+→ scope check cek path yang benar.
+
+### Touch point code (fix 2026-05-16)
+
+- [`internal/pkg/api/server.go`](../pkg/api/server.go) — `gateSocketOK` flag + guard di `GateLoader`
+- [`cmd/gate/main.go`](../../cmd/gate/main.go) — `runPathGate`: resolve relative path vs CWD
+- [`internal/agents/gate/rule.go`](../agents/gate/rule.go) — `splitCommand`: quote-aware tokenizer
