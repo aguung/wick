@@ -165,6 +165,12 @@ func (r *Runner) RunAllWithCoverage(ctx context.Context, slug string) ([]Result,
 	return results, cov, nil
 }
 
+// RunOne runs a single test case against a loaded workflow. Used by the
+// per-case "▶" button in the UI.
+func (r *Runner) RunOne(ctx context.Context, w workflow.Workflow, tc Case) Result {
+	return r.runOne(ctx, w, tc)
+}
+
 func (r *Runner) runOne(ctx context.Context, w workflow.Workflow, tc Case) Result {
 	start := time.Now()
 	res := Result{Name: tc.Name}

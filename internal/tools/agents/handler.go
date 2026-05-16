@@ -209,6 +209,10 @@ func Register(r tool.Router) {
 	r.GET("/workflows/api/registry", workflowRegistryAPI)
 	r.GET("/workflows/api/lookup", workflowLookupAPI)
 	r.POST("/workflows/edit/{slug}/test", runWorkflowTests)
+	r.GET("/workflows/edit/{slug}/test-cases", listTestCases)
+	r.POST("/workflows/edit/{slug}/test-cases", saveTestCase)
+	r.POST("/workflows/edit/{slug}/test-cases/{name}/run", runOneTestCase)
+	r.DELETE("/workflows/edit/{slug}/test-cases/{name}", deleteTestCase)
 
 	r.GET("/stream", streamSSE)
 }
