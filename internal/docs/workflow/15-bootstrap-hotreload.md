@@ -27,12 +27,29 @@ method `UnregisterPrefix` di
 
 ### File watcher
 
-fsnotify watcher di `<BaseDir>/workflows/` — kalau ada file berubah:
-- Invalidate hash cache.
-- Re-validate workflow (cycle check, schema).
-- Push update event via SSE ke UI clients yang lagi buka detail page.
+Poll-based watcher (3s tick, no fsnotify dep) di
+[`setup/watcher.go`](../../agents/workflow/setup/watcher.go) —
+scan `<BaseDir>/workflows/*/workflow.yaml` mtimes per tick.
 
-Recommended untuk mendukung gitops + manual edit workflow.
+Per tick:
+- New/changed slug → `setup.HotReload(ctx, Service, Router, Cron, slug)`
+  (re-parse YAML, re-validate, re-register triggers/cron).
+- Slug folder disappeared → unregister from Router + Cron.
+- Hash unchanged → no-op.
+
+Started inside `Server.startChannels` so it shares the server ctx
+lifetime — graceful shutdown cancels the watcher loop.
+
+Trade-off vs fsnotify: 3s latency on edits but zero new dep + no
+platform-specific quirks (Windows file lock, macOS rename
+semantics). Acceptable since canvas edits go through the
+in-process API path (no watcher needed) — the watcher is for
+gitops / external editor / MCP filesystem writes.
+
+UI clients that have a workflow open get the SSE `wf:<slug>`
+session pushes any subsequent run events (live runs), but the
+watcher itself doesn't currently push a "yaml changed" signal —
+refresh is manual.
 
 ---
 

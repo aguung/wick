@@ -223,6 +223,37 @@ responsibility).
 Render to UI timeline. Resume reads events to find last `node_completed`,
 state.current = next of that.
 
+### Event emission: state + SSE in lockstep
+
+Engine `emit()` is the single funnel for every run event:
+
+```
+emit(slug, runID, ev):
+  1. stamp ev.TS = Now() once (if not already set)
+  2. StateStore.AppendEvent → events.jsonl row
+  3. zerolog Info (wf_slug, wf_run_id, wf_event, request_id, data)
+  4. OnEvent hook → SSE broadcaster (wf:<slug> session)
+```
+
+`workflow_started` follows the same shape — TS stamped before
+AppendEvent, then `OnEvent(startEv)` fires with the same `ev.TS`.
+
+**`ev.TS` invariant:** every emit path (per-node + workflow start)
+stamps the timestamp on the in-memory `RunEvent` before
+AppendEvent, so the row written to `events.jsonl` and the payload
+broadcast via `OnEvent` share the same ts down to the nanosecond.
+
+This invariant is load-bearing for the editor's live-run UI:
+`POST /workflows/edit/<slug>/run` returns immediately after the
+run is enqueued, so the FE's EventSource subscribe races with the
+worker. The FE closes the window by also fetching
+`/runs/<id>/state` (backfill) and dedup'ing live SSE against
+backfill via the tuple `(ts|event|node|case)`. See §10 "Live run
+stream" for the FE side. Don't break the invariant — if a future
+emission path generates its own timestamp (e.g. `time.Now()` inside
+the broadcast hook), dedup silently degrades and the run timeline
+double-paints.
+
 ### Test mode
 
 `__tests__/<node-id>.json`:

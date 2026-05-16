@@ -449,6 +449,22 @@ Event:
     headers: { ... selected headers ... }
 ```
 
+**HMAC enforcement** (wired di
+[`trigger/webhook.go`](../../agents/workflow/trigger/webhook.go) +
+[`trigger/router.go`](../../agents/workflow/trigger/router.go)):
+- `Router.WebhookSecretFor(path, method)` returns the `secret_ref`
+  of the first matching webhook trigger, decrypted to plaintext.
+- `webhook.ServeHTTP` reads `X-Wick-Sig` header and verifies via
+  `VerifyHMAC(body, secret, sig)` before dispatching.
+- No `secret_ref` declared → no header check (open webhook,
+  caller's choice).
+- `secret_ref` declared + missing/invalid `X-Wick-Sig` → 401, no
+  dispatch.
+
+Use `secret_ref: wick_enc_...` (encrypted via wick's
+[encrypted-fields](../encrypted-fields.md) layer); plaintext
+secrets in YAML are rejected at validation.
+
 ### Adding new channel
 
 Bikin sub-package `internal/agents/channels/<name>/`, implement

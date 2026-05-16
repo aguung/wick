@@ -5,6 +5,23 @@ AI-first principle (§2 #0) mandate: workflow yang dibuat AI dari prompt
 test** (single node dgn mock) + **integration test** (full flow dgn
 scripted events + mock external).
 
+### Implementation status (snapshot)
+
+| Capability | Status | Where |
+|---|---|---|
+| `wftest.Runner` — RunAll/RunOne | wired | [`internal/agents/workflow/wftest/runner.go`](../../agents/workflow/wftest/runner.go) |
+| Coverage tracking (TotalNodes / HitNodes / Untested) | wired | `RunAllWithCoverage` in `wftest/runner.go` |
+| CLI `wick workflow test <slug> [--filter X]` | wired | [`cmd/cli/workflow.go`](../../../cmd/cli/workflow.go) |
+| Editor "Tests" tab + TestResults panel | wired | [`view/workflow/test_results.templ`](../../tools/agents/view/workflow/test_results.templ) |
+| Test case manager UI (CRUD + modal) | wired | [`view/workflow/test_manager.templ`](../../tools/agents/view/workflow/test_manager.templ) |
+| Mock interception (provider/connector/channel/HTTP/dataset/shell) | designed, partial | spec below |
+| `workflow_test` / `workflow_simulate` MCP ops | designed | §9 |
+| `--watch` / `--record` flags | not yet | CLI subcommand only does run-all + --filter |
+| 6-layer reliability mocks (run layer 2–5 over mocked provider response) | designed | spec below |
+
+Routes that back the UI live in §10 ("Test framework — runner +
+case manager" route block).
+
 ### Folder layout
 
 ```

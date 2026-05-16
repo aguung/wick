@@ -29,16 +29,22 @@ Jangan skip — phase N+1 butuh phase N. Tiap phase **WAJIB include unit
 | 19. Canvas UX polish | ✅ done | Lock toggle (drawflow `fixed` mode + manual selection rewire so inspector still opens); Figma-style scroll/trackpad pan (replaces drag-pan); marquee box-select + multi-drag + multi-delete; fit-to-view on load with `[zoom_min..1.0x]` clamp + double-RAF measure + `.wf-fitting` opacity gate to kill the corner→centre flash; native `confirm()` / `alert()` replaced by reusable `ui.Dialog` + `wickConfirm` / `wickAlert` Promise helpers mounted globally in `ui.Layout` |
 
 Deferred from above (out-of-scope for the package, wire when concrete UIs land):
-- fsnotify watcher (Bootstrap + HotReload entrypoints sudah ada; watcher
-  loop tinggal mount di server.go)
+- ~~fsnotify watcher~~ ✅ wired as 3s poll-based watcher in
+  [`setup/watcher.go`](../../agents/workflow/setup/watcher.go) (no
+  new dep) — calls `HotReload` on mtime change, unregisters slugs
+  whose folder disappears. See §15.
 - Postgres-backed DatasetService + Postgres `wick_workflow_state` table
   (in-memory + per-workflow `state.json` shim sudah jalan)
 - Per-provider impls (Claude Code / Codex / Gemini) — abstraction
   Provider tinggal di-implement di `internal/agents/provider/`
-- CLI `wick workflow test <slug>` — TestRunner sudah ada, tinggal cobra
-  subcommand
-- Webhook HMAC enforcement (VerifyHMAC helper ada, dispatch-side wiring
-  belum)
+- ~~CLI `wick workflow test <slug>`~~ ✅ wired via cobra subcommand
+  in [`cmd/cli/workflow.go`](../../../cmd/cli/workflow.go) (RunAll
+  + `--filter`; `--integration`/`--watch`/`--coverage`/`--record`
+  not yet)
+- ~~Webhook HMAC enforcement~~ ✅ wired in
+  [`trigger/webhook.go`](../../agents/workflow/trigger/webhook.go) +
+  `Router.WebhookSecretFor`. Rejects invalid `X-Wick-Sig` when
+  `secret_ref` declared. See §7.
 - Loki push for the structured log mirror — payload shape is already
   Loki-compatible (label dimensions = `wf_slug`/`wf_run_id`/`wf_event`),
   just need the HTTP sink wired
@@ -47,6 +53,15 @@ Deferred from above (out-of-scope for the package, wire when concrete UIs land):
 - Per-trigger fan-out in engine — today's engine fires one chain
   per trigger event; fan-out (one trigger → many parallel chains)
   needs Router/Engine support for multi-EntryNode per Trigger
+- ~~db_query node executor~~ ✅ wired in
+  [`nodes/db_query.go`](../../agents/workflow/nodes/db_query.go) —
+  parameterised SQL, DSN from env key, returns `rows`/`row_count`/`columns`
+- ~~Test result UI panel + Test case manager~~ ✅ Tests tab in
+  bottom panel with RunAll/RunOne, coverage summary, modal-based
+  fixture CRUD. See §10 + §14.
+- ~~SSE event ts invariant + FE state backfill~~ ✅ `ev.TS` stamped
+  once at emit, FE dedups SSE ↔ `/runs/<id>/state` by
+  `(ts|event|node|case)`. See §6 + §10.
 
 **Phase 1 — Foundation** *(folder + types, no execution)* ✅
 

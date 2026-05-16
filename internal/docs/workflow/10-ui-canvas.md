@@ -46,8 +46,16 @@ r.PUT("/workflows/{slug}/files/{path...}", writeFile)
 // Run history + replay
 r.GET("/workflows/{slug}/runs", listRuns)
 r.GET("/workflows/{slug}/runs/{id}", runDetail)
+r.GET("/workflows/{slug}/runs/{id}/state", runStateAPI)   // JSON state + events backfill
 r.POST("/workflows/{slug}/runs/{id}/replay", replay)
 r.POST("/workflows/{slug}/runs/{id}/resume", resume)
+
+// Test framework — runner + case manager
+r.POST("/workflows/{slug}/test", runAllTests)             // → TestResults HTML
+r.GET("/workflows/{slug}/test-cases", listTestCases)      // → TestManager HTML
+r.POST("/workflows/{slug}/test-cases", saveTestCase)      // create/update __tests__/<name>.json
+r.POST("/workflows/{slug}/test-cases/{name}/run", runOne) // → single-row result HTML
+r.DELETE("/workflows/{slug}/test-cases/{name}", deleteTestCase)
 ```
 
 ### List page
@@ -124,6 +132,16 @@ panel di canvas, list of `{from, to, case?}` edit-able.
 - **Files** — file explorer per workflow folder
 - **Runs** — recent runs, click → timeline view
 - **Logs** — live log dari run yang sedang jalan
+- **Tests** — test case manager + result panel. Click tab →
+  GET `/test-cases` fetch HTML fragment (TestManager) with list of
+  fixtures di `__tests__/`, per-row run/edit/delete + Run All
+  button. "+ New" / ✏ edit opens centered modal (`wf-tc-modal`):
+  name, trigger type, channel + subtype (kalau channel), payload
+  JSON, dynamic assertion rows. Save → POST `/test-cases` →
+  fixture file ditulis. Run All → POST `/test` → TestResults
+  panel: per-case ✓/✗ + duration + failure detail + coverage
+  summary (HitNodes / TotalNodes + untested-nodes list). See §14
+  for the runner contract.
 
 ### YAML mode toggle
 
@@ -142,6 +160,38 @@ Tombol "Test" → modal:
 - Canvas show animation: node hijau saat completed, merah kalau fail,
   abu skip. Edge yang dilewati di-highlight.
 - Per-node output panel di bawah: input/output JSON, duration, cost.
+
+### Live run stream — SSE + state backfill
+
+Clicking Execute on the canvas wires this sequence in `editor.js`
+(see `startWorkflowRun`, `startRunStream`, `backfillRunEvents`):
+
+```
+1. POST /workflows/edit/<slug>/run     → 202 { run_id }
+2. EventSource /stream?session=wf:<slug>
+   - filter: ev.run_id === currentRunID
+   - dispatch handleRunEvent(ev)
+3. fetch /workflows/edit/<slug>/runs/<run_id>/state
+   - replay state.events.jsonl rows through handleRunEvent
+4. handleRunEvent dedups by (ts|event|node|case)
+   - paints log row + node badge once per unique tuple
+5. close stream on workflow_completed | workflow_failed
+```
+
+Step 3 (backfill) closes the race between enqueue and the
+EventSource handshake. The broadcaster has no replay buffer, so a
+fast first node can emit `workflow_started` + early `node_started`
+before the browser subscribes — without backfill the run timeline
+shows up partial (e.g. starts from `agent_completed` instead of
+`workflow_started`).
+
+**Dedup contract:** `(ts|event|node|case)` is unique per run. The
+engine guarantees this via the `ev.TS` invariant in §6 — state
+backfill rows and live SSE rows share timestamps exactly. Reset
+the `seenEventKeys` set on each new run (`startWorkflowRun` and
+`replayRun`). When the user replays a historical run from the Runs
+panel, the same `handleRunEvent` path is reused — backfill becomes
+the sole source.
 
 ### Run timeline view
 
