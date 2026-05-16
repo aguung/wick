@@ -1,6 +1,6 @@
 # Audit Workflow — gap vs design
 
-Tanggal audit: 2026-05-15. Bandingin `internal/tools/agents/workflows.go` + `internal/agents/workflow/*` sama `workflow-design.md` + `workflow-mockup.html`. User flag 4 area utama plus struktur canvas + draft/publish. Doc ini track gap + TODO konkret.
+Tanggal audit: 2026-05-15. Bandingin `internal/tools/agents/workflows.go` + `internal/agents/workflow/*` sama `../workflow-design.md` (index) + `*.md` (split sections) + `mockup.html`. User flag 4 area utama plus struktur canvas + draft/publish. Doc ini track gap + TODO konkret.
 
 ## Status implementasi (2026-05-15)
 

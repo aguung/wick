@@ -551,7 +551,7 @@ output_cases: [bug, question]
 provider: claude          # claude|codex|gemini
 preset: support-responder
 session: new              # new|root|persistent
-skills: [qiscus-docs-search]
+skills: [docs-search]
 prompt: |
   Q: {{.Event.Payload.text}}
 max_turns: 5</pre>
@@ -586,7 +586,7 @@ args:
 module: github
 op: create_issue
 args:
-  repo: "qiscus/inbox"
+  repo: "acme/inbox"
   title: "{{.Event.Payload.text}}"
 # edge: { from: <this>, to: reply-link }</pre>
       </div>

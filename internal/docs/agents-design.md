@@ -117,7 +117,7 @@ Status: **planning**. Mulai 2026-05-09. Target: phase R1-R5 selesai sebelum Slac
 
 Bug awal: session tanpa project gagal spawn (`chdir sessions/<id>/workspace: file not found`) karena workspace dir cuma dibuat saat `addWorktree` jalan. Penyelidikan ungkap mismatch fundamental dengan use case nyata user:
 
-> "Aku minta claude clone repoA, minta claude clone repoB. Numpuk di workspace `soluport-ops`. Jadi dia bisa pakai ulang."
+> "Aku minta claude clone repoA, minta claude clone repoB. Numpuk di workspace `team-ops`. Jadi dia bisa pakai ulang."
 
 Use case = **shared folder berisi banyak repo, dipakai berulang oleh banyak session**. Bukan **1 project = 1 repo, session = worktree branch**.
 

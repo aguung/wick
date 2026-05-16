@@ -1,7 +1,7 @@
 // Package workflow holds the templ components for the Workflows tab
 // under /tools/agents/workflows. Layout is split per section so each
 // file maps 1:1 to a chunk of the mockup at
-// internal/docs/workflow-mockup.html §3 (Canvas editor — live demo).
+// internal/docs/workflow/mockup.html §3 (Canvas editor — live demo).
 package workflow
 
 import (

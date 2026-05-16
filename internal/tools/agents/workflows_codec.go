@@ -145,7 +145,7 @@ func nodeDataFromWorkflow(n wf.Node) map[string]any {
 // when present; otherwise auto-layout into a left→right grid. The
 // first trigger is rendered as a phantom node before the entry so the
 // canvas visualizes "where the workflow fires from" — matching
-// workflow-mockup.html §3.
+// workflow/mockup.html §3.
 func workflowToDrawflowJSON(w wf.Workflow) (string, error) {
 	positions := canvasPositions(w)
 	nodes := map[string]drawflowNode{}
