@@ -2336,6 +2336,11 @@
   // parent's last output as the upstream payload preview.
   const lastRunOutputs = {};
   let logCount = 0;
+  // seenEventKeys dedups events that may arrive twice: once via live
+  // SSE and once via the state-backfill fetch we kick off after POST
+  // /run. Engine + broadcast hook share ev.TS, so the (ts|event|
+  // node|case) tuple is identical across sources. Reset per run.
+  let seenEventKeys = new Set();
 
   function setNodeBadge(domID, state, latencyMs) {
     const el = document.getElementById('node-' + domID);
@@ -2507,6 +2512,13 @@
   }
 
   function handleRunEvent(ev) {
+    // Dedup so the state-backfill replay (kicked off after POST /run)
+    // doesn't double-paint events the live SSE already delivered.
+    // Engine + WorkflowEventHook share ev.TS, so the tuple is stable
+    // across both sources.
+    const key = `${ev.ts || ''}|${ev.event || ''}|${ev.node || ''}|${ev.case || ''}`;
+    if (seenEventKeys.has(key)) return;
+    seenEventKeys.add(key);
     pushLogEntry(ev);
     // Trigger nodes never emit node_started/node_completed because the
     // engine begins walking at the entry node — without this branch the
@@ -2671,6 +2683,7 @@
     clearNodeBadges();
     logsByNode = {};
     logCount = 0;
+    seenEventKeys = new Set();
     if (logsList) logsList.innerHTML = '';
     if (logsCounter) logsCounter.textContent = '(0)';
     if (logsEmpty) logsEmpty.classList.add('hidden');
@@ -2695,6 +2708,13 @@
       currentRunID = data.run_id;
       setStatus('saving', `⟳ Running ${currentRunID.slice(0, 8)}…`);
       startRunStream(currentRunID);
+      // Backfill events that fired between enqueue and SSE subscribe.
+      // Broadcaster has no replay buffer, so a fast first node can
+      // emit workflow_started + early node_started before EventSource
+      // hands shakes. State.events.jsonl is the source of truth —
+      // fetch + replay through handleRunEvent (dedup handles overlap
+      // with any SSE events that did arrive).
+      backfillRunEvents(currentRunID);
     } catch (err) {
       setStatus('error', `✕ Run failed: ${err.message || err}`);
       setPillState('idle', 'Execute workflow');
@@ -3114,6 +3134,28 @@
   // upstream payload the node received. Lets the operator debug a
   // failed run side-by-side with the live graph without leaving the
   // editor.
+  // backfillRunEvents fetches state.events.jsonl for a live run and
+  // feeds each event through handleRunEvent. Dedup in handleRunEvent
+  // means events already painted via SSE get skipped — so this safely
+  // closes the race window between POST /run returning and the
+  // EventSource subscription being live. Runs once at run start.
+  async function backfillRunEvents(runID) {
+    if (!runID) return;
+    try {
+      const resp = await fetch(`${baseURL}/edit/${slug}/runs/${encodeURIComponent(runID)}/state`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!resp.ok) return;
+      const payload = await resp.json();
+      // Drop if user kicked off a different run while this was in flight.
+      if (currentRunID !== runID) return;
+      const events = Array.isArray(payload.events) ? payload.events : [];
+      events.forEach((ev) => handleRunEvent(ev));
+    } catch (_) {
+      // Silent — SSE will still drive the UI if backfill is unavailable.
+    }
+  }
+
   async function replayRun(runID) {
     if (!runID) return;
     const url = `${baseURL}/edit/${slug}/runs/${encodeURIComponent(runID)}/state`;
@@ -3133,6 +3175,7 @@
       logsList.innerHTML = '';
       logsByNode = {};
       logCount = 0;
+      seenEventKeys = new Set();
       if (logsCounter) logsCounter.textContent = '(0)';
       if (logsEmpty) logsEmpty.classList.add('hidden');
       for (const k in lastRunOutputs) delete lastRunOutputs[k];

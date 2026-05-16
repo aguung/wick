@@ -89,6 +89,11 @@ func (e *Engine) SetEventHook(fn func(slug, runID string, ev workflow.RunEvent))
 // error on _failed) is included after truncation so the grep target
 // has the payload, not just an opaque event name.
 func (e *Engine) emit(ctx context.Context, slug, runID string, ev workflow.RunEvent) {
+	// Stamp ts once so AppendEvent (state) and OnEvent (SSE) agree.
+	// Without this, FE backfill can't dedup state ↔ stream events.
+	if ev.TS.IsZero() {
+		ev.TS = e.Now()
+	}
 	_ = e.StateStore.AppendEvent(slug, runID, ev)
 	lg := log.Ctx(ctx)
 	logEvent := lg.Info()
@@ -186,6 +191,7 @@ func (e *Engine) Run(ctx context.Context, w workflow.Workflow, evt workflow.Even
 		startData["trigger_id"] = tid
 	}
 	startEv := workflow.RunEvent{
+		TS:    e.Now(),
 		Event: workflow.EventWorkflowStarted,
 		Data:  startData,
 	}

@@ -167,6 +167,12 @@ func WorkflowEventHook(b *Broadcaster) func(slug, runID string, ev wf.RunEvent) 
 		return nil
 	}
 	return func(slug, runID string, ev wf.RunEvent) {
+		// Mirror state.events.jsonl's ts so the FE can dedup state
+		// backfill against live SSE by `ts|event|node|case`.
+		ts := ev.TS
+		if ts.IsZero() {
+			ts = time.Now().UTC()
+		}
 		payload := map[string]any{
 			"slug":   slug,
 			"run_id": runID,
@@ -174,7 +180,7 @@ func WorkflowEventHook(b *Broadcaster) func(slug, runID string, ev wf.RunEvent) 
 			"node":   ev.Node,
 			"case":   ev.Case,
 			"data":   ev.Data,
-			"ts":     time.Now().UTC().Format(time.RFC3339Nano),
+			"ts":     ts.UTC().Format(time.RFC3339Nano),
 		}
 		body, _ := json.Marshal(payload)
 		b.fanout(WorkflowSSESession(slug), Event{
