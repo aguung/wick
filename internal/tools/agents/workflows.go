@@ -989,9 +989,12 @@ func runWorkflowTests(c *tool.Ctx) {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.HTML(wfview.TestResultsPanel(wfview.TestResultsVM{
+	// Render as a raw HTML fragment — not c.HTML() which wraps in the
+	// full page shell. The JS fetch injects this directly into #wf-test-results.
+	c.W.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = wfview.TestResultsPanel(wfview.TestResultsVM{
 		Slug:     slug,
 		Results:  results,
 		Coverage: cov,
-	}))
+	}).Render(c.R.Context(), c.W)
 }
