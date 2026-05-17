@@ -51,8 +51,11 @@ func matchesAnyExclude(abs string, patterns []string) bool {
 //     the dir AND every descendant. Folder ignores work without making the
 //     user type "/**" manually.
 func globMatch(pattern, path string) bool {
-	pattern = filepath.ToSlash(pattern)
-	path = filepath.ToSlash(path)
+	// Normalise to forward slashes on all platforms — filepath.ToSlash only
+	// converts the OS separator, so Windows backslashes pass through unchanged
+	// on Linux/macOS. Use strings.ReplaceAll for cross-platform correctness.
+	pattern = strings.ReplaceAll(pattern, "\\", "/")
+	path = strings.ReplaceAll(path, "\\", "/")
 	// Drop a trailing slash on the pattern — both Clean and human input
 	// can produce it, and "/foo/" should match the same set as "/foo".
 	if len(pattern) > 1 {

@@ -28,7 +28,6 @@ import (
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/gate"
-	"github.com/yogasw/wick/internal/appname"
 )
 
 const (
@@ -88,14 +87,28 @@ type turn struct {
 type Channel struct {
 	sendFn agentchannels.SendFunc
 
-	cfgMu  sync.Mutex
-	cfg    agentconfig.SlackChannelConfig
-	pubURL string
-	api    *slackgo.Client
-	socket *socketmode.Client
+	cfgMu          sync.Mutex
+	cfg            agentconfig.SlackChannelConfig
+	pubURL         string
+	api            *slackgo.Client
+	socket         *socketmode.Client
+	botUserID      string           // Slack user ID of the bot itself (U...), resolved via auth.test
+	connectorToken ConnectorTokenFn // optional; nil = no user-token DM support
 
 	mu    sync.Mutex
 	turns map[string]*turn
+
+	// userTokenCache maps Slack user ID → resolved xoxp token.
+	// Avoids repeated connectorToken lookups on every send call.
+	userTokenMu    sync.RWMutex
+	userTokenCache map[string]string
+
+	// tokenRefreshFn rebuilds the full userID→token map from connector rows.
+	// Wired at startup via SetTokenRefreshFn; triggered on-demand when a
+	// lookup misses and on a 5-minute background ticker.
+	tokenRefreshFn   func(ctx context.Context) map[string]string
+	tokenRefreshedAt time.Time
+	tokenRefreshMu   sync.Mutex
 
 	approveFn      agentchannels.ApproveFn
 	sessions       agentchannels.SessionChecker
@@ -110,6 +123,7 @@ type Channel struct {
 	runMu     sync.Mutex
 	runCancel context.CancelFunc
 	runWg     sync.WaitGroup
+
 }
 
 // New builds a Slack Channel from the operator-supplied config alone.
@@ -117,7 +131,8 @@ type Channel struct {
 // corresponding Set* setters before Start.
 func New(cfg agentconfig.SlackChannelConfig) *Channel {
 	ch := &Channel{
-		turns: make(map[string]*turn),
+		turns:          make(map[string]*turn),
+		userTokenCache: make(map[string]string),
 	}
 	ch.applyConfig(cfg, "")
 	return ch
@@ -158,18 +173,70 @@ func (s *Channel) SetSessionStartHook(fn agentchannels.SessionStartHook) {
 	s.onSessionStart = fn
 }
 
-// HTTPPath returns the mux path for the Slack webhook (channels.HTTPHandlerProvider).
-func (s *Channel) HTTPPath() string { return "POST /integrations/slack/events" }
+// SetTokenRefreshFn wires a function that rebuilds the full userID→token map.
+// Called at startup and triggered on-demand when a lookup misses.
+func (s *Channel) SetTokenRefreshFn(fn func(ctx context.Context) map[string]string) {
+	s.cfgMu.Lock()
+	s.tokenRefreshFn = fn
+	s.cfgMu.Unlock()
+}
+
+// RefreshTokenMap rebuilds the userID→token map from connector rows.
+// Debounced: skips if called within 60s of last refresh.
+func (s *Channel) RefreshTokenMap(ctx context.Context) {
+	s.tokenRefreshMu.Lock()
+	defer s.tokenRefreshMu.Unlock()
+	if time.Since(s.tokenRefreshedAt) < 60*time.Second {
+		return
+	}
+	s.cfgMu.Lock()
+	fn := s.tokenRefreshFn
+	s.cfgMu.Unlock()
+	if fn == nil {
+		return
+	}
+	newMap := fn(ctx)
+	s.userTokenMu.Lock()
+	s.userTokenCache = newMap
+	s.userTokenMu.Unlock()
+	s.tokenRefreshedAt = time.Now()
+	log.Info().Int("users", len(newMap)).Msg("slack: user token map refreshed")
+}
+
+// HTTPHandlers satisfies channels.MultiHTTPHandlerProvider.
+// Returns two routes:
+//   - POST /integrations/slack/events — inbound Slack webhook
+//   - POST /integrations/slack/send   — local agent proxy, no external auth
+//
+// OAuth routes (start/callback) have moved to the generic connector manager
+// at /manager/connectors/slack/oauth/* and are no longer registered here.
+func (s *Channel) HTTPHandlers() map[string]http.Handler {
+	return map[string]http.Handler{
+		"POST /integrations/slack/events": s.HTTPHandler(),
+		"POST /integrations/slack/send":   s.sendHandler(),
+	}
+}
 
 // applyConfig replaces cfg/pubURL/api/socket atomically.
+// Also resolves the bot's own Slack user ID via auth.test so the footer
+// can render as a proper @mention ("Sent using <@UBOT123>").
 func (s *Channel) applyConfig(cfg agentconfig.SlackChannelConfig, pubURL string) {
 	api := slackgo.New(cfg.BotToken, slackgo.OptionAppLevelToken(cfg.AppToken))
 	socket := socketmode.New(api)
+
+	botUserID := ""
+	if cfg.BotToken != "" {
+		if resp, err := api.AuthTest(); err == nil {
+			botUserID = resp.UserID
+		}
+	}
+
 	s.cfgMu.Lock()
 	s.cfg = cfg
 	s.pubURL = pubURL
 	s.api = api
 	s.socket = socket
+	s.botUserID = botUserID
 	s.cfgMu.Unlock()
 }
 
@@ -771,36 +838,26 @@ func (s *Channel) sessionOnDisk(sessionID string) bool {
 func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS string) string {
 	s.cfgMu.Lock()
 	api := s.api
-	cfg := s.cfg
 	s.cfgMu.Unlock()
 	if api == nil {
 		return ""
 	}
 
+	// Resolve channel info.
 	channelName := ev.Channel
-	channelType := ""
 	if info, err := api.GetConversationInfo(&slackgo.GetConversationInfoInput{ChannelID: ev.Channel}); err == nil && info != nil {
 		if info.Name != "" {
-			channelName = "#" + info.Name
-		}
-		switch {
-		case info.IsIM:
-			channelType = "direct message"
-		case info.IsMpIM:
-			channelType = "group DM"
-		case info.IsPrivate:
-			channelType = "private channel"
-		default:
-			channelType = "channel"
+			channelName = info.Name
 		}
 	}
 
+	// Resolve user info.
 	userHandle := ev.User
 	userReal := ""
 	teamName := ""
 	if u, err := api.GetUserInfo(ev.User); err == nil && u != nil {
 		if u.Name != "" {
-			userHandle = "@" + u.Name
+			userHandle = u.Name
 		}
 		userReal = u.RealName
 	}
@@ -813,8 +870,8 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 		permalink = pl
 	}
 
-	// Enhancement 1: pre-resolve the DM channel for the requesting user so
-	// Claude can send DMs back without needing an extra API call.
+	// Pre-resolve the DM channel so Claude can send DMs without an extra API call.
+	// 3-second timeout; failure is non-fatal — section is omitted.
 	dmChannelID := ""
 	dmCtx, dmCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer dmCancel()
@@ -824,11 +881,23 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 	}); err == nil && ch != nil {
 		dmChannelID = ch.ID
 	} else if err != nil {
-		log.Warn().Str("channel", "slack").Str("user", ev.User).Err(err).Msg("buildSessionContext: conversations.open failed; omitting DM channel ID")
+		log.Warn().Str("channel", "slack").Str("user", ev.User).Err(err).
+			Msg("buildSessionContext: conversations.open failed; omitting DM channel ID")
 	}
 
-	// Enhancement 2: fetch the first 50 workspace members to give Claude a
-	// username→user_id directory so it can resolve "@alice" to "U111A".
+	// Check if the mentioning user has a connector user token configured.
+	// If yes, DMs sent via the proxy will automatically appear as from them.
+	s.cfgMu.Lock()
+	connTokFn := s.connectorToken
+	s.cfgMu.Unlock()
+	hasUserToken := false
+	if connTokFn != nil {
+		tok := s.resolveUserToken(dmCtx, ev.User, connTokFn)
+		hasUserToken = tok != ""
+	}
+
+	// Fetch first 50 workspace members for a username→user_id directory.
+	// 3-second timeout; failure is non-fatal — section is omitted.
 	var memberEntries []string
 	membersCtx, membersCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer membersCancel()
@@ -840,60 +909,53 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 			memberEntries = append(memberEntries, fmt.Sprintf("@%s (%s)", m.Name, m.ID))
 		}
 	} else {
-		log.Warn().Str("channel", "slack").Err(err).Msg("buildSessionContext: users.list failed; omitting member directory")
+		log.Warn().Str("channel", "slack").Err(err).
+			Msg("buildSessionContext: users.list failed; omitting member directory")
 	}
 
-	channelLine := channelName
-	if channelType != "" {
-		channelLine = fmt.Sprintf("%s (%s)", channelName, channelType)
-	}
-	userLine := userHandle
-	if userReal != "" && userReal != strings.TrimPrefix(userHandle, "@") {
-		userLine = fmt.Sprintf("%s (%s)", userHandle, userReal)
-	}
-
-	lines := []string{"[Slack thread context — sent automatically by wick]"}
+	lines := []string{"[Slack thread context — injected by wick]"}
 	if teamName != "" {
 		lines = append(lines, "Workspace: "+teamName)
 	}
 	lines = append(lines,
-		fmt.Sprintf("Channel: %s [%s]", channelLine, ev.Channel),
-		fmt.Sprintf("User: %s [%s]", userLine, ev.User),
+		fmt.Sprintf("Channel: #%s [%s]", channelName, ev.Channel),
+		fmt.Sprintf("User: @%s (%s) [%s]", userHandle, userReal, ev.User),
 	)
-	// Enhancement 1: inject pre-resolved DM channel ID.
 	if dmChannelID != "" {
-		lines = append(lines, "DM channel with this user: "+dmChannelID)
+		lines = append(lines, "DM channel: "+dmChannelID)
 	}
 	lines = append(lines, "Thread: "+threadTS)
 	if permalink != "" {
 		lines = append(lines, "Link: "+permalink)
 	}
 
-	// Enhancement 2: compact member directory.
 	if len(memberEntries) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("Slack workspace members (first %d):", len(memberEntries)))
-		lines = append(lines, strings.Join(memberEntries, " | "))
+		lines = append(lines, fmt.Sprintf("Workspace members (first %d): %s", len(memberEntries), strings.Join(memberEntries, " | ")))
 	}
 
-	// Enhancement 4: Slack capabilities section so Claude knows how to
-	// call the Slack Web API from bash using $WICK_SLACK_TOKEN.
-	if cfg.BotToken != "" {
-		lines = append(lines, "")
-		lines = append(lines, "Slack capabilities:")
-		if dmChannelID != "" {
-			lines = append(lines, fmt.Sprintf("- To send a DM to the requesting user: use channel %s with chat.postMessage", dmChannelID))
-		}
-		lines = append(lines, "- To DM another user: first call conversations.open with their user_id (from the member directory above), then post to the returned channel")
-		lines = append(lines, "- Token available as: $WICK_SLACK_TOKEN (use with Slack Web API)")
-		lines = append(lines, "- Example DM: curl -s -X POST https://slack.com/api/chat.postMessage \\")
-		lines = append(lines, `    -H "Authorization: Bearer $WICK_SLACK_TOKEN" \`)
-		lines = append(lines, `    -H "Content-Type: application/json" \`)
-		if dmChannelID != "" {
-			lines = append(lines, fmt.Sprintf(`    -d '{"channel":"%s","text":"hello"}'`, dmChannelID))
-		} else {
-			lines = append(lines, `    -d '{"channel":"D...","text":"hello"}'`)
-		}
+	lines = append(lines, "")
+	lines = append(lines, "IMPORTANT: To send Slack messages, use wick proxy only — do NOT use Slack MCP tools.")
+
+	// Shared curl base — always include X-Wick-Session-User so the proxy
+	// can auto-inject sender_user_id without Claude needing to specify it.
+	curlBase := fmt.Sprintf(
+		`curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -H "X-Wick-Session-User: %s"`,
+		ev.User,
+	)
+
+	if hasUserToken {
+		lines = append(lines, fmt.Sprintf("Your user token is configured — DMs will appear as from @%s.", userHandle))
+		lines = append(lines, "To DM another user (appears from you):")
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
+		lines = append(lines, "  Replace THEIR_USER_ID with the ID from the member directory above.")
+		lines = append(lines, "If DM fails with open_dm_failed/missing_scope: post to the original channel thread instead:")
+		lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, ev.Channel))
+	} else {
+		lines = append(lines, "To DM another user (appears from bot):")
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
+		lines = append(lines, "If DM fails: post to original channel thread with mention instead:")
+		lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, ev.Channel))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1101,40 +1163,24 @@ func (s *Channel) setReaction(newReaction, channelID, msgTS, oldReaction string)
 	})
 }
 
-func (s *Channel) postReply(channelID, threadTS, text string) {
-	s.cfgMu.Lock()
-	api := s.api
-	s.cfgMu.Unlock()
-	s.withBackoff(func() error {
-		_, _, err := api.PostMessage(
-			channelID,
-			slackgo.MsgOptionText(text, false),
-			slackgo.MsgOptionTS(threadTS),
-		)
-		return err
-	})
-}
 
 func (s *Channel) postChunked(channelID, threadTS, text string) {
 	chunks := chunkText(text, maxSlackChunk)
-	footer := signedFooter()
+	// Footer only in DM sessions — Slack DM channel IDs always start with "D".
+	isDM := strings.HasPrefix(channelID, "D")
 	for i, chunk := range chunks {
 		msg := chunk
 		if i > 0 {
 			msg = "_(cont.)_\n" + chunk
 		}
-		if i == len(chunks)-1 && footer != "" {
-			msg += footer
+		if i == len(chunks)-1 && isDM {
+			s.postReplyWithFooter(channelID, threadTS, msg)
+		} else {
+			s.postReply(channelID, threadTS, msg)
 		}
-		s.postReply(channelID, threadTS, msg)
 	}
 }
 
-// signedFooter returns a Slack-formatted signature appended to the last
-// chunk of every agent reply — mirrors the "sent via Claude" footer style.
-func signedFooter() string {
-	return "\n\n_Sent by *wick* · " + appname.Resolve() + "_"
-}
 
 func chunkText(s string, max int) []string {
 	if len(s) <= max {

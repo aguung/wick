@@ -21,6 +21,7 @@ import (
 	"github.com/yogasw/wick/internal/admin"
 	"github.com/yogasw/wick/internal/appname"
 	agentchannels "github.com/yogasw/wick/internal/agents/channels"
+	slackch "github.com/yogasw/wick/internal/agents/channels/slack"
 	channelsetup "github.com/yogasw/wick/internal/agents/channels/setup"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	agentevent "github.com/yogasw/wick/internal/agents/event"
@@ -155,6 +156,15 @@ func NewServer() *Server {
 	}
 	if err := configsSvc.Bootstrap(context.Background(), extraConfigs...); err != nil {
 		log.Fatal().Msgf("configs bootstrap: %s", err.Error())
+	}
+	// Seed connector_oauth:slack rows for the generic connector OAuth framework.
+	// The manager reads/writes these at owner="connector_oauth:slack" so they
+	// are namespaced per-connector and don't collide with other connectors.
+	if err := configsSvc.EnsureOwned(context.Background(), "connector_oauth:slack",
+		entity.Config{Key: "client_id", Description: "Slack OAuth app Client ID"},
+		entity.Config{Key: "client_secret", IsSecret: true, Description: "Slack OAuth app Client Secret"},
+	); err != nil {
+		log.Warn().Err(err).Msg("configs: seed connector_oauth:slack rows failed")
 	}
 	// Seed from env on first boot only — once the row exists in the DB
 	// the admin UI is the only way to change it.
@@ -608,6 +618,47 @@ func NewServer() *Server {
 		log.Fatal().Msgf("connectors bootstrap: %s", err.Error())
 	}
 
+	// Wire Slack user-token lookup via the connectors service.
+	// SetTokenRefreshFn + RefreshTokenMap seeds the initial userID→token cache
+	// by calling auth.test once per Slack connector row configured in
+	// user_token mode. A background ticker keeps the cache fresh every 5
+	// minutes so new connector rows are picked up without a restart.
+	//
+	// Note: OAuth flow (start/callback) has moved to the generic connector
+	// manager at /manager/connectors/{key}/oauth/*. The Slack channel only
+	// needs token-refresh wiring for the send-proxy feature.
+	for _, ch := range channelReg.Channels() {
+		if slackCh, ok := ch.(*slackch.Channel); ok {
+			// Wire the refresh function so RefreshTokenMap can rebuild the map
+			// from connector rows without a server restart.
+			slackCh.SetTokenRefreshFn(func(ctx context.Context) map[string]string {
+				return buildSlackUserTokenMap(ctx, connectorsSvc)
+			})
+
+			// Seed the initial cache synchronously (same behaviour as before,
+			// but now stored in userTokenCache instead of a closed-over map).
+			slackCh.RefreshTokenMap(context.Background())
+
+			// ConnectorTokenFn is called on every cache miss. Returning false
+			// signals resolveUserToken to trigger a background RefreshTokenMap
+			// so subsequent requests will find the token in cache.
+			slackCh.SetConnectorTokenFn(func(_ context.Context, _ string) (string, bool) {
+				return "", false
+			})
+
+			// Background ticker: refresh every 5 minutes.
+			go func(ch *slackch.Channel) {
+				ticker := time.NewTicker(5 * time.Minute)
+				defer ticker.Stop()
+				for range ticker.C {
+					ch.RefreshTokenMap(context.Background())
+				}
+			}(slackCh)
+
+			break
+		}
+	}
+
 	// ── Personal Access Tokens (MCP bearer auth) ─────────────────
 	// tokensSvc instantiated earlier so the REST channel can reuse it.
 	tokensHandler := accesstoken.NewHandler(tokensSvc, configsSvc)
@@ -885,6 +936,40 @@ func (s *Server) appNameHandler(next http.Handler) http.Handler {
 	})
 }
 
+// buildSlackUserTokenMap scans Slack connector rows configured in user_token
+// mode, calls auth.test once per token to resolve the Slack user ID, and
+// returns a map[slackUserID]xoxpToken. Called once at startup so live
+// requests never pay an auth.test round-trip.
+func buildSlackUserTokenMap(ctx context.Context, svc *connectors.Service) map[string]string {
+	out := map[string]string{}
+	rows, err := svc.ListByKey(ctx, "slack")
+	if err != nil {
+		log.Warn().Err(err).Msg("buildSlackUserTokenMap: ListByKey failed")
+		return out
+	}
+	for _, row := range rows {
+		cfgs := svc.LoadConfigs(row)
+		if strings.TrimSpace(cfgs["auth_mode"]) != "user_token" {
+			continue
+		}
+		token := strings.TrimSpace(cfgs["user_token"])
+		if token == "" {
+			continue
+		}
+		userID, err := slackch.AuthTestWithToken(ctx, token)
+		if err != nil {
+			log.Warn().Err(err).Str("connector_id", row.ID).
+				Msg("buildSlackUserTokenMap: auth.test failed for row")
+			continue
+		}
+		out[userID] = token
+		log.Info().Str("user_id", userID).Str("connector_id", row.ID).
+			Msg("slack: user token registered")
+	}
+	return out
+}
+
+
 // hostAllowlistHandler rejects requests whose Host header doesn't match
 // the host of the configured app_url. The /health endpoint is exempt
 // so external load balancers / uptime checks can probe via the raw
@@ -945,6 +1030,11 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	}
 	logger := zerolog.Ctx(ctx)
 	addr := fmt.Sprintf(":%d", port)
+
+	// Expose the server port to agent subprocesses via WICK_PORT so they
+	// can reach wick's local proxy endpoints (e.g. /integrations/slack/send)
+	// without needing any credentials injected into their environment.
+	os.Setenv("WICK_PORT", fmt.Sprintf("%d", port)) //nolint:errcheck
 
 	// Start channel listeners and watch for config changes.
 	s.startChannels(ctx)
