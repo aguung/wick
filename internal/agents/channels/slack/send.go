@@ -136,7 +136,33 @@ func (s *Channel) sendHandler() http.Handler {
 
 		// Resolve channel: target_user_id opens a real DM using sender's token.
 		// conversations.open with xoxp token creates a DM in both users' inboxes.
+		// Bot users are detected early — conversations.open returns cannot_dm_bot
+		// for them, so we skip straight to the fallback channel instead.
 		channelID := body.ChannelID
+		if body.TargetUserID != "" {
+			// Proactively detect bot users to avoid the cannot_dm_bot API error.
+			// GetUserInfo is cheap and cached on the Slack side; a miss on error
+			// is fine — we'll try OpenConversation and handle the error below.
+			if uinfo, err := api.GetUserInfoContext(r.Context(), body.TargetUserID); err == nil {
+				if uinfo.IsBot || uinfo.IsAppUser {
+					// Bot user — conversations.open returns cannot_dm_bot.
+					// Find the existing IM channel between the bot token and
+					// the target bot via conversations.list(types=im).
+					if ch := findBotIMChannel(r.Context(), api, body.TargetUserID); ch != "" {
+						channelID = ch
+						body.TargetUserID = "" // channel resolved; skip OpenConversation
+					} else if body.ChannelID != "" {
+						body.TargetUserID = "" // fallback: post to originating channel
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusBadRequest)
+						fmt.Fprintf(w, `{"error":"cannot_dm_bot","target":%q,"hint":"No existing IM channel found with this bot. Open a DM with the bot in Slack first so a channel is created, then retry."}`,
+							body.TargetUserID)
+						return
+					}
+				}
+			}
+		}
 		if body.TargetUserID != "" {
 			client := xoxpClient
 			if client == nil {
@@ -149,11 +175,13 @@ func (s *Channel) sendHandler() http.Handler {
 			if err != nil {
 				// Return structured error so Claude can decide to fallback
 				// (e.g. post to original channel thread instead).
-				// missing_scope means the token needs im:write user scope.
 				errMsg := err.Error()
 				hint := ""
-				if strings.Contains(errMsg, "missing_scope") {
+				switch {
+				case strings.Contains(errMsg, "missing_scope"):
 					hint = "; the user token is missing im:write scope — add it in Slack app OAuth & Permissions → User Token Scopes, then reinstall"
+				case strings.Contains(errMsg, "cannot_dm_bot"):
+					hint = "; target is a bot user — Slack does not allow DMs to bots via conversations.open. Use channel_id to post to a shared channel instead"
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -323,4 +351,34 @@ func AuthTestWithToken(ctx context.Context, token string) (userID string, err er
 		return "", err
 	}
 	return resp.UserID, nil
+}
+
+// findBotIMChannel scans the bot's IM conversations to find an existing
+// direct-message channel with targetUserID. conversations.open fails with
+// cannot_dm_bot for bot users, so we search the list instead.
+// Returns "" when no IM is found (e.g. the two bots have never exchanged
+// messages and no DM channel was opened via the Slack UI).
+func findBotIMChannel(ctx context.Context, api *slackgo.Client, targetUserID string) string {
+	cursor := ""
+	for {
+		params := &slackgo.GetConversationsParameters{
+			Types:           []string{"im"},
+			Limit:           200,
+			Cursor:          cursor,
+			ExcludeArchived: true,
+		}
+		channels, next, err := api.GetConversationsContext(ctx, params)
+		if err != nil {
+			return ""
+		}
+		for _, ch := range channels {
+			if ch.User == targetUserID {
+				return ch.ID
+			}
+		}
+		if next == "" {
+			return ""
+		}
+		cursor = next
+	}
 }
