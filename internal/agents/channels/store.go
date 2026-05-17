@@ -59,7 +59,9 @@ func EnsureChannel(db *gorm.DB, channelType string) error {
 
 // GetChannelConfigMap loads the JSON config for a channel type into a map.
 // Returns an empty map when no row exists (not an error).
-func GetChannelConfigMap(db *gorm.DB, channelType string) (map[string]string, error) {
+// If decryptFn is non-nil, every value is passed through it — values that
+// are not wick_cenc_ tokens are returned unchanged by a well-behaved fn.
+func GetChannelConfigMap(db *gorm.DB, channelType string, decryptFn func(string) string) (map[string]string, error) {
 	var ch entity.AgentChannel
 	if err := db.Where("type = ?", channelType).First(&ch).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -71,6 +73,11 @@ func GetChannelConfigMap(db *gorm.DB, channelType string) (map[string]string, er
 	if ch.Config != "" && ch.Config != "{}" {
 		if err := json.Unmarshal([]byte(ch.Config), &m); err != nil {
 			return nil, err
+		}
+	}
+	if decryptFn != nil {
+		for k, v := range m {
+			m[k] = decryptFn(v)
 		}
 	}
 	return m, nil
@@ -124,7 +131,7 @@ func firstNonEmpty(v, fallback string) string {
 // LoadSlackConfig reads the Slack channel config from agent_channels.
 // Returns zero value + empty pubURL when no row exists.
 func LoadSlackConfig(db *gorm.DB) (cfg agentconfig.SlackChannelConfig, pubURL string, err error) {
-	m, err := GetChannelConfigMap(db, "slack")
+	m, err := GetChannelConfigMap(db, "slack", nil)
 	if err != nil {
 		return
 	}
@@ -150,7 +157,7 @@ func LoadSlackConfig(db *gorm.DB) (cfg agentconfig.SlackChannelConfig, pubURL st
 
 // LoadTelegramConfig reads the Telegram channel config from agent_channels.
 func LoadTelegramConfig(db *gorm.DB) (agentconfig.TelegramChannelConfig, error) {
-	m, err := GetChannelConfigMap(db, "telegram")
+	m, err := GetChannelConfigMap(db, "telegram", nil)
 	if err != nil {
 		return agentconfig.TelegramChannelConfig{}, err
 	}
@@ -163,7 +170,7 @@ func LoadTelegramConfig(db *gorm.DB) (agentconfig.TelegramChannelConfig, error) 
 
 // LoadRestConfig reads the REST channel config from agent_channels.
 func LoadRestConfig(db *gorm.DB) (agentconfig.RestChannelConfig, error) {
-	m, err := GetChannelConfigMap(db, "rest")
+	m, err := GetChannelConfigMap(db, "rest", nil)
 	if err != nil {
 		return agentconfig.RestChannelConfig{}, err
 	}
@@ -190,7 +197,7 @@ func NewDBStore(db *gorm.DB) DBStore { return DBStore{db: db} }
 // configMap loads the JSON config for channelType and decrypts any
 // wick_cenc_ tokens in the map values before returning.
 func (s DBStore) configMap(channelType string) (map[string]string, error) {
-	m, err := GetChannelConfigMap(s.db, channelType)
+	m, err := GetChannelConfigMap(s.db, channelType, nil)
 	if err != nil {
 		return nil, err
 	}

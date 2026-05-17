@@ -555,7 +555,7 @@ func NewServer() *Server {
 	sendFnFor := func(channelType string) agentchannels.SendFunc {
 		return func(ctx context.Context, sessionID, agentName, source, role, text string) error {
 			ws := ""
-			if m, err := agentchannels.GetChannelConfigMap(db, channelType); err == nil {
+			if m, err := agentchannels.GetChannelConfigMap(db, channelType, nil); err == nil {
 				ws = m["workspace"]
 			}
 			if ws == "" {
