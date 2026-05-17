@@ -843,6 +843,17 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 			Msg("buildSessionContext: conversations.open failed; omitting DM channel ID")
 	}
 
+	// Check if the mentioning user has a connector user token configured.
+	// If yes, DMs sent via the proxy will automatically appear as from them.
+	s.cfgMu.Lock()
+	connTokFn := s.connectorToken
+	s.cfgMu.Unlock()
+	hasUserToken := false
+	if connTokFn != nil {
+		tok := s.resolveUserToken(dmCtx, ev.User, connTokFn)
+		hasUserToken = tok != ""
+	}
+
 	// Fetch first 50 workspace members for a username→user_id directory.
 	// 3-second timeout; failure is non-fatal — section is omitted.
 	var memberEntries []string
@@ -883,16 +894,36 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 
 	lines = append(lines, "")
 	lines = append(lines, "IMPORTANT: To send Slack messages, use wick proxy only — do NOT use Slack MCP tools.")
-	lines = append(lines, "Send via wick:")
-	lines = append(lines, `  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" \`)
-	lines = append(lines, `    -H "Content-Type: application/json" \`)
-	if dmChannelID != "" {
-		lines = append(lines, fmt.Sprintf(`    -d '{"channel_id":"%s","text":"YOUR MESSAGE"}'`, dmChannelID))
+
+	if hasUserToken {
+		// User token is configured — DMs will appear as from the requesting user automatically.
+		lines = append(lines, fmt.Sprintf("User token configured for @%s — DMs sent from this session will appear as coming from you.", userHandle))
+		lines = append(lines, "Send DM (appears from you):")
+		lines = append(lines, `  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" \`)
+		lines = append(lines, `    -H "Content-Type: application/json" \`)
+		if dmChannelID != "" {
+			lines = append(lines, fmt.Sprintf(`    -d '{"channel_id":"%s","text":"YOUR MESSAGE","sender_user_id":"%s"}'`, dmChannelID, ev.User))
+		} else {
+			lines = append(lines, fmt.Sprintf(`    -d '{"channel_id":"D...","text":"YOUR MESSAGE","sender_user_id":"%s"}'`, ev.User))
+		}
+		lines = append(lines, "Send DM as bot (without impersonation):")
+		lines = append(lines, `  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" \`)
+		lines = append(lines, `    -H "Content-Type: application/json" \`)
+		if dmChannelID != "" {
+			lines = append(lines, fmt.Sprintf(`    -d '{"channel_id":"%s","text":"YOUR MESSAGE"}'`, dmChannelID))
+		} else {
+			lines = append(lines, `    -d '{"channel_id":"D...","text":"YOUR MESSAGE"}'`)
+		}
 	} else {
-		lines = append(lines, `    -d '{"channel_id":"D...","text":"YOUR MESSAGE"}'`)
+		lines = append(lines, "Send via wick (appears from bot):")
+		lines = append(lines, `  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" \`)
+		lines = append(lines, `    -H "Content-Type: application/json" \`)
+		if dmChannelID != "" {
+			lines = append(lines, fmt.Sprintf(`    -d '{"channel_id":"%s","text":"YOUR MESSAGE"}'`, dmChannelID))
+		} else {
+			lines = append(lines, `    -d '{"channel_id":"D...","text":"YOUR MESSAGE"}'`)
+		}
 	}
-	lines = append(lines, "To send appearing FROM a specific user (if their token is configured):")
-	lines = append(lines, fmt.Sprintf(`  Add "sender_user_id":"%s" to the request body.`, ev.User))
 
 	return strings.Join(lines, "\n")
 }
