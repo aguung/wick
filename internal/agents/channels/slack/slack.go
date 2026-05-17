@@ -945,17 +945,21 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 	)
 
 	if hasUserToken {
-		lines = append(lines, fmt.Sprintf("Your user token is configured — DMs will appear as from @%s.", userHandle))
+		lines = append(lines, fmt.Sprintf("Your user token is configured — messages will appear as from @%s.", userHandle))
+		lines = append(lines, "To send to any channel or thread (appears from you):")
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"channel_id":"CHANNEL_ID","text":"YOUR MESSAGE"}'`, curlBase))
 		lines = append(lines, "To DM another user (appears from you):")
 		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
 		lines = append(lines, "  Replace THEIR_USER_ID with the ID from the member directory above.")
 		lines = append(lines, "If DM fails with open_dm_failed/missing_scope: post to the original channel thread instead:")
-		lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, ev.Channel))
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, curlBase, ev.Channel))
 	} else {
+		lines = append(lines, "To send to any channel or thread (appears from bot):")
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"channel_id":"CHANNEL_ID","text":"YOUR MESSAGE"}'`, curlBase))
 		lines = append(lines, "To DM another user (appears from bot):")
 		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
 		lines = append(lines, "If DM fails: post to original channel thread with mention instead:")
-		lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, ev.Channel))
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"channel_id":"%s","text":"<@THEIR_USER_ID> YOUR MESSAGE"}'`, curlBase, ev.Channel))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1166,18 +1170,12 @@ func (s *Channel) setReaction(newReaction, channelID, msgTS, oldReaction string)
 
 func (s *Channel) postChunked(channelID, threadTS, text string) {
 	chunks := chunkText(text, maxSlackChunk)
-	// Footer only in DM sessions — Slack DM channel IDs always start with "D".
-	isDM := strings.HasPrefix(channelID, "D")
 	for i, chunk := range chunks {
 		msg := chunk
 		if i > 0 {
 			msg = "_(cont.)_\n" + chunk
 		}
-		if i == len(chunks)-1 && isDM {
-			s.postReplyWithFooter(channelID, threadTS, msg)
-		} else {
-			s.postReply(channelID, threadTS, msg)
-		}
+		s.postReply(channelID, threadTS, msg)
 	}
 }
 
