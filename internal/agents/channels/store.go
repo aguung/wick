@@ -59,9 +59,7 @@ func EnsureChannel(db *gorm.DB, channelType string) error {
 
 // GetChannelConfigMap loads the JSON config for a channel type into a map.
 // Returns an empty map when no row exists (not an error).
-// If decryptFn is non-nil, every value is passed through it — values that
-// are not wick_cenc_ tokens are returned unchanged by a well-behaved fn.
-func GetChannelConfigMap(db *gorm.DB, channelType string, decryptFn func(string) string) (map[string]string, error) {
+func GetChannelConfigMap(db *gorm.DB, channelType string) (map[string]string, error) {
 	var ch entity.AgentChannel
 	if err := db.Where("type = ?", channelType).First(&ch).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -73,11 +71,6 @@ func GetChannelConfigMap(db *gorm.DB, channelType string, decryptFn func(string)
 	if ch.Config != "" && ch.Config != "{}" {
 		if err := json.Unmarshal([]byte(ch.Config), &m); err != nil {
 			return nil, err
-		}
-	}
-	if decryptFn != nil {
-		for k, v := range m {
-			m[k] = decryptFn(v)
 		}
 	}
 	return m, nil
@@ -128,60 +121,9 @@ func firstNonEmpty(v, fallback string) string {
 	return v
 }
 
-// LoadSlackConfig reads the Slack channel config from agent_channels.
-// Returns zero value + empty pubURL when no row exists.
-func LoadSlackConfig(db *gorm.DB) (cfg agentconfig.SlackChannelConfig, pubURL string, err error) {
-	m, err := GetChannelConfigMap(db, "slack", nil)
-	if err != nil {
-		return
-	}
-	cfg = agentconfig.SlackChannelConfig{
-		Mode:               m["mode"],
-		BotToken:           m["bot_token"],
-		AppToken:           m["app_token"],
-		SigningSecret:      m["signing_secret"],
-		UsersMode:          firstNonEmpty(m["users_mode"], "all"),
-		AllowedUsers:       m["allowed_users"],
-		GroupsMode:         firstNonEmpty(m["groups_mode"], "all"),
-		AllowedGroups:      m["allowed_groups"],
-		ChannelsMode:       firstNonEmpty(m["channels_mode"], "all"),
-		AllowedChannels:    m["allowed_channels"],
-		GateApprovers:      firstNonEmpty(m["gate_approvers"], "trigger_users"),
-		GateApproverUsers:  m["gate_approver_users"],
-		GateApproverGroups: m["gate_approver_groups"],
-		Workspace:          m["workspace"],
-	}
-	pubURL = m["public_url"]
-	return
-}
-
-// LoadTelegramConfig reads the Telegram channel config from agent_channels.
-func LoadTelegramConfig(db *gorm.DB) (agentconfig.TelegramChannelConfig, error) {
-	m, err := GetChannelConfigMap(db, "telegram", nil)
-	if err != nil {
-		return agentconfig.TelegramChannelConfig{}, err
-	}
-	return agentconfig.TelegramChannelConfig{
-		BotToken:   m["bot_token"],
-		AllowedIDs: m["allowed_ids"],
-		Workspace:  m["workspace"],
-	}, nil
-}
-
-// LoadRestConfig reads the REST channel config from agent_channels.
-func LoadRestConfig(db *gorm.DB) (agentconfig.RestChannelConfig, error) {
-	m, err := GetChannelConfigMap(db, "rest", nil)
-	if err != nil {
-		return agentconfig.RestChannelConfig{}, err
-	}
-	return agentconfig.RestChannelConfig{
-		Enabled:   m["enabled"],
-		Workspace: m["workspace"],
-	}, nil
-}
-
 // DBStore satisfies SlackConfigStore + TelegramConfigStore by delegating
-// to the package-level Load*Config helpers. Server wires one of these at
+// to configMap so callers always receive decrypted plaintext values. Server
+// wires one of these at
 // boot so per-channel ConfigSource implementations don't need to import
 // gorm directly.
 // Configs is optional — when set, wick_cenc_ tokens in the JSON config
@@ -197,7 +139,7 @@ func NewDBStore(db *gorm.DB) DBStore { return DBStore{db: db} }
 // configMap loads the JSON config for channelType and decrypts any
 // wick_cenc_ tokens in the map values before returning.
 func (s DBStore) configMap(channelType string) (map[string]string, error) {
-	m, err := GetChannelConfigMap(s.db, channelType, nil)
+	m, err := GetChannelConfigMap(s.db, channelType)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +193,14 @@ func (s DBStore) LoadTelegram() (agentconfig.TelegramChannelConfig, error) {
 
 // LoadRest satisfies RestConfigStore.
 func (s DBStore) LoadRest() (agentconfig.RestChannelConfig, error) {
-	return LoadRestConfig(s.db)
+	m, err := GetChannelConfigMap(s.db, "rest")
+	if err != nil {
+		return agentconfig.RestChannelConfig{}, err
+	}
+	return agentconfig.RestChannelConfig{
+		Enabled:   m["enabled"],
+		Workspace: m["workspace"],
+	}, nil
 }
 
 // EnsureChannel satisfies ChannelEnsurer.

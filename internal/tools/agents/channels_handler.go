@@ -65,7 +65,7 @@ func channelsPage(c *tool.Ctx) {
 	// Populate Configured status from agent_channels table.
 	if globalDB != nil {
 		for i := range channels {
-			m, _ := agentchannels.GetChannelConfigMap(globalDB, channels[i].Slug, nil)
+			m, _ := agentchannels.GetChannelConfigMap(globalDB, channels[i].Slug)
 			if channels[i].Slug == "rest" {
 				channels[i].Configured = m["enabled"] == "true"
 			} else {
@@ -266,7 +266,7 @@ func loadChannelRows(channelType string, seed []entity.Config, workspaceKey stri
 
 	// Inject current values from agent_channels config JSON.
 	if globalDB != nil {
-		m, _ := agentchannels.GetChannelConfigMap(globalDB, channelType, nil)
+		m, _ := agentchannels.GetChannelConfigMap(globalDB, channelType)
 		for i := range rows {
 			v, ok := m[rows[i].Key]
 			if !ok {
