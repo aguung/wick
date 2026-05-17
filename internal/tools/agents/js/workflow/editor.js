@@ -3662,4 +3662,150 @@
   viewEditorBtn?.addEventListener('click', showEditorView);
   viewExecutionsBtn?.addEventListener('click', showExecutionsView);
 
+  // ── Node search (Ctrl+K) ──────────────────────────────────────────
+  (function initNodeSearch() {
+    const overlay  = document.getElementById('wf-node-search');
+    const backdrop = overlay?.querySelector('.wf-node-search-backdrop');
+    const input    = document.getElementById('wf-node-search-input');
+    const results  = document.getElementById('wf-node-search-results');
+    const searchBtn = document.getElementById('wf-node-search-btn');
+    if (!overlay || !input || !results) return;
+
+    let activeIdx = -1;
+
+    function openSearch() {
+      overlay.classList.remove('hidden');
+      input.value = '';
+      activeIdx = -1;
+      renderResults('');
+      requestAnimationFrame(() => input.focus());
+    }
+
+    function closeSearch() {
+      overlay.classList.add('hidden');
+      input.value = '';
+    }
+
+    // Build a flat list of nodes from the editor graph.
+    function getNodes() {
+      if (!editor || !editor.drawflow) return [];
+      const data = editor.drawflow.drawflow.Home.data;
+      return Object.entries(data).map(([dfId, n]) => {
+        const d = n.data || {};
+        return {
+          dfId,
+          id: d.id || n.name || dfId,
+          type: d.type || n.name || 'shell',
+          label: n.name || d.id || dfId,
+        };
+      });
+    }
+
+    function renderResults(query) {
+      const all = getNodes();
+      const q = query.trim().toLowerCase();
+      const filtered = q === ''
+        ? all
+        : all.filter(n =>
+            n.id.toLowerCase().includes(q) ||
+            n.type.toLowerCase().includes(q) ||
+            n.label.toLowerCase().includes(q)
+          );
+
+      if (filtered.length === 0) {
+        results.innerHTML = `<li class="wf-node-search-empty">${q ? 'No matching nodes' : 'No nodes in workflow'}</li>`;
+        return;
+      }
+
+      results.innerHTML = filtered.map((n, i) =>
+        `<li class="wf-node-search-item" role="option" aria-selected="${i === activeIdx}"
+             data-df-id="${n.dfId}" data-idx="${i}" tabindex="-1">
+          <span class="wf-node-search-type">${esc(n.type)}</span>
+          <span class="wf-node-search-name">${esc(n.label)}</span>
+          <span class="wf-node-search-id">${esc(n.id)}</span>
+        </li>`
+      ).join('');
+
+      results.querySelectorAll('.wf-node-search-item').forEach(el => {
+        el.addEventListener('click', () => selectItem(el));
+        el.addEventListener('mouseenter', () => {
+          setActive(parseInt(el.dataset.idx, 10));
+        });
+      });
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function setActive(idx) {
+      activeIdx = idx;
+      results.querySelectorAll('.wf-node-search-item').forEach((el, i) => {
+        el.setAttribute('aria-selected', String(i === idx));
+      });
+    }
+
+    function selectItem(el) {
+      const dfId = el?.dataset.dfId;
+      if (!dfId) return;
+      closeSearch();
+      panToNode(dfId);
+      showInspectorFor(dfId);
+    }
+
+    function panToNode(dfId) {
+      if (!editor || !editor.precanvas) return;
+      const data = editor.drawflow.drawflow.Home.data;
+      const n = data[dfId];
+      if (!n) return;
+      const vw = canvasEl.clientWidth || 800;
+      const vh = canvasEl.clientHeight || 600;
+      const z = editor.zoom || 1;
+      editor.canvas_x = vw / 2 - n.pos_x * z - 100;
+      editor.canvas_y = vh / 2 - n.pos_y * z - 60;
+      editor.precanvas.style.transform =
+        `translate(${editor.canvas_x}px, ${editor.canvas_y}px) scale(${z})`;
+    }
+
+    input.addEventListener('input', () => {
+      activeIdx = -1;
+      renderResults(input.value);
+    });
+
+    input.addEventListener('keydown', (e) => {
+      const items = results.querySelectorAll('.wf-node-search-item[data-df-id]');
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = Math.min(activeIdx + 1, items.length - 1);
+        setActive(next);
+        items[next]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = Math.max(activeIdx - 1, 0);
+        setActive(prev);
+        items[prev]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        selectItem(items[activeIdx < 0 ? 0 : activeIdx]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearch();
+      }
+    });
+
+    backdrop?.addEventListener('click', closeSearch);
+    searchBtn?.addEventListener('click', openSearch);
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        if (overlay.classList.contains('hidden')) {
+          openSearch();
+        } else {
+          closeSearch();
+        }
+      }
+    });
+  })();
+
 })();

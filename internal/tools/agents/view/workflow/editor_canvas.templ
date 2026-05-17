@@ -26,7 +26,25 @@ templ EditorCanvas(vm EditorVM) {
 		<button type="button" id="wf-palette-open" class="wf-canvas-add" title="Add node">
 			<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
 		</button>
+		// Search button — opens node search modal (Ctrl+K)
+		<button type="button" id="wf-node-search-btn" class="wf-canvas-search" title="Search nodes (Ctrl+K)">
+			<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+		</button>
 		<div id="wf-canvas"></div>
+		// Node search modal — opened by Ctrl+K or the search button.
+		// Results rendered dynamically by editor.js; backdrop click closes.
+		<div id="wf-node-search" class="wf-node-search-overlay hidden" role="dialog" aria-modal="true" aria-label="Search nodes">
+			<div class="wf-node-search-backdrop"></div>
+			<div class="wf-node-search-box">
+				<div class="wf-node-search-header">
+					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="wf-node-search-icon"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+					<input type="text" id="wf-node-search-input" class="wf-node-search-input" placeholder="Search nodes by name or type…" autocomplete="off" spellcheck="false"/>
+					<kbd class="wf-node-search-esc">ESC</kbd>
+				</div>
+				<ul id="wf-node-search-results" class="wf-node-search-results" role="listbox"></ul>
+				<div class="wf-node-search-footer">↑↓ navigate &nbsp;·&nbsp; ↵ jump &nbsp;·&nbsp; ESC close</div>
+			</div>
+		</div>
 		// Floating "Execute workflow" pill at the canvas bottom. Acts
 		// as a launcher that opens a trigger picker — the user must
 		// choose which wired trigger to fire (manual, slack, cron, …)
