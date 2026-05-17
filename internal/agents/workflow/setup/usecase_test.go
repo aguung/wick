@@ -44,7 +44,7 @@ func newMgr(t *testing.T) *Manager {
 func runWorkflow(t *testing.T, m *Manager, w workflow.Workflow, evt workflow.Event) string {
 	t.Helper()
 	require.NoError(t, m.Service.Create(w.ID, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, nil, w.ID))
 
 	// Run via engine direct so we get a deterministic synchronous
 	// result — Router.RunNow + worker goroutine is async.
@@ -137,7 +137,7 @@ func TestUseCase_MultiTrigger_RouterRegistersAll(t *testing.T) {
 		},
 	}
 	require.NoError(t, m.Service.Create(w.ID, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, nil, w.ID))
 
 	// Verify validator accepts the multi-trigger shape.
 	loaded, err := m.Service.Load(w.ID)
@@ -292,7 +292,7 @@ func TestUseCase_RunNow_BypassesDisabled(t *testing.T) {
 		},
 	}
 	require.NoError(t, m.Service.Create(w.ID, w, nil))
-	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, w.ID))
+	require.NoError(t, HotReload(context.Background(), m.Service, m.Router, m.Cron, nil, w.ID))
 
 	// Dispatch should NOT match a disabled workflow.
 	matched := m.Router.Dispatch(context.Background(), workflow.Event{Type: string(workflow.TriggerManual)})

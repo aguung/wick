@@ -249,7 +249,7 @@ func createWorkflow(c *tool.Ctx) {
 	// Register the fresh workflow with the router so Run Now / triggers
 	// work without a manual restart. Bootstrap only registers existing
 	// folders at startup — first-time Create needs an explicit reload.
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, w.ID)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, w.ID)
 	c.Redirect(c.Base()+"/workflows/edit/"+w.ID, http.StatusSeeOther)
 }
 
@@ -311,7 +311,7 @@ func importWorkflow(c *tool.Ctx) {
 		return
 	}
 
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, created.ID)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, created.ID)
 	c.Redirect(c.Base()+"/workflows/edit/"+created.ID, http.StatusSeeOther)
 }
 
@@ -561,7 +561,7 @@ func publishWorkflow(c *tool.Ctx) {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, slug)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, slug)
 	c.Redirect(c.Base()+"/workflows/edit/"+slug, http.StatusSeeOther)
 }
 
@@ -654,7 +654,7 @@ func toggleWorkflow(c *tool.Ctx) {
 			return
 		}
 	}
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, slug)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, slug)
 	c.Redirect(c.Base()+"/workflows/edit/"+slug, http.StatusSeeOther)
 }
 
@@ -695,7 +695,7 @@ func runWorkflowNow(c *tool.Ctx) {
 	}
 	// Defensive HotReload — covers the case where boot saw an empty
 	// workflows/ dir and never registered this slug.
-	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, slug)
+	_ = setup.HotReload(context.Background(), globalWorkflowMgr.Service, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, slug)
 	report := globalWorkflowMgr.Guard.Review(c.Context(), w)
 	if err := globalWorkflowMgr.Guard.Apply(report, nil); err != nil {
 		runResponse(c, http.StatusForbidden, "", err.Error())
@@ -1384,7 +1384,7 @@ func copyRunToEditor(c *tool.Ctx) {
 		}
 	}
 
-	_ = setup.HotReload(context.Background(), svc, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, id)
+	_ = setup.HotReload(context.Background(), svc, globalWorkflowMgr.Router, globalWorkflowMgr.Cron, globalWorkflowMgr.ScheduleAt, id)
 
 	c.JSON(http.StatusOK, map[string]any{
 		"ok":       true,
