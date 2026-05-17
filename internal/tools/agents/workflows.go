@@ -552,6 +552,11 @@ func publishWorkflow(c *tool.Ctx) {
 		c.Error(http.StatusBadRequest, "cannot publish — fix validation errors:\n"+r.Error())
 		return
 	}
+	guardReport := globalWorkflowMgr.Guard.Review(c.Context(), draft)
+	if err := globalWorkflowMgr.Guard.Apply(guardReport, nil); err != nil {
+		c.Error(http.StatusForbidden, err.Error())
+		return
+	}
 	if _, err := globalWorkflowMgr.Service.Publish(slug); err != nil {
 		c.Error(http.StatusInternalServerError, err.Error())
 		return
