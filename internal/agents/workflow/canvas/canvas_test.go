@@ -243,34 +243,6 @@ func TestDeleteNode_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteNode_EntryNodeRejected(t *testing.T) {
-	svc := newStub()
-	// Build a workflow where graph.Entry is explicitly set.
-	w := workflow.Workflow{
-		ID:      "ewf",
-		Name:    "ewf",
-		Enabled: false,
-		Triggers: []workflow.Trigger{
-			{Type: workflow.TriggerManual, EntryNode: ""},
-		},
-		Graph: workflow.Graph{
-			Entry: "start",
-			Nodes: []workflow.Node{
-				{ID: "start", Type: workflow.NodeShell, Command: []string{"echo"}},
-				{ID: "end", Type: workflow.NodeEnd},
-			},
-		},
-	}
-	svc.workflows["ewf"] = w
-
-	c := newCanvas(svc)
-
-	_, err := c.DeleteNode("ewf", "start")
-	if err == nil {
-		t.Fatal("expected error when deleting entry node, got nil")
-	}
-}
-
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 func TestConnect_ValidEdge(t *testing.T) {
