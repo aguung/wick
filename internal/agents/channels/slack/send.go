@@ -71,11 +71,16 @@ func (s *Channel) sendHandler() http.Handler {
 		}
 		var body struct {
 			ChannelID    string `json:"channel_id"`
+			TargetUserID string `json:"target_user_id,omitempty"` // open DM to this user via sender's token
 			Text         string `json:"text"`
 			SenderUserID string `json:"sender_user_id,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ChannelID == "" || body.Text == "" {
-			http.Error(w, `{"error":"channel_id and text are required"}`, http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Text == "" {
+			http.Error(w, `{"error":"text is required"}`, http.StatusBadRequest)
+			return
+		}
+		if body.ChannelID == "" && body.TargetUserID == "" {
+			http.Error(w, `{"error":"channel_id or target_user_id is required"}`, http.StatusBadRequest)
 			return
 		}
 
@@ -90,46 +95,69 @@ func (s *Channel) sendHandler() http.Handler {
 		}
 
 		// Build Block Kit message with muted context-block footer.
-		textBlock := slackgo.NewSectionBlock(
-			slackgo.NewTextBlockObject(slackgo.MarkdownType, body.Text, false, false),
-			nil, nil,
-		)
-		blocks := []slackgo.Block{textBlock, s.signedContextBlock()}
+		blocks := []slackgo.Block{
+			slackgo.NewSectionBlock(
+				slackgo.NewTextBlockObject(slackgo.MarkdownType, body.Text, false, false),
+				nil, nil,
+			),
+			s.signedContextBlock(),
+		}
 		opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(blocks...)}
 
+		// Resolve the xoxp token for the sender when provided.
+		var xoxpClient *slackgo.Client
 		if body.SenderUserID != "" {
-			// Attempt user-token impersonation so the message renders
-			// with the sender's display name and avatar.
-			token := s.resolveUserToken(r.Context(), body.SenderUserID, connTokFn)
-			if token != "" {
-				// Use a temporary xoxp client; do NOT cache the client — only
-				// the token is cached. Token creation is cheap; client objects
-				// hold goroutines, so we create one per-request from cache.
-				xoxpClient := slackgo.New(token)
-				if u, err := xoxpClient.GetUserInfoContext(r.Context(), body.SenderUserID); err == nil {
-					name := u.Profile.DisplayName
-					if name == "" {
-						name = u.Profile.RealName
-					}
-					opts = append(opts,
-						slackgo.MsgOptionUsername(name),
-						slackgo.MsgOptionIconURL(u.Profile.Image72),
-					)
-					_, ts, err := xoxpClient.PostMessageContext(r.Context(), body.ChannelID, opts...)
-					if err != nil {
-						log.Warn().Str("channel", "slack").Str("sender", body.SenderUserID).Err(err).
-							Msg("sendHandler: xoxp post failed, falling back to bot")
-					} else {
-						writeOK(w, ts)
-						return
-					}
-				} else {
-					log.Warn().Str("channel", "slack").Str("sender", body.SenderUserID).Err(err).
-						Msg("sendHandler: GetUserInfo via xoxp failed, using cosmetic fallback")
-				}
+			if token := s.resolveUserToken(r.Context(), body.SenderUserID, connTokFn); token != "" {
+				xoxpClient = slackgo.New(token)
 			}
+		}
 
-			// Cosmetic fallback via bot api: resolve display name with bot token.
+		// Resolve channel: target_user_id opens a real DM using sender's token.
+		// This is the key difference from channel_id — conversations.open is
+		// called with the sender's xoxp token so the DM appears in both users'
+		// inboxes (not in the bot↔target DM).
+		channelID := body.ChannelID
+		if body.TargetUserID != "" {
+			client := xoxpClient
+			if client == nil {
+				client = api // fallback: bot token (creates bot↔target DM)
+			}
+			ch, _, _, err := client.OpenConversationContext(r.Context(), &slackgo.OpenConversationParameters{
+				Users:    []string{body.TargetUserID},
+				ReturnIM: true,
+			})
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprintf(w, `{"error":"open DM failed: %s"}`, err.Error())
+				return
+			}
+			channelID = ch.ID
+		}
+
+		// Send with xoxp client (real sender identity) when available.
+		if xoxpClient != nil {
+			if u, err := xoxpClient.GetUserInfoContext(r.Context(), body.SenderUserID); err == nil {
+				name := u.Profile.DisplayName
+				if name == "" {
+					name = u.Profile.RealName
+				}
+				opts = append(opts,
+					slackgo.MsgOptionUsername(name),
+					slackgo.MsgOptionIconURL(u.Profile.Image72),
+				)
+			}
+			_, ts, err := xoxpClient.PostMessageContext(r.Context(), channelID, opts...)
+			if err == nil {
+				writeOK(w, ts)
+				return
+			}
+			log.Warn().Str("channel", "slack").Str("sender", body.SenderUserID).Err(err).
+				Msg("sendHandler: xoxp post failed, falling back to bot token")
+		}
+
+		// Cosmetic fallback via bot token.
+		if body.SenderUserID != "" {
 			if u, err := api.GetUserInfoContext(r.Context(), body.SenderUserID); err == nil {
 				name := u.Profile.DisplayName
 				if name == "" {
@@ -142,7 +170,7 @@ func (s *Channel) sendHandler() http.Handler {
 			}
 		}
 
-		_, ts, err := api.PostMessageContext(r.Context(), body.ChannelID, opts...)
+		_, ts, err := api.PostMessageContext(r.Context(), channelID, opts...)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
