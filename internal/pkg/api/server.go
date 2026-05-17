@@ -576,7 +576,9 @@ func NewServer() *Server {
 	// config load, NewChannel, setters, and registry.Add per transport.
 	// Adding a new channel = subpackage + composer in channels/setup; this
 	// line never changes.
-	channelsetup.All(channelReg, agentchannels.NewDBStore(db), sendFnFor, tokensSvc)
+	channelStore := agentchannels.NewDBStore(db)
+	channelStore.Configs = configsSvc
+	channelsetup.All(channelReg, channelStore, sendFnFor, tokensSvc)
 
 	// Wire each channel's workflow integration surface — registers
 	// per-event + per-action descriptors and attaches the inbound

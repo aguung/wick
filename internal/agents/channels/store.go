@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
+	"github.com/yogasw/wick/internal/configs"
 	"github.com/yogasw/wick/internal/entity"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -176,19 +177,69 @@ func LoadRestConfig(db *gorm.DB) (agentconfig.RestChannelConfig, error) {
 // to the package-level Load*Config helpers. Server wires one of these at
 // boot so per-channel ConfigSource implementations don't need to import
 // gorm directly.
-type DBStore struct{ db *gorm.DB }
+// Configs is optional — when set, wick_cenc_ tokens in the JSON config
+// are decrypted before being returned to callers.
+type DBStore struct {
+	db      *gorm.DB
+	Configs *configs.Service
+}
 
 // NewDBStore returns a DBStore bound to db.
 func NewDBStore(db *gorm.DB) DBStore { return DBStore{db: db} }
 
+// configMap loads the JSON config for channelType and decrypts any
+// wick_cenc_ tokens in the map values before returning.
+func (s DBStore) configMap(channelType string) (map[string]string, error) {
+	m, err := GetChannelConfigMap(s.db, channelType)
+	if err != nil {
+		return nil, err
+	}
+	if s.Configs != nil {
+		for k, v := range m {
+			if plain, err := s.Configs.DecryptSecret(v); err == nil {
+				m[k] = plain
+			}
+		}
+	}
+	return m, nil
+}
+
 // LoadSlack satisfies SlackConfigStore.
 func (s DBStore) LoadSlack() (agentconfig.SlackChannelConfig, string, error) {
-	return LoadSlackConfig(s.db)
+	m, err := s.configMap("slack")
+	if err != nil {
+		return agentconfig.SlackChannelConfig{}, "", err
+	}
+	cfg := agentconfig.SlackChannelConfig{
+		Mode:               m["mode"],
+		BotToken:           m["bot_token"],
+		AppToken:           m["app_token"],
+		SigningSecret:      m["signing_secret"],
+		UsersMode:          firstNonEmpty(m["users_mode"], "all"),
+		AllowedUsers:       m["allowed_users"],
+		GroupsMode:         firstNonEmpty(m["groups_mode"], "all"),
+		AllowedGroups:      m["allowed_groups"],
+		ChannelsMode:       firstNonEmpty(m["channels_mode"], "all"),
+		AllowedChannels:    m["allowed_channels"],
+		GateApprovers:      firstNonEmpty(m["gate_approvers"], "trigger_users"),
+		GateApproverUsers:  m["gate_approver_users"],
+		GateApproverGroups: m["gate_approver_groups"],
+		Workspace:          m["workspace"],
+	}
+	return cfg, m["public_url"], nil
 }
 
 // LoadTelegram satisfies TelegramConfigStore.
 func (s DBStore) LoadTelegram() (agentconfig.TelegramChannelConfig, error) {
-	return LoadTelegramConfig(s.db)
+	m, err := s.configMap("telegram")
+	if err != nil {
+		return agentconfig.TelegramChannelConfig{}, err
+	}
+	return agentconfig.TelegramChannelConfig{
+		BotToken:   m["bot_token"],
+		AllowedIDs: m["allowed_ids"],
+		Workspace:  m["workspace"],
+	}, nil
 }
 
 // LoadRest satisfies RestConfigStore.
