@@ -12,7 +12,7 @@ import (
 // Dev), each carrying its own credentials and tag set. Rows are listed
 // here with quick actions; clicking a row opens the detail page where
 // configs are edited and operations are tested.
-templ ConnectorListPage(mod connector.Module, rows []entity.Connector, tagsByRow map[string][]string, user *entity.User) {
+templ ConnectorListPage(mod connector.Module, rows []entity.Connector, tagsByRow map[string][]string, user *entity.User, oauthAppCfg ConnectorOAuthAppConfig) {
 	@Layout("Manager · "+mod.Meta.Name, user) {
 		<main class="mx-auto w-full max-w-container px-6 py-8">
 			<div class="flex items-center gap-2 text-sm text-black-700 dark:text-black-600">
@@ -44,6 +44,10 @@ templ ConnectorListPage(mod connector.Module, rows []entity.Connector, tagsByRow
 				}
 			</div>
 
+			if oauthAppCfg.Enabled {
+				@connectorOAuthAppSection(mod, oauthAppCfg)
+			}
+
 			<section class="mt-8">
 				<h2 class="text-base font-semibold text-black-900 dark:text-white-100">Instances</h2>
 				<p class="mt-1 text-sm text-black-800 dark:text-black-600">
@@ -63,6 +67,69 @@ templ ConnectorListPage(mod connector.Module, rows []entity.Connector, tagsByRow
 			</section>
 		</main>
 	}
+}
+
+// connectorOAuthAppSection renders the OAuth App configuration card for admins.
+// Shown on the list page before the rows list so connector-level credentials
+// (client_id / client_secret) are managed in one place, not per-row.
+templ connectorOAuthAppSection(mod connector.Module, cfg ConnectorOAuthAppConfig) {
+	<section class="mt-6 rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-6">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-base font-semibold text-black-900 dark:text-white-100">OAuth App</h2>
+				<p class="mt-0.5 text-sm text-black-800 dark:text-black-600">
+					Connector-level credentials for the Slack OAuth flow. Set these once here
+					— they are shared across all rows and take effect immediately.
+				</p>
+			</div>
+			if cfg.OAuthURL != "" {
+				<a
+					href={ templ.SafeURL(cfg.OAuthURL) }
+					class="mt-3 sm:mt-0 inline-flex items-center gap-2 rounded-lg border border-green-500 px-4 py-2 text-sm font-medium text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20"
+				>
+					<svg class="h-4 w-4" fill="currentColor" viewBox="0 0 122.8 122.8"><path d="M25.8 77.6c0 7.1-5.8 12.9-12.9 12.9S0 84.7 0 77.6s5.8-12.9 12.9-12.9h12.9v12.9zm6.5 0c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V77.6z" fill="#E01E5A"/><path d="M45.2 25.8c-7.1 0-12.9-5.8-12.9-12.9S38.1 0 45.2 0s12.9 5.8 12.9 12.9v12.9H45.2zm0 6.5c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H12.9C5.8 58.1 0 52.3 0 45.2s5.8-12.9 12.9-12.9h32.3z" fill="#36C5F0"/><path d="M97 45.2c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9-5.8 12.9-12.9 12.9H97V45.2zm-6.5 0c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V12.9C64.7 5.8 70.5 0 77.6 0s12.9 5.8 12.9 12.9v32.3z" fill="#2EB67D"/><path d="M77.6 97c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9-12.9-5.8-12.9-12.9V97h12.9zm0-6.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H77.6z" fill="#ECB22E"/></svg>
+					Connect with Slack
+				</a>
+			}
+		</div>
+		<form method="POST" action={ templ.SafeURL("/manager/connectors/" + mod.Meta.Key + "/oauth-app") } class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+			<div class="flex flex-col gap-1.5">
+				<label class="text-xs font-medium text-black-800 dark:text-black-600" for="oauth_client_id">Client ID</label>
+				<input
+					id="oauth_client_id"
+					type="text"
+					name="client_id"
+					value={ cfg.ClientID }
+					placeholder="A0123456789.9876543210"
+					autocomplete="off"
+					class={ cfgInputClass }
+				/>
+				<p class="text-[11px] text-black-700 dark:text-black-600">Find at api.slack.com/apps &rarr; Basic Information.</p>
+			</div>
+			<div class="flex flex-col gap-1.5">
+				<label class="text-xs font-medium text-black-800 dark:text-black-600" for="oauth_client_secret">Client Secret</label>
+				<input
+					id="oauth_client_secret"
+					type="password"
+					name="client_secret"
+					value=""
+					if cfg.ClientSecret != "" {
+						placeholder={ cfg.ClientSecret }
+					} else {
+						placeholder="Leave blank to keep unchanged"
+					}
+					autocomplete="new-password"
+					class={ cfgInputClass }
+				/>
+				<p class="text-[11px] text-black-700 dark:text-black-600">Required for the OAuth token exchange.</p>
+			</div>
+			<div class="sm:col-span-2 flex justify-end">
+				<button type="submit" class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600">
+					Save OAuth App
+				</button>
+			</div>
+		</form>
+	</section>
 }
 
 // connectorListCard renders one row in the n8n-style stacked list:

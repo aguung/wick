@@ -157,6 +157,14 @@ func NewServer() *Server {
 	if err := configsSvc.Bootstrap(context.Background(), extraConfigs...); err != nil {
 		log.Fatal().Msgf("configs bootstrap: %s", err.Error())
 	}
+	// Seed connector_oauth rows so the manager page can read/write Slack
+	// OAuth app credentials without declaring them inside any tool module.
+	if err := configsSvc.EnsureOwned(context.Background(), "connector_oauth",
+		entity.Config{Key: "slack_client_id", Description: "Slack OAuth app Client ID"},
+		entity.Config{Key: "slack_client_secret", IsSecret: true, Description: "Slack OAuth app Client Secret"},
+	); err != nil {
+		log.Warn().Err(err).Msg("configs: seed connector_oauth rows failed")
+	}
 	// Seed from env on first boot only — once the row exists in the DB
 	// the admin UI is the only way to change it.
 	if configsSvc.AppName() == configs.DefaultAppName && cfg.App.Name != "" {
@@ -643,9 +651,14 @@ func NewServer() *Server {
 			}(slackCh)
 
 			// Wire OAuth redirect URI + OnTokenSaved callback.
-			// ClientID/ClientSecret are read from the channel config via applyConfig
-			// (they update s.oauthCfg automatically on every Reload).
+			// CredentialsLookup reads client_id/client_secret lazily at request time
+			// from the connector_oauth owner so admin changes take effect immediately
+			// without a restart.
 			slackCh.SetOAuthConfig(slackch.OAuthConfig{
+				CredentialsLookup: func() (string, string) {
+					return configsSvc.GetOwned("connector_oauth", "slack_client_id"),
+						configsSvc.GetOwned("connector_oauth", "slack_client_secret")
+				},
 				RedirectURI: strings.TrimRight(configsSvc.AppURL(), "/") + "/integrations/slack/oauth/callback",
 				OnTokenSaved: func(ctx context.Context, slackUserID, displayName, xoxpToken, connectorRowID string) error {
 					return slackOAuthSaveToken(ctx, connectorsSvc, slackCh, slackUserID, displayName, xoxpToken, connectorRowID)

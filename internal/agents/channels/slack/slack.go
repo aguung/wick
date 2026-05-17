@@ -262,13 +262,6 @@ func (s *Channel) applyConfig(cfg agentconfig.SlackChannelConfig, pubURL string)
 	s.api = api
 	s.socket = socket
 	s.botUserID = botUserID
-	// Update OAuth credentials from channel config so hot-reload picks them up.
-	if cfg.ClientID != "" || cfg.ClientSecret != "" {
-		existing := s.oauthCfg
-		existing.ClientID = cfg.ClientID
-		existing.ClientSecret = cfg.ClientSecret
-		s.oauthCfg = existing
-	}
 	s.cfgMu.Unlock()
 }
 
