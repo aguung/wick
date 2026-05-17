@@ -40,7 +40,8 @@ func New(db *gorm.DB) *Manager {
 }
 
 // SourceToInstance converts a ProviderStorageSource to a provider.Instance
-// suitable for SyncOne / backup calls.
+// suitable for SyncOne / backup calls. Excludes are read separately at the
+// store layer since provider.Instance has no slot for them.
 func SourceToInstance(src entity.ProviderStorageSource) provider.Instance {
 	return provider.Instance{
 		Type: provider.Type(src.ProviderType),
@@ -58,6 +59,44 @@ func (m *Manager) SyncOne(ctx context.Context, ins provider.Instance) error {
 		return nil
 	}
 	return m.backup(ctx, ins)
+}
+
+// PurgeExcluded walks every row for (providerType, instanceName) and deletes
+// rows whose absolute rel_path matches any current enabled-source exclude
+// pattern. Empty folder rows left behind are also pruned so the tree
+// doesn't show ghost directories. Returns the number of file rows deleted.
+func (m *Manager) PurgeExcluded(ctx context.Context, providerType, instanceName string) (int, error) {
+	sources, err := m.store.listSourcesForInstance(ctx, providerType, instanceName)
+	if err != nil {
+		return 0, err
+	}
+	patterns := collectExcludePatterns(sources)
+	if len(patterns) == 0 {
+		return 0, nil
+	}
+	rows, err := m.store.listFiles(ctx, providerType, instanceName)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, r := range rows {
+		if r.IsDir {
+			continue
+		}
+		if !matchesAnyExclude(r.RelPath, patterns) {
+			continue
+		}
+		if err := m.store.deleteByID(ctx, r.ID); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	// Drop folders that became empty after the file purge — keeps the
+	// explorer view tidy.
+	if err := m.store.pruneEmptyFolders(ctx, providerType, instanceName); err != nil {
+		log.Warn().Err(err).Msg("providersync: prune empty folders failed")
+	}
+	return deleted, nil
 }
 
 // RepairTree rewires parent_id values for every row from its rel_path so
@@ -80,7 +119,7 @@ func (m *Manager) SyncAll(ctx context.Context) (int, error) {
 	}
 	synced := 0
 	for _, src := range sources {
-		if !src.Enabled {
+		if !src.Enabled || src.Mode == "exclude" {
 			continue
 		}
 		if err := m.SyncOne(ctx, SourceToInstance(src)); err != nil {
@@ -91,6 +130,23 @@ func (m *Manager) SyncAll(ctx context.Context) (int, error) {
 			continue
 		}
 		synced++
+	}
+	// Self-heal: purge any rows that fell through to DB before the
+	// exclude rule was added. Runs once per (provider, instance) so a DB
+	// with many sources doesn't redo the same sweep.
+	seen := map[string]bool{}
+	for _, src := range sources {
+		key := src.ProviderType + "\x00" + src.InstanceName
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if _, err := m.PurgeExcluded(ctx, src.ProviderType, src.InstanceName); err != nil {
+			log.Warn().Err(err).
+				Str("provider", src.ProviderType).
+				Str("instance", src.InstanceName).
+				Msg("providersync: SyncAll purge failed")
+		}
 	}
 	return synced, nil
 }
@@ -221,6 +277,9 @@ func normAbs(p string) string {
 func sourceCovers(abs string, sources []entity.ProviderStorageSource) bool {
 	a := normAbs(abs)
 	for _, s := range sources {
+		if s.Mode == "exclude" {
+			continue
+		}
 		sp := normAbs(s.SyncPath)
 		if s.Mode == "single" {
 			if sp == a {
@@ -242,7 +301,7 @@ func pickRetention(abs string, sources []entity.ProviderStorageSource) int {
 	bestLen := -1
 	days := 0
 	for _, s := range sources {
-		if !s.Enabled {
+		if !s.Enabled || s.Mode == "exclude" {
 			continue
 		}
 		sp := normAbs(s.SyncPath)
@@ -350,6 +409,20 @@ func (m *Manager) SaveSource(ctx context.Context, src entity.ProviderStorageSour
 			Str("instance", saved.InstanceName).
 			Msg("providersync: recompute retention failed")
 	}
+	// Apply exclude patterns retroactively — files captured before the
+	// user added the exclude must drop out of DB or RestoreAll would
+	// re-create them on next boot.
+	if n, err := m.PurgeExcluded(ctx, saved.ProviderType, saved.InstanceName); err != nil {
+		log.Warn().Err(err).
+			Str("provider", saved.ProviderType).
+			Str("instance", saved.InstanceName).
+			Msg("providersync: purge excluded failed")
+	} else if n > 0 {
+		log.Info().Int("rows", n).
+			Str("provider", saved.ProviderType).
+			Str("instance", saved.InstanceName).
+			Msg("providersync: purged excluded rows after SaveSource")
+	}
 	return saved, nil
 }
 
@@ -435,14 +508,23 @@ func (m *Manager) RunRetention(ctx context.Context) {
 // ── internals ─────────────────────────────────────────────────────────
 
 func (m *Manager) backup(ctx context.Context, ins provider.Instance) error {
-	files, err := collectFiles(ins.Storage)
-	if err != nil {
-		return err
+	// Skip exclude-mode pseudo-sources here — only include-mode sources
+	// drive disk walks. Retention picking ignores them too.
+	if ins.Storage != nil && (ins.Storage.Mode == "exclude") {
+		return nil
 	}
+
 	allSources, _ := m.store.listSourcesForInstance(ctx, string(ins.Type), ins.Name)
 	// stable order so retention pick is deterministic when two sources have
 	// the same SyncPath length (shouldn't happen, but cheap insurance).
 	sort.SliceStable(allSources, func(i, j int) bool { return allSources[i].ID < allSources[j].ID })
+
+	excludes := collectExcludePatterns(allSources)
+
+	files, err := collectFiles(ins.Storage, excludes)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now().UTC()
 	for abs, content := range files {
@@ -473,16 +555,20 @@ func (m *Manager) backup(ctx context.Context, ins provider.Instance) error {
 // collectFiles returns a map keyed by absolute (slash-normalised) path so the
 // row identity matches the real filesystem location, regardless of which
 // configured source produced it. Overlapping sources therefore dedupe instead
-// of stacking.
-func collectFiles(sc *provider.StorageConfig) (map[string][]byte, error) {
+// of stacking. Paths matching any of the excludes glob list are skipped.
+func collectFiles(sc *provider.StorageConfig, excludes []string) (map[string][]byte, error) {
 	out := make(map[string][]byte)
 	base := filepath.Clean(sc.SyncPath)
 	if sc.Mode == "single" {
+		abs := filepath.ToSlash(base)
+		if matchesAnyExclude(abs, excludes) {
+			return out, nil
+		}
 		data, err := os.ReadFile(base)
 		if err != nil {
 			return nil, err
 		}
-		out[filepath.ToSlash(base)] = data
+		out[abs] = data
 		return out, nil
 	}
 	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
@@ -490,7 +576,15 @@ func collectFiles(sc *provider.StorageConfig) (map[string][]byte, error) {
 			log.Debug().Err(err).Str("path", path).Msg("providersync: skipping unreadable entry")
 			return nil
 		}
+		abs := filepath.ToSlash(path)
 		if d.IsDir() {
+			// Prune the whole subtree if the directory itself matches.
+			if matchesAnyExclude(abs, excludes) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if matchesAnyExclude(abs, excludes) {
 			return nil
 		}
 		info, err := d.Info()
@@ -502,7 +596,7 @@ func collectFiles(sc *provider.StorageConfig) (map[string][]byte, error) {
 			log.Debug().Err(err).Str("path", path).Msg("providersync: skipping unreadable file")
 			return nil
 		}
-		out[filepath.ToSlash(path)] = data
+		out[abs] = data
 		return nil
 	})
 	return out, err

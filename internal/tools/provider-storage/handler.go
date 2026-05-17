@@ -303,7 +303,7 @@ func syncNow(c *tool.Ctx) {
 	}
 	synced := 0
 	for _, src := range sources {
-		if !src.Enabled {
+		if !src.Enabled || src.Mode == "exclude" {
 			continue
 		}
 		ins := provider.Instance{

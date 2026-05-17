@@ -135,7 +135,7 @@ func TestCollectFiles_FolderMode_AbsKeys(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "a.txt"), "AA")
 	writeFile(t, filepath.Join(dir, "sub", "b.txt"), "BB")
 
-	out, err := collectFiles(&provider.StorageConfig{Mode: "folder", SyncPath: dir})
+	out, err := collectFiles(&provider.StorageConfig{Mode: "folder", SyncPath: dir}, nil)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestCollectFiles_SingleMode_AbsKey(t *testing.T) {
 	path := filepath.Join(dir, "creds.json")
 	writeFile(t, path, "secret")
 
-	out, err := collectFiles(&provider.StorageConfig{Mode: "single", SyncPath: path})
+	out, err := collectFiles(&provider.StorageConfig{Mode: "single", SyncPath: path}, nil)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -803,6 +803,151 @@ func TestDeleteByID_CascadesFolderSubtree(t *testing.T) {
 	db.Model(&entity.ProviderStorage{}).Where("provider_type = ? AND instance_name = ?", "p", "other").Count(&otherRows)
 	if otherRows == 0 {
 		t.Error("cascade leaked across instances")
+	}
+}
+
+// ─── Exclude patterns ─────────────────────────────────────────────────
+
+func TestGlobMatch(t *testing.T) {
+	cases := []struct {
+		pattern, path string
+		want          bool
+	}{
+		{"*.log", "/home/app/foo.log", true},                                       // basename glob
+		{"*.log", "/home/app/foo.txt", false},                                      //
+		{"**/files/**", "/home/.wick/workspaces/abc/files/x.json", true},           // doublestar
+		{"**/files/**", "/home/.wick/workspaces/abc/sources/y.json", false},        // sibling untouched
+		{"/home/.wick/workspaces/*/files/**", "/home/.wick/workspaces/a/files/b", true},
+		{"/home/.wick/workspaces/*/files/**", "/home/.wick/workspaces/a/b/c", false},
+		{"node_modules", "/x/y/node_modules/z", true},                              // basename anywhere
+		{"node_modules", "/x/y/node_modules", true},                                // basename exact
+		{"node_modules", "/x/y/other", false},                                      //
+		{"/abs/only", "/abs/only", true},                                           // exact abs
+		{"/abs/only", "/abs/only/sub", true},                                       // literal abs = dir + descendants
+		{"/abs/only", "/abs/onlyish", false},                                       // prefix without slash boundary should not match
+	}
+	for _, c := range cases {
+		got := globMatch(c.pattern, c.path)
+		if got != c.want {
+			t.Errorf("globMatch(%q, %q) = %v, want %v", c.pattern, c.path, got, c.want)
+		}
+	}
+}
+
+func TestCollectExcludePatterns_FiltersByMode(t *testing.T) {
+	sources := []entity.ProviderStorageSource{
+		{Mode: "folder", SyncPath: "/include/me", Enabled: true},
+		{Mode: "exclude", SyncPath: "*.log", Enabled: true},
+		{Mode: "exclude", SyncPath: "**/secrets/**", Enabled: false}, // disabled
+		{Mode: "single", SyncPath: "/keep/this", Enabled: true},
+		{Mode: "exclude", SyncPath: "  ", Enabled: true}, // empty
+		{Mode: "exclude", SyncPath: "node_modules", Enabled: true},
+	}
+	got := collectExcludePatterns(sources)
+	want := []string{"*.log", "node_modules"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, p := range want {
+		if got[i] != p {
+			t.Errorf("[%d] = %q, want %q", i, got[i], p)
+		}
+	}
+}
+
+func TestCollectFiles_HonorsExcludes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.yml"), "K")
+	writeFile(t, filepath.Join(dir, "drop.log"), "D")
+	writeFile(t, filepath.Join(dir, "workspaces", "ws1", "files", "blob.bin"), "B")
+	writeFile(t, filepath.Join(dir, "workspaces", "ws1", "config.yml"), "C")
+
+	out, err := collectFiles(&provider.StorageConfig{Mode: "folder", SyncPath: dir},
+		[]string{"*.log", "**/workspaces/*/files/**"})
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	mustHave := []string{
+		filepath.ToSlash(filepath.Join(dir, "keep.yml")),
+		filepath.ToSlash(filepath.Join(dir, "workspaces", "ws1", "config.yml")),
+	}
+	mustNot := []string{
+		filepath.ToSlash(filepath.Join(dir, "drop.log")),
+		filepath.ToSlash(filepath.Join(dir, "workspaces", "ws1", "files", "blob.bin")),
+	}
+	for _, p := range mustHave {
+		if _, ok := out[p]; !ok {
+			t.Errorf("missing kept file: %q (got %v)", p, keysOf(out))
+		}
+	}
+	for _, p := range mustNot {
+		if _, ok := out[p]; ok {
+			t.Errorf("excluded file leaked through: %q", p)
+		}
+	}
+}
+
+func TestSaveSource_PurgesExistingExcludedRows(t *testing.T) {
+	db := newDB(t)
+	mgr := New(db)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "ws", "a", "files", "secret.bin"), "S")
+	writeFile(t, filepath.Join(dir, "ws", "a", "config.yml"), "C")
+
+	// First save: include the whole tree → both files land in DB.
+	if _, err := mgr.SaveSource(ctx, entity.ProviderStorageSource{
+		ProviderType: "wick", InstanceName: "wick",
+		SyncPath: dir, Mode: "folder", Enabled: true,
+	}); err != nil {
+		t.Fatalf("save include: %v", err)
+	}
+
+	rows, _ := mgr.ListAll(ctx)
+	hasFiles := func(absSubstr string) bool {
+		for _, r := range rows {
+			if !r.IsDir && strings.Contains(r.RelPath, absSubstr) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasFiles("/files/") {
+		t.Fatal("precondition: files dir should be present before exclude")
+	}
+
+	// Add an exclude-mode source → SaveSource cascade should purge.
+	if _, err := mgr.SaveSource(ctx, entity.ProviderStorageSource{
+		ProviderType: "wick", InstanceName: "wick",
+		SyncPath: "**/files/**", Mode: "exclude", Enabled: true,
+	}); err != nil {
+		t.Fatalf("save exclude: %v", err)
+	}
+	rows, _ = mgr.ListAll(ctx)
+	for _, r := range rows {
+		if !r.IsDir && strings.Contains(r.RelPath, "/files/") {
+			t.Errorf("excluded row survived purge: %q", r.RelPath)
+		}
+	}
+	// config.yml must remain untouched.
+	if !func() bool {
+		for _, r := range rows {
+			if !r.IsDir && strings.HasSuffix(r.RelPath, "/config.yml") {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Error("config.yml got purged but shouldn't have")
+	}
+
+	// Empty folders pruned: the now-empty "files" dir row should be gone.
+	for _, r := range rows {
+		if r.IsDir && strings.HasSuffix(r.RelPath, "/files") {
+			t.Errorf("empty folder row %q survived prune", r.RelPath)
+		}
 	}
 }
 

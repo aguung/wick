@@ -148,6 +148,42 @@ func (s *store) repairOrphans(ctx context.Context) (int, error) {
 	return fixed, nil
 }
 
+// pruneEmptyFolders removes folder rows under (providerType, instanceName)
+// that have no descendants. Iterates until a sweep finds nothing to delete
+// so chains like /a/b/c become /a, then deleted entirely when /a has no
+// children either. Safe to call repeatedly.
+func (s *store) pruneEmptyFolders(ctx context.Context, providerType, instanceName string) error {
+	for {
+		var folders []entity.ProviderStorage
+		if err := s.db.WithContext(ctx).
+			Where("provider_type = ? AND instance_name = ? AND is_dir = ?", providerType, instanceName, true).
+			Find(&folders).Error; err != nil {
+			return err
+		}
+		victims := make([]uint, 0, len(folders))
+		for _, f := range folders {
+			var n int64
+			if err := s.db.WithContext(ctx).
+				Model(&entity.ProviderStorage{}).
+				Where("provider_type = ? AND instance_name = ? AND parent_id = ?", providerType, instanceName, f.ID).
+				Count(&n).Error; err != nil {
+				return err
+			}
+			if n == 0 {
+				victims = append(victims, f.ID)
+			}
+		}
+		if len(victims) == 0 {
+			return nil
+		}
+		if err := s.db.WithContext(ctx).
+			Where("id IN ?", victims).
+			Delete(&entity.ProviderStorage{}).Error; err != nil {
+			return err
+		}
+	}
+}
+
 // wipeLegacyRelPathRows removes rows from the pre-absolute-path era. New code
 // stores rel_path as an absolute filesystem path (starts with "/" on POSIX or
 // a "X:" drive-letter prefix on Windows, including the bare drive root row

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/yogasw/wick/internal/entity"
 
@@ -67,6 +68,15 @@ func Migrate(db *gorm.DB) {
 		log.Warn().Err(res.Error).Msg("migrate: wipe legacy provider_storage rows failed")
 	} else if res.RowsAffected > 0 {
 		log.Info().Int64("rows", res.RowsAffected).Msg("migrate: wiped legacy provider_storage rows (pre-absolute-path)")
+	}
+
+	// One-shot data migration: split the legacy exclude_patterns column
+	// on provider_storage_sources into separate Mode="exclude" rows, then
+	// drop the column. Lets exclude live as a first-class source kind
+	// instead of an opaque text property. Idempotent — column absent on
+	// fresh DBs and on the second boot.
+	if err := migrateExcludePatternsToRows(db); err != nil {
+		log.Warn().Err(err).Msg("migrate: split exclude_patterns failed")
 	}
 
 	// Re-parent orphan rows: rewires parent_id from rel_path so that
@@ -162,6 +172,68 @@ func migrateConnectorConfigsToConfigs(db *gorm.DB) error {
 // is scoped to owner="agents" only, so non-agent config rows are safe. If a
 // new config key shares a name listed here it will be incorrectly deleted on
 // first boot — rename it or remove it from this list instead.
+// migrateExcludePatternsToRows splits the legacy exclude_patterns text
+// column on provider_storage_sources into separate Mode="exclude" rows
+// (one per non-empty, non-comment line), then drops the column. Idempotent:
+// short-circuits when the column no longer exists.
+func migrateExcludePatternsToRows(db *gorm.DB) error {
+	m := db.Migrator()
+	if !m.HasTable("provider_storage_sources") || !m.HasColumn("provider_storage_sources", "exclude_patterns") {
+		return nil
+	}
+	type legacyRow struct {
+		ID              uint
+		ProviderType    string
+		InstanceName    string
+		SyncPath        string
+		Mode            string
+		ExcludePatterns string
+		Enabled         bool
+	}
+	var rows []legacyRow
+	if err := db.Raw(`SELECT id, provider_type, instance_name, sync_path, mode, exclude_patterns, enabled
+		FROM provider_storage_sources
+		WHERE exclude_patterns IS NOT NULL AND exclude_patterns <> ''`).Scan(&rows).Error; err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, r := range rows {
+		for _, ln := range strings.Split(r.ExcludePatterns, "\n") {
+			pat := strings.TrimSpace(ln)
+			if pat == "" || strings.HasPrefix(pat, "#") {
+				continue
+			}
+			// Skip if an identical exclude row already exists (rerun safety).
+			var n int64
+			db.Model(&entity.ProviderStorageSource{}).
+				Where("provider_type = ? AND instance_name = ? AND mode = ? AND sync_path = ?",
+					r.ProviderType, r.InstanceName, "exclude", pat).
+				Count(&n)
+			if n > 0 {
+				continue
+			}
+			lbl := pat
+			if len(lbl) > 120 {
+				lbl = lbl[len(lbl)-120:]
+			}
+			row := entity.ProviderStorageSource{
+				ProviderType: r.ProviderType,
+				InstanceName: r.InstanceName,
+				Label:        lbl,
+				SyncPath:     pat,
+				Mode:         "exclude",
+				Enabled:      r.Enabled,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}
+			if err := db.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return db.Exec(`ALTER TABLE provider_storage_sources DROP COLUMN exclude_patterns`).Error
+}
+
 // repairProviderStorageTree rewires every row's parent_id from its rel_path
 // so a row at "/a/b/c" is parented to the row at "/a/b". Heals DBs where
 // an ancestor row was deleted but descendants still reference the dead ID.

@@ -34,16 +34,22 @@ func (ProviderStorage) TableName() string { return "provider_storage" }
 // Multiple sources can exist per instance (e.g. credentials folder + sessions folder).
 // The Manager reads this table at boot (RestoreAll) and at Start (background tickers).
 type ProviderStorageSource struct {
-	ID              uint      `gorm:"primaryKey;autoIncrement"`
-	ProviderType    string    `gorm:"type:varchar(32);not null;index:idx_source_provider"`
-	InstanceName    string    `gorm:"type:varchar(128);not null;index:idx_source_provider"`
-	Label           string    `gorm:"type:varchar(128);not null"` // e.g. "claude workspace", "credentials"
-	SyncPath        string    `gorm:"type:varchar(1024);not null"`
-	Mode            string    `gorm:"type:varchar(16);not null;default:'folder'"` // "folder" | "single"
-	RetentionDays   int       `gorm:"not null;default:0"` // 0 = never purge
-	Enabled         bool      `gorm:"not null;default:true"`
-	CreatedAt       time.Time `gorm:"not null"`
-	UpdatedAt       time.Time `gorm:"not null"`
+	ID           uint   `gorm:"primaryKey;autoIncrement"`
+	ProviderType string `gorm:"type:varchar(32);not null;index:idx_source_provider"`
+	InstanceName string `gorm:"type:varchar(128);not null;index:idx_source_provider"`
+	Label        string `gorm:"type:varchar(128);not null"` // e.g. "claude workspace", "credentials"
+	SyncPath     string `gorm:"type:varchar(1024);not null"`
+	// Mode is one of:
+	//   "folder"  — include the folder tree at SyncPath
+	//   "single"  — include the single file at SyncPath
+	//   "exclude" — skip paths matching SyncPath (literal abs path or
+	//               glob with * / ** / ?). Stops walks for any include
+	//               source on the same instance and purges DB rows.
+	Mode          string    `gorm:"type:varchar(16);not null;default:'folder'"`
+	RetentionDays int       `gorm:"not null;default:0"` // 0 = never purge (include only)
+	Enabled       bool      `gorm:"not null;default:true"`
+	CreatedAt     time.Time `gorm:"not null"`
+	UpdatedAt     time.Time `gorm:"not null"`
 }
 
 func (ProviderStorageSource) TableName() string { return "provider_storage_sources" }

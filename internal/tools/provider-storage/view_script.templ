@@ -508,7 +508,7 @@ templ storageScript() {
 
 		// ── Settings tab ──────────────────────────────────────────────────
 
-		let stagedItems = [];
+		let stagedItems = []; // unified: each entry has Mode = folder|single|exclude
 		let existingPaths = new Set();
 
 		function loadSettings() {
@@ -626,7 +626,7 @@ templ storageScript() {
 				const header = mk('div', 'flex items-center gap-2 px-4 py-3 bg-white-200 dark:bg-navy-800 border-b border-white-300 dark:border-navy-600');
 
 				const modeIcon = mk('span', 'shrink-0 text-[1rem] select-none');
-				modeIcon.textContent = s.Mode === 'folder' ? '📁' : '📄';
+				modeIcon.textContent = s.Mode === 'exclude' ? '🚫' : (s.Mode === 'folder' ? '📁' : '📄');
 
 				const pathBlock = mk('div', 'flex-1 min-w-0');
 				const labelEl = mk('p', 'text-[0.8125rem] font-medium text-black-900 dark:text-white-100 truncate');
@@ -635,7 +635,10 @@ templ storageScript() {
 				pathEl.textContent = s.SyncPath;
 				pathBlock.append(labelEl, pathEl);
 
-				const modeBadge = mk('span', 'shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium bg-white-300 dark:bg-navy-600 text-black-800 dark:text-black-400');
+				const isExclude = s.Mode === 'exclude';
+				const modeBadge = mk('span', 'shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium ' + (isExclude
+					? 'bg-neg-100 text-neg-500 dark:bg-navy-600 dark:text-neg-300'
+					: 'bg-white-300 dark:bg-navy-600 text-black-800 dark:text-black-400'));
 				modeBadge.textContent = s.Mode;
 
 				const rmBtn = mk('button', 'shrink-0 rounded-lg p-1 text-black-700 dark:text-black-500 hover:bg-neg-50 hover:text-neg-400 dark:hover:bg-navy-700 transition-colors');
@@ -649,39 +652,49 @@ templ storageScript() {
 				// ── fields row ──
 				const fields = mk('div', 'grid grid-cols-2 gap-3 px-4 py-3');
 
-				// Label
-				const labelGroup = mk('div', '');
-				const labelLbl = mk('label', 'block text-[0.6875rem] font-medium text-black-800 dark:text-black-500 mb-1');
-				labelLbl.textContent = 'Label';
-				const labelInp = mk('input', inCls);
-				labelInp.type = 'text'; labelInp.value = s.Label;
-				labelInp.oninput = () => { stagedItems[i].Label = labelInp.value; labelEl.textContent = labelInp.value || s.SyncPath.split(/[\\/]/).pop(); };
-				labelGroup.append(labelLbl, labelInp);
+				// Path (editable) — Label auto-derives from basename on save
+				const pathGroup = mk('div', '');
+				const pathLbl = mk('label', 'block text-[0.6875rem] font-medium text-black-800 dark:text-black-500 mb-1');
+				pathLbl.textContent = 'Path';
+				const pathInp = mk('input', inCls + ' font-mono');
+				pathInp.type = 'text'; pathInp.value = s.SyncPath;
+				pathInp.oninput = () => {
+					stagedItems[i].SyncPath = pathInp.value;
+					const base = pathInp.value.split(/[\\/]/).filter(Boolean).pop() || pathInp.value;
+					stagedItems[i].Label = base;
+					labelEl.textContent = base;
+					pathEl.textContent = pathInp.value;
+				};
+				pathGroup.append(pathLbl, pathInp);
 
-				// Retention
-				const retGroup = mk('div', '');
-				const retLbl = mk('label', 'block text-[0.6875rem] font-medium text-black-800 dark:text-black-500 mb-1');
-				retLbl.textContent = 'Retention';
-				const isCustom = !RETENTION_PRESETS.some(p => p.days >= 0 && p.days === s.RetentionDays);
-				const retSel = mk('select', inCls);
-				RETENTION_PRESETS.forEach(p => {
-					const o = document.createElement('option');
-					o.value = p.days === -1 ? '_custom' : String(p.days);
-					o.textContent = p.label;
-					o.selected = (p.days === -1 && isCustom) || (!isCustom && p.days === s.RetentionDays);
-					retSel.appendChild(o);
-				});
-				retSel.onchange = () => onRetentionPreset(i, retSel);
-				retGroup.append(retLbl, retSel);
-				if (isCustom) {
-					const custInp = mk('input', inCls + ' mt-1');
-					custInp.type = 'number'; custInp.min = '1'; custInp.value = s.RetentionDays;
-					custInp.placeholder = 'days';
-					custInp.oninput = () => { stagedItems[i].RetentionDays = parseInt(custInp.value) || 1; };
-					retGroup.appendChild(custInp);
+				if (isExclude) {
+					// Exclude rows don't have retention — full-width path field.
+					fields.className = 'px-4 py-3';
+					fields.append(pathGroup);
+				} else {
+					const retGroup = mk('div', '');
+					const retLbl = mk('label', 'block text-[0.6875rem] font-medium text-black-800 dark:text-black-500 mb-1');
+					retLbl.textContent = 'Retention';
+					const isCustom = !RETENTION_PRESETS.some(p => p.days >= 0 && p.days === s.RetentionDays);
+					const retSel = mk('select', inCls);
+					RETENTION_PRESETS.forEach(p => {
+						const o = document.createElement('option');
+						o.value = p.days === -1 ? '_custom' : String(p.days);
+						o.textContent = p.label;
+						o.selected = (p.days === -1 && isCustom) || (!isCustom && p.days === s.RetentionDays);
+						retSel.appendChild(o);
+					});
+					retSel.onchange = () => onRetentionPreset(i, retSel);
+					retGroup.append(retLbl, retSel);
+					if (isCustom) {
+						const custInp = mk('input', inCls + ' mt-1');
+						custInp.type = 'number'; custInp.min = '1'; custInp.value = s.RetentionDays;
+						custInp.placeholder = 'days';
+						custInp.oninput = () => { stagedItems[i].RetentionDays = parseInt(custInp.value) || 1; };
+						retGroup.appendChild(custInp);
+					}
+					fields.append(pathGroup, retGroup);
 				}
-
-				fields.append(labelGroup, retGroup);
 				card.appendChild(fields);
 				list.appendChild(card);
 			});
@@ -757,11 +770,41 @@ templ storageScript() {
 				};
 				row.appendChild(addBtn);
 
+				const exBtn = mk('button', 'shrink-0 rounded px-1.5 py-0.5 text-[0.6875rem] bg-neg-400 text-white-100 hover:bg-neg-500');
+				exBtn.textContent = '− Ignore';
+				exBtn.title = 'Add to exclude patterns on the deepest staged source covering this path';
+				exBtn.onclick = e => {
+					e.stopPropagation();
+					excludeEntry(entry);
+				};
+				row.appendChild(exBtn);
+
 				if (entry.is_dir) {
 					row.onclick = () => { explorerStack.push({path: entry.path, label: entry.name}); renderExplorer(); };
 				}
 				listEl.appendChild(row);
 			});
+		}
+
+		function normPath(p) { return String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); }
+
+		function excludeEntry(entry) {
+			const target = normPath(entry.path);
+			if (stagedItems.find(s => s.Mode === 'exclude' && normPath(s.SyncPath) === target)) {
+				toast('Already in ignore list.', 'warn');
+				return;
+			}
+			stagedItems.push({
+				ProviderType: document.getElementById('detect-provider').value,
+				InstanceName: '',
+				Label: entry.name || entry.path,
+				SyncPath: entry.path,
+				Mode: 'exclude',
+				RetentionDays: 0,
+				Enabled: true,
+			});
+			renderStagedList();
+			toast('Will ignore: ' + entry.name);
 		}
 
 		function stageOne(path, mode, label) {
@@ -792,12 +835,20 @@ templ storageScript() {
 			Promise.all(saves).then(results => {
 				const errs = results.filter(d => d.error);
 				if (errs.length) { toast('Some errors: ' + errs.map(d => d.error).join(', '), 'error'); }
-				else { toast('Sources saved.'); }
+				else { toast('Saved.'); }
 				stagedItems = [];
 				renderStagedList();
 				closeAddSourceModal();
 				loadSources();
 			}).catch(e => toast('Error: ' + e, 'error'));
+		}
+
+		function modeBadgeHTML(mode) {
+			const m = String(mode || 'folder');
+			const cls = m === 'exclude'
+				? 'bg-neg-100 text-neg-500 dark:bg-navy-600 dark:text-neg-300'
+				: 'bg-white-300 dark:bg-navy-600 text-black-800 dark:text-black-400';
+			return `<span class="rounded-full px-2 py-0.5 text-[0.6875rem] font-medium ${cls}">${esc(m)}</span>`;
 		}
 
 		function loadSources() {
@@ -808,23 +859,30 @@ templ storageScript() {
 					tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-black-700 dark:text-black-500">No sync sources configured.</td></tr>';
 					return;
 				}
-				tbody.innerHTML = rows.map(s => `
+				tbody.innerHTML = rows.map(s => {
+					const isExclude = s.Mode === 'exclude';
+					const retCell = isExclude
+						? '<span class="text-black-700 dark:text-black-500 text-[0.75rem]">—</span>'
+						: retentionBtnHTML('source', s.ID, s.RetentionDays, s.Label || s.SyncPath);
+					return `
 					<tr class="border-b border-white-300 dark:border-navy-600 hover:bg-white-200 dark:hover:bg-navy-800">
 						<td class="px-3 py-2 text-black-900 dark:text-white-100 text-[0.75rem]">${esc(s.ProviderType)}/<span class="text-black-700 dark:text-black-500">${esc(s.InstanceName)}</span></td>
 						<td class="px-3 py-2 text-black-800 dark:text-black-500">${esc(s.Label)}</td>
 						<td class="px-3 py-2 font-mono text-[0.75rem] text-black-800 dark:text-black-500 max-w-xs truncate" title="${esc(s.SyncPath)}">${esc(s.SyncPath)}</td>
-						<td class="px-3 py-2 text-black-800 dark:text-black-500">${esc(s.Mode)}</td>
-						<td class="px-3 py-2">${retentionBtnHTML('source', s.ID, s.RetentionDays, s.Label || s.SyncPath)}</td>
+						<td class="px-3 py-2">${modeBadgeHTML(s.Mode)}</td>
+						<td class="px-3 py-2">${retCell}</td>
 						<td class="px-3 py-2 text-black-800 dark:text-black-500">${fmtTime(s.CreatedAt)}</td>
 						<td class="px-3 py-2">${s.Enabled ? '<span class="text-green-600 dark:text-green-400 text-[0.75rem]">on</span>' : '<span class="text-black-700 dark:text-black-500 text-[0.75rem]">off</span>'}</td>
 						<td class="px-3 py-2">
 							<button onclick="deleteSourceRow(${s.ID})" class="rounded px-2 py-0.5 text-[0.75rem] border border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-navy-800">Delete</button>
 						</td>
-					</tr>`).join('');
+					</tr>`;
+				}).join('');
 			}).catch(e => {
 				document.getElementById('sources-tbody').innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-600">${esc(String(e))}</td></tr>`;
 			});
 		}
+
 
 		function deleteSourceRow(id) {
 			if (!confirm('Delete this sync source?')) return;
