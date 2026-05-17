@@ -555,7 +555,7 @@ func NewServer() *Server {
 	sendFnFor := func(channelType string) agentchannels.SendFunc {
 		return func(ctx context.Context, sessionID, agentName, source, role, text string) error {
 			ws := ""
-			if m, err := agentchannels.GetChannelConfigMap(db, channelType); err == nil {
+			if m, err := agentchannels.GetChannelConfigMap(db, channelType, nil); err == nil {
 				ws = m["workspace"]
 			}
 			if ws == "" {
@@ -576,7 +576,12 @@ func NewServer() *Server {
 	// config load, NewChannel, setters, and registry.Add per transport.
 	// Adding a new channel = subpackage + composer in channels/setup; this
 	// line never changes.
-	channelsetup.All(channelReg, agentchannels.NewDBStore(db), sendFnFor, tokensSvc)
+	channelStore := agentchannels.NewDBStore(db)
+	channelStore.DecryptFn = func(v string) string {
+		plain, _ := configsSvc.DecryptSecret(v)
+		return plain
+	}
+	channelsetup.All(channelReg, channelStore, sendFnFor, tokensSvc)
 
 	// Wire each channel's workflow integration surface — registers
 	// per-event + per-action descriptors and attaches the inbound
