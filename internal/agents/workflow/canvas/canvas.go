@@ -107,6 +107,11 @@ func (c *Canvas) Connect(slug, fromID, toID, caseLabel string) (workflow.Workflo
 		if caseLabel != "" && !from.Type.IsBranchSource() {
 			return errors.New("case only valid on edges from classify/branch source")
 		}
+		for _, e := range w.Graph.Edges {
+			if e.From == fromID && e.To == toID && e.Case == caseLabel {
+				return fmt.Errorf("edge %s→%s (case=%q) already exists", fromID, toID, caseLabel)
+			}
+		}
 		w.Graph.Edges = append(w.Graph.Edges, workflow.Edge{From: fromID, To: toID, Case: caseLabel})
 		return nil
 	})
