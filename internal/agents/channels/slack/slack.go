@@ -28,6 +28,7 @@ import (
 	agentconfig "github.com/yogasw/wick/internal/agents/config"
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/gate"
+	"github.com/yogasw/wick/internal/appname"
 )
 
 const (
@@ -770,6 +771,7 @@ func (s *Channel) sessionOnDisk(sessionID string) bool {
 func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS string) string {
 	s.cfgMu.Lock()
 	api := s.api
+	cfg := s.cfg
 	s.cfgMu.Unlock()
 	if api == nil {
 		return ""
@@ -811,6 +813,36 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 		permalink = pl
 	}
 
+	// Enhancement 1: pre-resolve the DM channel for the requesting user so
+	// Claude can send DMs back without needing an extra API call.
+	dmChannelID := ""
+	dmCtx, dmCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer dmCancel()
+	if ch, _, _, err := api.OpenConversationContext(dmCtx, &slackgo.OpenConversationParameters{
+		Users:    []string{ev.User},
+		ReturnIM: true,
+	}); err == nil && ch != nil {
+		dmChannelID = ch.ID
+	} else if err != nil {
+		log.Warn().Str("channel", "slack").Str("user", ev.User).Err(err).Msg("buildSessionContext: conversations.open failed; omitting DM channel ID")
+	}
+
+	// Enhancement 2: fetch the first 50 workspace members to give Claude a
+	// username→user_id directory so it can resolve "@alice" to "U111A".
+	var memberEntries []string
+	membersCtx, membersCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer membersCancel()
+	if members, err := api.GetUsersContext(membersCtx, slackgo.GetUsersOptionLimit(50)); err == nil {
+		for _, m := range members {
+			if m.Deleted || m.IsBot {
+				continue
+			}
+			memberEntries = append(memberEntries, fmt.Sprintf("@%s (%s)", m.Name, m.ID))
+		}
+	} else {
+		log.Warn().Str("channel", "slack").Err(err).Msg("buildSessionContext: users.list failed; omitting member directory")
+	}
+
 	channelLine := channelName
 	if channelType != "" {
 		channelLine = fmt.Sprintf("%s (%s)", channelName, channelType)
@@ -827,11 +859,43 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 	lines = append(lines,
 		fmt.Sprintf("Channel: %s [%s]", channelLine, ev.Channel),
 		fmt.Sprintf("User: %s [%s]", userLine, ev.User),
-		"Thread: "+threadTS,
 	)
+	// Enhancement 1: inject pre-resolved DM channel ID.
+	if dmChannelID != "" {
+		lines = append(lines, "DM channel with this user: "+dmChannelID)
+	}
+	lines = append(lines, "Thread: "+threadTS)
 	if permalink != "" {
 		lines = append(lines, "Link: "+permalink)
 	}
+
+	// Enhancement 2: compact member directory.
+	if len(memberEntries) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("Slack workspace members (first %d):", len(memberEntries)))
+		lines = append(lines, strings.Join(memberEntries, " | "))
+	}
+
+	// Enhancement 4: Slack capabilities section so Claude knows how to
+	// call the Slack Web API from bash using $WICK_SLACK_TOKEN.
+	if cfg.BotToken != "" {
+		lines = append(lines, "")
+		lines = append(lines, "Slack capabilities:")
+		if dmChannelID != "" {
+			lines = append(lines, fmt.Sprintf("- To send a DM to the requesting user: use channel %s with chat.postMessage", dmChannelID))
+		}
+		lines = append(lines, "- To DM another user: first call conversations.open with their user_id (from the member directory above), then post to the returned channel")
+		lines = append(lines, "- Token available as: $WICK_SLACK_TOKEN (use with Slack Web API)")
+		lines = append(lines, "- Example DM: curl -s -X POST https://slack.com/api/chat.postMessage \\")
+		lines = append(lines, `    -H "Authorization: Bearer $WICK_SLACK_TOKEN" \`)
+		lines = append(lines, `    -H "Content-Type: application/json" \`)
+		if dmChannelID != "" {
+			lines = append(lines, fmt.Sprintf(`    -d '{"channel":"%s","text":"hello"}'`, dmChannelID))
+		} else {
+			lines = append(lines, `    -d '{"channel":"D...","text":"hello"}'`)
+		}
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -1053,13 +1117,23 @@ func (s *Channel) postReply(channelID, threadTS, text string) {
 
 func (s *Channel) postChunked(channelID, threadTS, text string) {
 	chunks := chunkText(text, maxSlackChunk)
+	footer := signedFooter()
 	for i, chunk := range chunks {
 		msg := chunk
 		if i > 0 {
 			msg = "_(cont.)_\n" + chunk
 		}
+		if i == len(chunks)-1 && footer != "" {
+			msg += footer
+		}
 		s.postReply(channelID, threadTS, msg)
 	}
+}
+
+// signedFooter returns a Slack-formatted signature appended to the last
+// chunk of every agent reply — mirrors the "sent via Claude" footer style.
+func signedFooter() string {
+	return "\n\n_Sent by *wick* · " + appname.Resolve() + "_"
 }
 
 func chunkText(s string, max int) []string {
