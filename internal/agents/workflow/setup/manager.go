@@ -35,6 +35,7 @@ type Manager struct {
 	Engine     *engine.Engine
 	Router     *trigger.Router
 	Cron       *trigger.CronScheduler
+	ScheduleAt *trigger.ScheduleAtScheduler
 	Canvas     *canvas.Canvas
 	Channels    *channel.Registry
 	Integration *integration.Registry
@@ -62,6 +63,7 @@ func New(layout config.Layout) *Manager {
 	eng := engine.New(layout, svc, ss)
 	router := trigger.NewRouter(eng, svc)
 	cron := trigger.NewCronScheduler(router)
+	schedAt := trigger.NewScheduleAtScheduler(router)
 	can := canvas.New(svc)
 	chReg := channel.NewRegistry()
 	intReg := integration.New()
@@ -106,6 +108,7 @@ func New(layout config.Layout) *Manager {
 		Engine:      eng,
 		Router:      router,
 		Cron:        cron,
+		ScheduleAt:  schedAt,
 		Canvas:      can,
 		Channels:    chReg,
 		Integration: intReg,
@@ -162,7 +165,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.Layout.EnsureLayout(); err != nil {
 		return err
 	}
-	if err := Bootstrap(ctx, m.Service, m.Router, m.Cron); err != nil {
+	if err := Bootstrap(ctx, m.Service, m.Router, m.Cron, m.ScheduleAt); err != nil {
 		return err
 	}
 	if m.Cron != nil {
@@ -184,7 +187,7 @@ func (m *Manager) Stop() {
 // Bootstrap wires every workflow folder found at startup into the
 // router + cron scheduler. Called once from server startup after
 // Service + Router are constructed.
-func Bootstrap(ctx context.Context, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler) error {
+func Bootstrap(ctx context.Context, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, schedAt *trigger.ScheduleAtScheduler) error {
 	slugs, err := svc.List()
 	if err != nil {
 		return err
@@ -198,24 +201,33 @@ func Bootstrap(ctx context.Context, svc service.Service, router *trigger.Router,
 		if cron != nil {
 			cron.Sync(slug, w)
 		}
+		if schedAt != nil {
+			schedAt.Sync(slug, w)
+		}
 	}
 	return nil
 }
 
 // HotReload reloads + re-registers (or unregisters) one slug. Used by
 // fsnotify watcher in production.
-func HotReload(ctx context.Context, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, slug string) error {
+func HotReload(ctx context.Context, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, schedAt *trigger.ScheduleAtScheduler, slug string) error {
 	w, err := svc.Load(slug)
 	if err != nil {
 		router.Unregister(slug)
 		if cron != nil {
 			cron.Unsync(slug)
 		}
+		if schedAt != nil {
+			schedAt.Unsync(slug)
+		}
 		return nil
 	}
 	router.Register(ctx, w)
 	if cron != nil {
 		cron.Sync(slug, w)
+	}
+	if schedAt != nil {
+		schedAt.Sync(slug, w)
 	}
 	return nil
 }

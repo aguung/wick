@@ -17,7 +17,7 @@ const watchInterval = 3 * time.Second
 // and calls HotReload on any slug whose mtime changed since the last
 // poll. New files trigger a load; removed files trigger an unregister.
 // Blocks until ctx is cancelled — run in a goroutine.
-func WatchWorkflows(ctx context.Context, workflowsDir string, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler) {
+func WatchWorkflows(ctx context.Context, workflowsDir string, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, schedAt *trigger.ScheduleAtScheduler) {
 	mtimes := map[string]time.Time{}
 
 	tick := time.NewTicker(watchInterval)
@@ -28,12 +28,12 @@ func WatchWorkflows(ctx context.Context, workflowsDir string, svc service.Servic
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			pollWorkflows(ctx, workflowsDir, svc, router, cron, mtimes)
+			pollWorkflows(ctx, workflowsDir, svc, router, cron, schedAt, mtimes)
 		}
 	}
 }
 
-func pollWorkflows(ctx context.Context, workflowsDir string, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, mtimes map[string]time.Time) {
+func pollWorkflows(ctx context.Context, workflowsDir string, svc service.Service, router *trigger.Router, cron *trigger.CronScheduler, schedAt *trigger.ScheduleAtScheduler, mtimes map[string]time.Time) {
 	entries, err := os.ReadDir(workflowsDir)
 	if err != nil {
 		return
@@ -54,7 +54,7 @@ func pollWorkflows(ctx context.Context, workflowsDir string, svc service.Service
 		prev, exists := mtimes[slug]
 		if !exists || info.ModTime().After(prev) {
 			mtimes[slug] = info.ModTime()
-			if err := HotReload(ctx, svc, router, cron, slug); err != nil {
+			if err := HotReload(ctx, svc, router, cron, schedAt, slug); err != nil {
 				log.Warn().Err(err).Str("slug", slug).Msg("workflow: hot-reload failed")
 			} else if exists {
 				log.Info().Str("slug", slug).Msg("workflow: hot-reloaded")
@@ -69,6 +69,9 @@ func pollWorkflows(ctx context.Context, workflowsDir string, svc service.Service
 			router.Unregister(slug)
 			if cron != nil {
 				cron.Unsync(slug)
+			}
+			if schedAt != nil {
+				schedAt.Unsync(slug)
 			}
 			log.Info().Str("slug", slug).Msg("workflow: unregistered (folder removed)")
 		}

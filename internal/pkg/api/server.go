@@ -922,7 +922,7 @@ func (s *Server) startChannels(ctx context.Context) {
 	s.channelReg.StartAll(ctx)
 	go s.channelReg.WatchConfigs(ctx, 30*time.Second)
 	if s.wfMgr != nil {
-		go wfsetup.WatchWorkflows(ctx, s.wfMgr.Layout.WorkflowsDir(), s.wfMgr.Service, s.wfMgr.Router, s.wfMgr.Cron)
+		go wfsetup.WatchWorkflows(ctx, s.wfMgr.Layout.WorkflowsDir(), s.wfMgr.Service, s.wfMgr.Router, s.wfMgr.Cron, s.wfMgr.ScheduleAt)
 	}
 }
 
