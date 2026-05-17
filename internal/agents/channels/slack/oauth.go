@@ -103,7 +103,9 @@ func (s *Channel) oauthStartHandler() http.Handler {
 
 		params := url.Values{}
 		params.Set("client_id", clientID)
-		params.Set("user_scope", "chat:write,im:write,channels:read,users:read,chat:write.customize")
+		// chat:write.customize is a bot-only scope — user tokens don't need it
+		// because xoxp tokens post as the user's own identity automatically.
+		params.Set("user_scope", "chat:write,im:write,users:read")
 		params.Set("redirect_uri", cfg.RedirectURI)
 		params.Set("state", state)
 
