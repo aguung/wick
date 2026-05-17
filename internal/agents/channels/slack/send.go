@@ -71,7 +71,7 @@ func (s *Channel) sendHandler() http.Handler {
 		}
 		var body struct {
 			ChannelID    string `json:"channel_id"`
-			TargetUserID string `json:"target_user_id,omitempty"` // open DM to this user via sender's token
+			TargetUserID string `json:"target_user_id,omitempty"`
 			Text         string `json:"text"`
 			SenderUserID string `json:"sender_user_id,omitempty"`
 		}
@@ -84,10 +84,32 @@ func (s *Channel) sendHandler() http.Handler {
 			return
 		}
 
+		// Auto-promote: if channel_id looks like a Slack user ID (U... or W...),
+		// treat it as target_user_id so conversations.open opens the right DM.
+		if body.TargetUserID == "" &&
+			len(body.ChannelID) > 1 &&
+			(body.ChannelID[0] == 'U' || body.ChannelID[0] == 'W') {
+			body.TargetUserID = body.ChannelID
+			body.ChannelID = ""
+		}
+
 		s.cfgMu.Lock()
 		api := s.api
 		connTokFn := s.connectorToken
 		s.cfgMu.Unlock()
+
+		// Auto-inject sender_user_id from the registered token map.
+		// If the caller didn't specify a sender but there's exactly one
+		// registered user token that matches — use it automatically.
+		if body.SenderUserID == "" && connTokFn != nil && body.TargetUserID != "" {
+			// The session context always includes the mentioning user's ID
+			// via X-Wick-Session-User header; fall back to scanning all tokens.
+			if sessionUser := r.Header.Get("X-Wick-Session-User"); sessionUser != "" {
+				if tok := s.resolveUserToken(r.Context(), sessionUser, connTokFn); tok != "" {
+					body.SenderUserID = sessionUser
+				}
+			}
+		}
 
 		if api == nil {
 			http.Error(w, `{"error":"slack not configured"}`, http.StatusServiceUnavailable)

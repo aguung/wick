@@ -896,22 +896,21 @@ func (s *Channel) buildSessionContext(ev *slackevents.MessageEvent, threadTS str
 	lines = append(lines, "")
 	lines = append(lines, "IMPORTANT: To send Slack messages, use wick proxy only — do NOT use Slack MCP tools.")
 
+	// Shared curl base — always include X-Wick-Session-User so the proxy
+	// can auto-inject sender_user_id without Claude needing to specify it.
+	curlBase := fmt.Sprintf(
+		`curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -H "X-Wick-Session-User: %s"`,
+		ev.User,
+	)
+
 	if hasUserToken {
-		lines = append(lines, fmt.Sprintf("User token configured for @%s — DMs will appear as from you.", userHandle))
-		lines = append(lines, "")
-		lines = append(lines, "To DM ANOTHER user (appears from you — use target_user_id, NOT channel_id):")
-		lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE","sender_user_id":"%s"}'`, ev.User))
-		if dmChannelID != "" {
-			lines = append(lines, fmt.Sprintf("To DM yourself (bot→you, channel pre-opened: %s):", dmChannelID))
-			lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"YOUR MESSAGE"}'`, dmChannelID))
-		}
+		lines = append(lines, fmt.Sprintf("Your user token is configured — DMs will appear as from @%s automatically.", userHandle))
+		lines = append(lines, "To DM another user by their user ID (appears from you):")
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
+		lines = append(lines, "  (use user IDs from the member directory above, e.g. U01N34TDP9R)")
 	} else {
 		lines = append(lines, "To DM another user (appears from bot):")
-		lines = append(lines, `  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`)
-		if dmChannelID != "" {
-			lines = append(lines, fmt.Sprintf("To DM you directly (channel pre-opened: %s):", dmChannelID))
-			lines = append(lines, fmt.Sprintf(`  curl -s -X POST "http://localhost:$WICK_PORT/integrations/slack/send" -H "Content-Type: application/json" -d '{"channel_id":"%s","text":"YOUR MESSAGE"}'`, dmChannelID))
-		}
+		lines = append(lines, fmt.Sprintf(`  %s -d '{"target_user_id":"THEIR_USER_ID","text":"YOUR MESSAGE"}'`, curlBase))
 	}
 
 	return strings.Join(lines, "\n")
