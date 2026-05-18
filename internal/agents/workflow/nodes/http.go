@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/yogasw/wick/internal/agents/workflow"
+	"github.com/yogasw/wick/internal/agents/workflow/engine"
+	"github.com/yogasw/wick/internal/agents/workflow/integration"
 	"github.com/yogasw/wick/internal/agents/workflow/template"
 )
 
@@ -23,6 +25,33 @@ type HTTPExecutor struct {
 // NewHTTPExecutor builds the HTTP executor with a 30s default client.
 func NewHTTPExecutor() *HTTPExecutor {
 	return &HTTPExecutor{client: &http.Client{Timeout: 30 * time.Second}}
+}
+
+// httpSchema is the per-field schema reflected via integration.StructSchema
+// for workflow_node_types. Single source of truth for AI consumers.
+type httpSchema struct {
+	Method        string `wick:"required;key=method;dropdown=GET|POST|PUT|PATCH|DELETE;desc=HTTP method"`
+	URL           string `wick:"required;key=url;desc=Full URL, rendered as Go template"`
+	Headers       string `wick:"key=headers;desc=YAML map of header key/value pairs (NOT a JSON string)"`
+	Query         string `wick:"key=query;desc=YAML map of query params"`
+	Body          string `wick:"key=body;textarea;desc=Request body as string. Use YAML block scalar | for multiline JSON. NOT a YAML map."`
+	ParseResponse string `wick:"key=parse_response;dropdown=raw|json|bytes;desc=How to parse response body (default: raw)"`
+	Timeout       string `wick:"key=timeout;desc=Request timeout e.g. 30s"`
+}
+
+// Descriptor exposes the schema + docs for the MCP catalog.
+func (e *HTTPExecutor) Descriptor() engine.NodeDescriptor {
+	return engine.NodeDescriptor{
+		Description: "Make an HTTP request. URL/headers/query/body rendered as Go templates.",
+		WhenToUse:   "Direct external API calls without a connector module.",
+		Example:     "- id: call_api\n  type: http\n  method: POST\n  url: https://api.example.com/tickets\n  headers:\n    Content-Type: application/json\n  body: |\n    {\"title\": \"{{jsonEscape (index .Event.Payload \\\"text\\\")}}\"}",
+		Schema:      integration.StructSchema(httpSchema{}),
+		Output: map[string]string{
+			"status":  "int — HTTP status code",
+			"body":    "string — response body",
+			"headers": "map[string]string — response headers",
+		},
+	}
 }
 
 // Execute runs the request described by node n.

@@ -5,8 +5,31 @@ import (
 	"fmt"
 
 	"github.com/yogasw/wick/internal/agents/workflow"
+	"github.com/yogasw/wick/internal/agents/workflow/engine"
 	"github.com/yogasw/wick/internal/agents/workflow/integration"
 )
+
+type channelSchema struct {
+	ChannelName string `wick:"required;key=channel;desc=Channel module name (e.g. slack)"`
+	Op          string `wick:"required;key=op;desc=Action name — call workflow_integration to list available ops per channel"`
+	Args        string `wick:"key=args;desc=Op inputs as YAML map — see workflow_integration for exact schema per op"`
+	ArgModes    string `wick:"key=arg_modes;desc=Per-field mode: fixed=literal value, expression=Go template render (default)"`
+}
+
+func (e *ChannelExecutor) Descriptor() engine.NodeDescriptor {
+	return engine.NodeDescriptor{
+		Description: "Invoke a channel action (send_message, open_modal, …). Call workflow_integration for available ops + schemas.",
+		WhenToUse:   "Send messages, open modals, react, reply via Slack/Telegram/etc.",
+		Example:     "- id: sendmsg\n  type: channel\n  channel: slack\n  op: send_message\n  args:\n    channel: '{{index .Event.Payload \"channel_id\"}}'\n    text: Hello\n  arg_modes:\n    channel: expression\n    text: fixed",
+		Schema:      integration.StructSchema(channelSchema{}),
+		Output: map[string]string{
+			"ts":        "channel-dependent (Slack: message timestamp)",
+			"channel":   "channel ID",
+			"view_id":   "open_modal only",
+			"view_hash": "open_modal only",
+		},
+	}
+}
 
 // ChannelExecutor dispatches `type: channel` action nodes through the
 // integration registry. Each registered (channel, action) pair

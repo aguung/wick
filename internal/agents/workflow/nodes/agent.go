@@ -9,9 +9,20 @@ import (
 
 	"github.com/yogasw/wick/internal/agents/pool"
 	"github.com/yogasw/wick/internal/agents/workflow"
+	"github.com/yogasw/wick/internal/agents/workflow/engine"
+	"github.com/yogasw/wick/internal/agents/workflow/integration"
 	"github.com/yogasw/wick/internal/agents/workflow/provider"
 	"github.com/yogasw/wick/internal/agents/workflow/template"
 )
+
+type agentSchema struct {
+	PromptFile string `wick:"required;key=prompt_file;desc=Path to prompt markdown file relative to workflow root (e.g. nodes/summarize.md). Rendered as Go template."`
+	Provider   string `wick:"key=provider;desc=Provider name"`
+	Skills     string `wick:"key=skills;desc=YAML list of skill names to expose"`
+	Tools      string `wick:"key=tools;desc=YAML list of tool names to allowlist"`
+	MaxTurns   int    `wick:"key=max_turns;desc=Max agent turns (default unlimited)"`
+	Session    string `wick:"key=session;desc=new=fresh session per run, empty=inherit run session"`
+}
 
 // AgentEvent is the minimal event shape the agent executor consumes
 // while waiting for a turn to complete. Defined here (not imported
@@ -48,6 +59,16 @@ type AgentExecutor struct {
 // provider.AgentCall (the non-pool path).
 func NewAgentExecutor(reg *provider.Registry, p *pool.Pool, sub AgentSubscribeFn) *AgentExecutor {
 	return &AgentExecutor{Providers: reg, Pool: p, Subscribe: sub}
+}
+
+func (e *AgentExecutor) Descriptor() engine.NodeDescriptor {
+	return engine.NodeDescriptor{
+		Description: "Spawn an AI agent with a prompt file and optional skills.",
+		WhenToUse:   "Multi-turn reasoning, summarization, or skill-driven action.",
+		Example:     "- id: summarize\n  type: agent\n  provider: claude\n  prompt_file: nodes/summarize.md",
+		Schema:      integration.StructSchema(agentSchema{}),
+		Output:      map[string]string{"text": "string — last assistant message"},
+	}
 }
 
 // Execute runs the agent node. Routes via pool when configured.

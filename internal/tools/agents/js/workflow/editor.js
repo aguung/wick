@@ -320,7 +320,10 @@
       const editable = argEditable(wrap);
       if (!editable) return;
       // Restore stored value. Checkboxes use .checked from "true"/"false".
-      const stored = (args && args[key] != null) ? String(args[key]) : '';
+      // Arrays (picker native YAML format) must be JSON-stringified so the
+      // picker hidden input and chip renderer always see a JSON string.
+      const raw = args && args[key] != null ? args[key] : '';
+      const stored = Array.isArray(raw) ? JSON.stringify(raw) : String(raw);
       if (editable.type === 'checkbox') {
         editable.checked = stored === 'true';
       } else if (stored !== '' || editable.tagName === 'SELECT') {
@@ -498,10 +501,17 @@
       let v;
       if (editable.type === 'checkbox') {
         v = editable.checked ? 'true' : 'false';
+      } else if (editable.type === 'hidden' && editable.closest('.wf-picker')) {
+        // Picker stores JSON string — parse to native array so canvas state
+        // and downstream YAML use native format, not escaped JSON string.
+        try {
+          const arr = JSON.parse(editable.value || '[]');
+          v = arr.length > 0 ? arr : '';
+        } catch (_) { v = editable.value; }
       } else {
         v = editable.value;
       }
-      if (v !== '') out[k] = v;
+      if (v !== '' && !(Array.isArray(v) && v.length === 0)) out[k] = v;
     });
     return out;
   }

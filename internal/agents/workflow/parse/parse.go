@@ -9,8 +9,10 @@
 package parse
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -289,6 +291,7 @@ func validateTrigger(r *Result, path string, tr workflow.Trigger) {
 		if tr.ChannelName == "" {
 			r.Errors = append(r.Errors, Error{Path: path + ".channel", Message: "is required for channel trigger"})
 		}
+		validateMatchSpec(r, path+".match", tr.Match)
 	case workflow.TriggerWebhook:
 		if tr.Path == "" {
 			r.Errors = append(r.Errors, Error{Path: path + ".path", Message: "is required for webhook trigger"})
@@ -307,6 +310,53 @@ func validateTrigger(r *Result, path string, tr workflow.Trigger) {
 		r.Errors = append(r.Errors, Error{Path: path + ".type", Message: "is required"})
 	default:
 		r.Errors = append(r.Errors, Error{Path: path + ".type", Message: fmt.Sprintf("unknown trigger type %q", tr.Type)})
+	}
+}
+
+// validateMatchSpec warns when a match value looks like a plain string
+// array (["C0ABC"]) — the router's idMembership checks .id inside each
+// element, so plain strings never match. The correct picker format is
+// a JSON array of {id,name} objects, e.g. [{"id":"C0ABC","name":"#ch"}].
+// Plain string equality ("C0ABC") is also valid and is left as-is.
+func validateMatchSpec(r *Result, path string, spec map[string]any) {
+	for k, v := range spec {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "[") {
+			continue
+		}
+		// Looks like a JSON array — check whether elements are plain
+		// strings instead of {id,name} objects.
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(s), &arr); err != nil {
+			r.Warnings = append(r.Warnings, Error{
+				Path:    path + "." + k,
+				Message: "value looks like JSON but failed to parse — use plain string equality or picker format [{\"id\":\"...\",\"name\":\"...\"}]",
+			})
+			continue
+		}
+		for i, elem := range arr {
+			var obj map[string]any
+			if json.Unmarshal(elem, &obj) != nil {
+				// Element is not an object (likely a plain string like "C0ABC")
+				r.Warnings = append(r.Warnings, Error{
+					Path: fmt.Sprintf("%s.%s[%d]", path, k, i),
+					Message: "picker array element must be an object {\"id\":\"...\",\"name\":\"...\"}, not a plain string — " +
+						"plain string arrays never match; use [{\"id\":\"C0ABC\",\"name\":\"#channel\"}] or a bare string for single-value equality",
+				})
+				break
+			}
+			if _, hasID := obj["id"]; !hasID {
+				r.Warnings = append(r.Warnings, Error{
+					Path:    fmt.Sprintf("%s.%s[%d]", path, k, i),
+					Message: "picker array element missing \"id\" field — router matches on id, not name",
+				})
+				break
+			}
+		}
 	}
 }
 

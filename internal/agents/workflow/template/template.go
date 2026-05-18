@@ -6,8 +6,10 @@ package template
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	gotemplate "text/template"
 
 	"github.com/yogasw/wick/internal/agents/workflow"
@@ -110,6 +112,20 @@ func RenderInto(v any, ctx workflow.RenderCtx) (any, error) {
 	}
 }
 
+// BuiltinFuncDocs is the single source of truth for available template
+// functions. Key = "funcname signature", Value = description.
+// Exposed via workflow_workspace so AI always sees the up-to-date list.
+var BuiltinFuncDocs = map[string]string{
+	"truncate n str": "truncate str to n chars, appends '…'",
+	"upper str":      "uppercase",
+	"lower str":      "lowercase",
+	"trim str":       "trim whitespace",
+	"default d v":    "return v if non-empty, else d",
+	"toJSON v":       "marshal any value to JSON string — safe for body: fields",
+	"jsonEscape str": "escape string for embedding inside a JSON string literal",
+	"now format":     "current UTC time — format uses Go ref time e.g. '2006-01-02T15:04:05Z07:00'",
+}
+
 // BuiltinFuncs are convenience template funcs available in every Render.
 var BuiltinFuncs = gotemplate.FuncMap{
 	"truncate": func(n int, s string) string {
@@ -126,5 +142,29 @@ var BuiltinFuncs = gotemplate.FuncMap{
 			return d
 		}
 		return v
+	},
+	// toJSON marshals any value to a JSON string. Safe for embedding in
+	// body: fields or building dynamic JSON payloads.
+	"toJSON": func(v any) (string, error) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	},
+	// jsonEscape escapes a string for safe embedding inside a JSON string
+	// literal — replaces backslash, quote, and control characters.
+	"jsonEscape": func(s string) string {
+		b, _ := json.Marshal(s)
+		// json.Marshal wraps in quotes — strip them
+		return string(b[1 : len(b)-1])
+	},
+	// now returns the current UTC time as a formatted string.
+	// Format uses Go reference time: "2006-01-02T15:04:05Z07:00"
+	"now": func(format string) string {
+		if format == "" {
+			format = time.RFC3339
+		}
+		return time.Now().UTC().Format(format)
 	},
 }

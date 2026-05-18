@@ -11,6 +11,8 @@
 package workflow
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -383,6 +385,36 @@ type Trigger struct {
 	SourceWorkflow string   `yaml:"source_workflow,omitempty"`
 	Severity       []string `yaml:"severity,omitempty"`
 	NodeTypes      []string `yaml:"node_types,omitempty"`
+}
+
+// MarshalYAML normalizes Match before serialization — picker values stored as
+// JSON strings (`[{"id":"C1","name":"#ch"}]`) are expanded to native YAML
+// slices so the workflow.yaml is human-readable and AI-writable without
+// JSON escaping.
+func (tr Trigger) MarshalYAML() (any, error) {
+	type plain Trigger
+	p := plain(tr)
+	if len(p.Match) > 0 {
+		norm := make(map[string]any, len(p.Match))
+		for k, v := range p.Match {
+			s, ok := v.(string)
+			if !ok {
+				norm[k] = v
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if strings.HasPrefix(s, "[") {
+				var arr []map[string]any
+				if err := json.Unmarshal([]byte(s), &arr); err == nil {
+					norm[k] = arr
+					continue
+				}
+			}
+			norm[k] = v
+		}
+		p.Match = norm
+	}
+	return p, nil
 }
 
 // Whitelist filters who can fire a trigger.
