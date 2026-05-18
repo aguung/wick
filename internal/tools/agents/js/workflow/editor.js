@@ -183,8 +183,6 @@
     provider: document.getElementById('ins-provider'),
     preset: document.getElementById('ins-preset'),
     command: document.getElementById('ins-command'),
-    url: document.getElementById('ins-url'),
-    method: document.getElementById('ins-method'),
     channel: document.getElementById('ins-channel'),
     op: document.getElementById('ins-op'),
     module: document.getElementById('ins-module'),
@@ -328,6 +326,13 @@
         editable.checked = stored === 'true';
       } else if (stored !== '' || editable.tagName === 'SELECT') {
         editable.value = stored;
+        // kvlist hidden inputs need the visible row table repainted
+        // after value restoration. The widget's own boot script ran
+        // before we set the value, so the rows still reflect the
+        // initial server-rendered state (empty for a fresh node).
+        if (editable.type === 'hidden' && editable.closest('.kvlist-editor')) {
+          repaintKVList(editable.closest('.kvlist-editor'), editable.value);
+        }
         // Picker hidden inputs need chips re-rendered after value is set
         // because wickInitPickers ran before value restoration.
         if (editable.type === 'hidden' && editable.closest('.wf-picker')) {
@@ -398,13 +403,58 @@
   // selector skips hidden inputs so we always land on the visible
   // editable.
   //
-  // Picker is the exception: its value lives on a hidden input
-  // because the picker UI itself is a chip+search composite. Special-
-  // case so collectArgs / preview / visible_when still find it.
+  // Picker + kvlist are exceptions: their canonical value lives on a
+  // hidden input (chip composite for picker, JSON array for kvlist),
+  // not on any of the visible row inputs. Special-case both so
+  // collectArgs / preview / visible_when read the right place.
   function argEditable(wrap) {
     const picker = wrap.querySelector('.wf-picker > input[type="hidden"][data-field-key]');
     if (picker) return picker;
+    const kvHidden = wrap.querySelector('.kvlist-editor input[type="hidden"][data-field-key]');
+    if (kvHidden) return kvHidden;
     return wrap.querySelector('input:not([type="hidden"]), select, textarea');
+  }
+
+  // repaintKVList rebuilds the visible row table inside a kvlist
+  // editor from a saved JSON value (array of {col:value} objects).
+  // Used after node selection so the widget reflects the persisted
+  // map[string]string instead of the empty server-rendered table.
+  function repaintKVList(editor, jsonValue) {
+    if (!editor) return;
+    const cols = (editor.getAttribute('data-cols') || '').split('|').filter(Boolean);
+    const tbody = editor.querySelector('.kvlist-rows');
+    if (!tbody || cols.length === 0) return;
+    let rows = [];
+    try { rows = JSON.parse(jsonValue || '[]'); } catch (_) { rows = []; }
+    if (!Array.isArray(rows)) rows = [];
+    tbody.innerHTML = '';
+    const inputClass = 'w-full rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 text-xs font-mono text-black-900 dark:text-white-100 outline-none focus:border-green-500 focus:ring-1 focus:ring-green-200 dark:focus:ring-green-800';
+    rows.forEach((entry) => {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-white-300 dark:border-navy-600 last:border-0';
+      cols.forEach((c) => {
+        const td = document.createElement('td');
+        td.className = 'px-2 py-1';
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.setAttribute('data-col', c);
+        inp.value = (entry && entry[c]) || '';
+        inp.className = inputClass;
+        td.appendChild(inp);
+        tr.appendChild(td);
+      });
+      const td2 = document.createElement('td');
+      td2.className = 'px-2 py-1 text-center';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-kvlist-remove', '');
+      btn.className = 'text-black-700 dark:text-black-600 hover:text-neg-400 text-base leading-none';
+      btn.setAttribute('aria-label', 'Remove row');
+      btn.textContent = '×';
+      td2.appendChild(btn);
+      tr.appendChild(td2);
+      tbody.appendChild(tr);
+    });
   }
 
   // reExecInlineScripts re-creates every <script> tag inside the
@@ -425,8 +475,10 @@
 
   // wireVisibleWhen wires the conditional-field pattern: a wrapper
   // with `data-cfg-visible-when="otherKey:value"` only shows while
-  // the dependency wrapper's editable equals the named value. Fires
-  // initial evaluation + listens to the dependency for live toggle.
+  // the dependency wrapper's editable equals the named value. The
+  // value half supports `a|b|c` (pipe-separated OR) so a single field
+  // can be gated on a set of allowed values (e.g. method:POST|PUT|PATCH).
+  // Fires initial evaluation + listens to the dependency for live toggle.
   function wireVisibleWhen(container) {
     container.querySelectorAll('[data-cfg-visible-when]').forEach((wrap) => {
       const spec = wrap.dataset.cfgVisibleWhen;
@@ -434,7 +486,7 @@
       const sep = spec.indexOf(':');
       if (sep < 0) return;
       const depKey = spec.slice(0, sep);
-      const expected = spec.slice(sep + 1);
+      const allowed = spec.slice(sep + 1).split('|');
       const depWrap = container.querySelector(`.wf-arg-field[data-field-key="${CSS.escape(depKey)}"]`);
       const depEditable = depWrap && argEditable(depWrap);
       if (!depEditable) return;
@@ -442,7 +494,7 @@
         let cur;
         if (depEditable.type === 'checkbox') cur = depEditable.checked ? 'true' : 'false';
         else cur = depEditable.value;
-        wrap.classList.toggle('hidden', cur !== expected);
+        wrap.classList.toggle('hidden', !allowed.includes(cur));
       };
       evaluate();
       depEditable.addEventListener('input', evaluate);
@@ -529,6 +581,15 @@
     });
     return out;
   }
+
+  // Expose the args-form helpers so per-node modules (WickNodes) can
+  // reuse the Fixed/Expression chrome + value collection without
+  // duplicating the wiring. Used by /static/nodes/http/inspector.js.
+  window.wickEditorHelpers = window.wickEditorHelpers || {};
+  window.wickEditorHelpers.hydrateArgsForm = hydrateArgsForm;
+  window.wickEditorHelpers.collectArgs = collectArgs;
+  window.wickEditorHelpers.collectArgModes = collectArgModes;
+  window.wickEditorHelpers.setArgFieldMode = setArgFieldMode;
 
   // attachTemplateDropTarget wires an input/textarea as a drop target
   // for the INPUT pane's draggable JSON leaves. On drop, inserts the
@@ -627,7 +688,6 @@
     preset: document.getElementById('ins-preset-panel'),
     command: document.getElementById('ins-command-panel'),
     transform: document.getElementById('ins-transform-panel'),
-    url: document.getElementById('ins-url-panel'),
     channel: document.getElementById('ins-channel-panel'),
     connector: document.getElementById('ins-connector-panel'),
     trigger: document.getElementById('ins-trigger-panel'),
@@ -1981,11 +2041,6 @@
       if (tEng) tEng.value = inner.engine || 'gotemplate';
       if (tExpr) tExpr.value = inner.expression || '';
     }
-    if (kind === 'http') {
-      panels.url.classList.remove('hidden');
-      f.url.value = inner.url || '';
-      f.method.value = inner.method || 'GET';
-    }
     if (kind === 'channel') {
       panels.channel.classList.remove('hidden');
       f.channel.value = inner.channel || '';
@@ -2579,10 +2634,6 @@
       const tExpr = document.getElementById('ins-transform-expression');
       if (tEng) inner.engine = tEng.value;
       if (tExpr) inner.expression = tExpr.value;
-    }
-    if (kind === 'http') {
-      inner.url = f.url.value;
-      inner.method = f.method.value;
     }
     if (kind === 'channel') {
       inner.channel = f.channel.value;

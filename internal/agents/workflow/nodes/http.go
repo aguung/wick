@@ -27,16 +27,18 @@ func NewHTTPExecutor() *HTTPExecutor {
 	return &HTTPExecutor{client: &http.Client{Timeout: 30 * time.Second}}
 }
 
-// httpSchema is the per-field schema reflected via integration.StructSchema
-// for workflow_node_types. Single source of truth for AI consumers.
-type httpSchema struct {
+// HTTPSchema is the per-field schema reflected via integration.StructSchema
+// for workflow_node_types. Single source of truth for AI consumers and
+// the editor UI (the editor-side module reflects the same struct via
+// entity.StructToConfigs to render ArgForm).
+type HTTPSchema struct {
 	Method        string `wick:"required;key=method;dropdown=GET|POST|PUT|PATCH|DELETE;desc=HTTP method"`
-	URL           string `wick:"required;key=url;desc=Full URL, rendered as Go template"`
-	Headers       string `wick:"key=headers;desc=YAML map of header key/value pairs (NOT a JSON string)"`
-	Query         string `wick:"key=query;desc=YAML map of query params"`
-	Body          string `wick:"key=body;textarea;desc=Request body as string. Use YAML block scalar | for multiline JSON. NOT a YAML map."`
-	ParseResponse string `wick:"key=parse_response;dropdown=raw|json|bytes;desc=How to parse response body (default: raw)"`
-	Timeout       string `wick:"key=timeout;desc=Request timeout e.g. 30s"`
+	URL           string `wick:"required;key=url;desc=Full URL. Rendered as Go template — use {{.Node.x.y}} or {{.Event.Payload.z}} to pull values from upstream nodes."`
+	Headers       string `wick:"key=headers;kvlist=name|value;desc=Request headers. Each value is rendered as a Go template, so you can pull tokens from upstream nodes (e.g. Authorization: Bearer {{.Node.login.token}})."`
+	Query         string `wick:"key=query;kvlist=name|value;desc=Query string params. Each value is rendered as a Go template."`
+	Body          string `wick:"key=body;textarea;visible_when=method:POST|PUT|PATCH|DELETE;desc=Request body as string. Use YAML block scalar | for multiline JSON."`
+	ParseResponse string `wick:"key=parse_response;dropdown=raw|json|bytes;visible_when=method:POST|PUT|PATCH|DELETE;desc=How to parse response body (default: raw)"`
+	TimeoutSec    string `wick:"key=timeout_sec;number;desc=Request timeout in seconds (default 30)"`
 }
 
 // Descriptor exposes the schema + docs for the MCP catalog.
@@ -45,13 +47,24 @@ func (e *HTTPExecutor) Descriptor() engine.NodeDescriptor {
 		Description: "Make an HTTP request. URL/headers/query/body rendered as Go templates.",
 		WhenToUse:   "Direct external API calls without a connector module.",
 		Example:     "- id: call_api\n  type: http\n  method: POST\n  url: https://api.example.com/tickets\n  headers:\n    Content-Type: application/json\n  body: |\n    {\"title\": \"{{jsonEscape (index .Event.Payload \\\"text\\\")}}\"}",
-		Schema:      integration.StructSchema(httpSchema{}),
+		Schema:      integration.StructSchema(HTTPSchema{}),
 		Output: map[string]string{
 			"status":  "int — HTTP status code",
 			"body":    "string — response body",
 			"headers": "map[string]string — response headers",
 		},
 	}
+}
+
+// renderHTTPField honors per-field ArgModes: when n.ArgModes[key] is
+// "fixed" the value is returned verbatim (no template render), otherwise
+// it falls through template.Render. Default = expression (backward compat
+// with workflows authored before the inspector grew the toggle).
+func renderHTTPField(n workflow.Node, key, raw string, rctx workflow.RenderCtx) (string, error) {
+	if mode, ok := n.ArgModes[key]; ok && mode == "fixed" {
+		return raw, nil
+	}
+	return template.Render(raw, rctx)
 }
 
 // Execute runs the request described by node n.
@@ -61,7 +74,7 @@ func (e *HTTPExecutor) Execute(ctx context.Context, n workflow.Node, rc *workflo
 	if method == "" {
 		method = http.MethodGet
 	}
-	urlStr, err := template.Render(n.URL, rctx)
+	urlStr, err := renderHTTPField(n, "url", n.URL, rctx)
 	if err != nil {
 		return workflow.NodeOutput{}, fmt.Errorf("url: %w", err)
 	}
@@ -71,10 +84,19 @@ func (e *HTTPExecutor) Execute(ctx context.Context, n workflow.Node, rc *workflo
 			return workflow.NodeOutput{}, fmt.Errorf("url parse: %w", err)
 		}
 		q := u.Query()
+		// Per-field mode applies to the whole `query` map — fixed
+		// means every value is taken verbatim, expression renders
+		// each through template.Render. Mixed modes per inner key
+		// are not exposed yet (the textarea is one widget).
+		fixedQuery := n.ArgModes["query"] == "fixed"
 		for k, v := range n.Query {
-			rv, err := template.Render(v, rctx)
-			if err != nil {
-				return workflow.NodeOutput{}, fmt.Errorf("query %q: %w", k, err)
+			rv := v
+			if !fixedQuery {
+				rendered, rerr := template.Render(v, rctx)
+				if rerr != nil {
+					return workflow.NodeOutput{}, fmt.Errorf("query %q: %w", k, rerr)
+				}
+				rv = rendered
 			}
 			q.Set(k, rv)
 		}
@@ -84,7 +106,7 @@ func (e *HTTPExecutor) Execute(ctx context.Context, n workflow.Node, rc *workflo
 
 	body := io.Reader(nil)
 	if n.Body != "" {
-		rb, err := template.Render(n.Body, rctx)
+		rb, err := renderHTTPField(n, "body", n.Body, rctx)
 		if err != nil {
 			return workflow.NodeOutput{}, fmt.Errorf("body: %w", err)
 		}
@@ -116,10 +138,15 @@ func (e *HTTPExecutor) Execute(ctx context.Context, n workflow.Node, rc *workflo
 		if err != nil {
 			return workflow.NodeOutput{}, fmt.Errorf("http build: %w", err)
 		}
+		fixedHeaders := n.ArgModes["headers"] == "fixed"
 		for k, v := range n.Headers {
-			rv, err := template.Render(v, rctx)
-			if err != nil {
-				return workflow.NodeOutput{}, fmt.Errorf("header %q: %w", k, err)
+			rv := v
+			if !fixedHeaders {
+				rendered, rerr := template.Render(v, rctx)
+				if rerr != nil {
+					return workflow.NodeOutput{}, fmt.Errorf("header %q: %w", k, rerr)
+				}
+				rv = rendered
 			}
 			req.Header.Set(k, rv)
 		}

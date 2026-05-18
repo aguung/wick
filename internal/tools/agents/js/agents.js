@@ -353,14 +353,15 @@
           var traceSection = document.createElement("div");
           traceSection.className = "flex flex-col gap-1";
           traceSection.innerHTML =
-            '<button type="button" ' +
-            'onclick="var w=this.closest(\'[data-turn-events]\').querySelector(\'[data-trace-wrap]\');w.classList.toggle(\'hidden\');var open=!w.classList.contains(\'hidden\');this.querySelector(\'[data-chevron]\').style.transform=open?\'\':\' rotate(-90deg)\';this.querySelector(\'[data-trace-label]\').textContent=open?\'hide trace\':\'show trace\';" ' +
+            '<button type="button" data-trace-toggle ' +
+            'onclick="if(this.dataset.loading===\'1\')return;var w=this.closest(\'[data-turn-events]\').querySelector(\'[data-trace-wrap]\');var open=w.classList.contains(\'hidden\');if(open){w.classList.remove(\'hidden\');w.classList.add(\'flex\',\'flex-col\');}else{w.classList.add(\'hidden\');w.classList.remove(\'flex\',\'flex-col\');}this.querySelector(\'[data-chevron]\').style.transform=open?\'\':\' rotate(-90deg)\';this.querySelector(\'[data-trace-label]\').textContent=open?\'hide trace\':\'show trace\';" ' +
+            'data-loading="1" ' +
             'class="self-start flex items-center gap-1.5 text-[11px] text-black-500 dark:text-black-600 hover:text-black-700 dark:hover:text-black-500 transition-colors py-0.5">' +
-            '<svg viewBox="0 0 16 16" class="h-3 w-3 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"></circle><path d="M6 8h4M8 6v4" stroke-linecap="round"></path></svg>' +
-            '<span data-trace-label>hide trace</span>' +
-            '<svg data-chevron viewBox="0 0 16 16" class="h-3 w-3 shrink-0 transition-transform" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"></path></svg>' +
+            '<svg data-trace-icon viewBox="0 0 16 16" class="h-3 w-3 shrink-0 animate-spin" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2a6 6 0 016 6" stroke-linecap="round"></path></svg>' +
+            '<span data-trace-label class="italic">working…</span>' +
+            '<svg data-chevron viewBox="0 0 16 16" class="h-3 w-3 shrink-0 transition-transform hidden" style="transform:rotate(-90deg)" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"></path></svg>' +
             '</button>' +
-            '<div data-trace-wrap class="flex flex-col gap-1"></div>';
+            '<div data-trace-wrap class="hidden gap-1"></div>';
           body.appendChild(traceSection);
           wrap = traceSection.querySelector("[data-trace-wrap]");
         }
@@ -492,6 +493,7 @@
       }
 
       function finalizeAssistantTurn() {
+        collapseAllEventCards();
         pendingTurnEl = null;
         pendingRawText = "";
         pendingToolCards = {};
@@ -505,16 +507,18 @@
         var wrap = pendingTurnEl.querySelector("[data-trace-wrap]");
         if (!wrap) return;
         wrap.classList.add("hidden");
+        wrap.classList.remove("flex", "flex-col");
         var traceSection = wrap.parentElement;
-        if (traceSection) {
-          var btn = traceSection.querySelector("button");
-          if (btn) {
-            var lbl = btn.querySelector("[data-trace-label]");
-            if (lbl) lbl.textContent = "show trace";
-            var chev = btn.querySelector("[data-chevron]");
-            if (chev) chev.style.transform = "rotate(-90deg)";
-          }
-        }
+        if (!traceSection) return;
+        var btn = traceSection.querySelector("button[data-trace-toggle]");
+        if (!btn) return;
+        btn.dataset.loading = "0";
+        var lbl = btn.querySelector("[data-trace-label]");
+        if (lbl) { lbl.textContent = "show trace"; lbl.classList.remove("italic"); }
+        var spinner = btn.querySelector("[data-trace-icon]");
+        if (spinner) spinner.classList.add("hidden");
+        var chev = btn.querySelector("[data-chevron]");
+        if (chev) { chev.classList.remove("hidden"); chev.style.transform = "rotate(-90deg)"; }
       }
     }
 

@@ -19,12 +19,27 @@ Activate this skill whenever the user touches a workflow node type — creating,
 
 ## Mental model
 
-A node is one unit of execution inside a workflow graph.
+A node has two halves that share one schema:
 
-- One `Executor` impl per node type lives under `internal/agents/workflow/nodes/<type>.go`.
-- Engine dispatches by `node.Type` (resolved via `Engine.Executors` map populated at boot in `setup/manager.go`).
-- Schema + output docs live next to the executor as a per-node schema struct + `Descriptor()` method. **Single source of truth** — MCP catalog (`workflow_node_types`) is built from `Engine.Descriptors`, no hardcode in `mcp/`.
-- Adding a new node type = 2 files touched: `nodes/<type>.go` (executor + schema + Descriptor) and `setup/manager.go` (one `eng.Register` line). Plus a `NodeType` constant in `types.go`.
+| Half | Lives in | Touches |
+|---|---|---|
+| **Engine** (executor) | `internal/agents/workflow/nodes/<type>.go` | runtime — receives `workflow.Node`, returns `NodeOutput` |
+| **UI plugin module** (palette + inspector) | `internal/tools/agents/workflow/nodes/<type>/` | canvas — palette entry, drawflow codec, inspector partial, JS module |
+
+The shared schema struct (exported type, e.g. `HTTPSchema`) lives in the engine package and is reflected by **both**:
+- engine `Descriptor().Schema` → `integration.StructSchema(HTTPSchema{})` → MCP `workflow_node_types`
+- UI inspector partial → `entity.StructToConfigs(HTTPSchema{})` → `wfview.ArgForm(rows)` → editor HTML
+
+Adding a new node type touches:
+
+1. `internal/agents/workflow/types.go` — `NodeType` constant + flat `Node` struct fields
+2. `internal/agents/workflow/nodes/<type>.go` — executor + exported schema struct + `Descriptor()`
+3. `internal/agents/workflow/setup/manager.go` — one `eng.Register` line
+4. `internal/tools/agents/workflow/nodes/<type>/meta.go` — palette + codec module
+5. `internal/tools/agents/workflow/nodes/<type>/inspector.templ` — inspector partial (one-liner that calls ArgForm)
+6. `internal/tools/agents/workflow/nodes/<type>/inspector.js` — hydrate/save glue
+7. `internal/tools/agents/workflow/nodes/all/all.go` — blank import the new subpackage
+8. `internal/tools/agents/workflow/nodes/static.go` — extend `//go:embed all:<type>` for the JS file
 
 The catalog flow:
 
@@ -143,6 +158,196 @@ for _, t := range []workflow.NodeType{NodeFoo, NodeBar, NodeBaz} {
 }
 ```
 
+## Wire into the editor UI
+
+The UI side lives under `internal/tools/agents/workflow/nodes/<type>/` — palette entry, drawflow codec, inspector partial, and inspector JS module. Each per-node folder is a Go subpackage whose `init()` registers a module with the editor registry; the workflows editor iterates the registry to render the palette and dispatch hydrate/save by `data-node-type`.
+
+Canonical example to read: [`internal/tools/agents/workflow/nodes/http/`](../../../internal/tools/agents/workflow/nodes/http/) (full schema-driven inspector via `ArgForm` + kvlist + Fixed/Expression toggle). Simpler example: [`session_init/`](../../../internal/tools/agents/workflow/nodes/session_init/) (hand-coded inputs).
+
+### `meta.go` — palette + drawflow codec
+
+```go
+package mytype
+
+import (
+    "github.com/a-h/templ"
+
+    wf "github.com/yogasw/wick/internal/agents/workflow"
+    registry "github.com/yogasw/wick/internal/tools/agents/workflow/nodes"
+)
+
+type module struct{}
+
+func init() { registry.Register(&module{}) }
+
+func (m *module) NodeType() wf.NodeType    { return wf.NodeMyType }
+func (m *module) PaletteSection() string   { return "Action" } // AI | Action | Logic | Triggers
+func (m *module) PaletteItem() registry.PaletteItem {
+    return registry.PaletteItem{
+        Type:  string(wf.NodeMyType),
+        Label: "mytype",
+        Dot:   "bg-amber-500",
+        Hint:  "what it does",
+    }
+}
+func (m *module) Render() registry.NodeRender {
+    return registry.NodeRender{Head: "mytype", Hint: "GET / POST", CSSType: "mytype", Inputs: 1, Outputs: 1}
+}
+
+// DrawflowDataFromYAML projects wf.Node typed fields into the inner
+// data blob the inspector reads. Only emit keys with non-zero values so
+// the YAML round-trip stays tidy (omitempty doesn't help — drawflow
+// stores raw map). __arg_modes is special: preserve it whenever set
+// so the Fixed/Expression toggle round-trips through publish.
+func (m *module) DrawflowDataFromYAML(n wf.Node) map[string]any {
+    data := map[string]any{"url": n.URL, "method": n.Method}
+    if n.Body != "" { data["body"] = n.Body }
+    if len(n.ArgModes) > 0 { data["__arg_modes"] = n.ArgModes }
+    return data
+}
+
+// YAMLFromDrawflowData is the inverse — read inspector state into a
+// wf.Node. Map fields collected by the kvlist widget come back as
+// []any (JSON-decoded), coerce with a helper.
+func (m *module) YAMLFromDrawflowData(id string, inner map[string]any) wf.Node {
+    n := wf.Node{ID: id, Type: wf.NodeMyType}
+    n.URL, _ = inner["url"].(string)
+    n.Method, _ = inner["method"].(string)
+    n.Body, _ = inner["body"].(string)
+    n.ArgModes = stringMap(inner["__arg_modes"])
+    return n
+}
+
+func (m *module) InspectorPartial() templ.Component { return Inspector() }
+func (m *module) InspectorScript() string           { return "mytype/inspector.js" }
+```
+
+### `inspector.templ` — partial rendered into the inspector modal
+
+The thinnest possible partial: one `wf-inspector-panel` block with `data-node-type` matching the slug, and one `ArgForm` call that reflects the schema. The editor.js dispatcher shows/hides the panel by matching `data-node-type`.
+
+```go
+package mytype
+
+import (
+    "github.com/yogasw/wick/internal/entity"
+    engnodes "github.com/yogasw/wick/internal/agents/workflow/nodes"
+    wfview "github.com/yogasw/wick/internal/tools/agents/view/workflow"
+)
+
+templ Inspector() {
+    <div class="wf-inspector-panel hidden" data-node-type="mytype">
+        <div id="ins-mytype-args" class="space-y-2">
+            @wfview.ArgForm(entity.StructToConfigs(engnodes.MyTypeSchema{}))
+        </div>
+    </div>
+}
+```
+
+**Why ArgForm:** it iterates the reflected `entity.Config` rows and emits one `.wf-arg-field` wrapper per field, complete with:
+- label, required asterisk, description text
+- the widget matching the tag (`textarea` / `dropdown=a|b|c` / `kvlist=name|value` / `picker=<src>` / `number` / `secret` / …)
+- Fixed | Expression toggle pill (default Fixed)
+- live template preview slot (filled in Expression mode against the INPUT pane)
+- drop target for INPUT pane JSON leaves (auto-flips to Expression)
+- `data-cfg-visible-when` for conditional fields (`visible_when=method:POST|PUT|PATCH|DELETE`)
+
+### `inspector.js` — hydrate/save glue
+
+```js
+(function () {
+  'use strict';
+  function container() { return document.getElementById('ins-mytype-args'); }
+
+  const mod = {
+    meta: { kind: 'mytype', head: 'mytype', hint: 'GET / POST', cssType: 'mytype', inputs: 1, outputs: 1, defaults: { method: 'GET' } },
+    onDrop(data) { if (!data.method) data.method = 'GET'; },
+
+    hydrate(inner) {
+      const helpers = window.wickEditorHelpers;
+      const c = container();
+      if (!helpers || !c) return;
+      if (!c.dataset.hydrated) {
+        helpers.hydrateArgsForm(c, c.innerHTML, buildArgsFromInner(inner), inner.__arg_modes || {}, '');
+        c.dataset.hydrated = '1';
+      } else {
+        // Subsequent opens — restore values + mode without re-injecting HTML
+        // (keeps focus + scroll position). Walk wf-arg-fields manually.
+      }
+    },
+
+    save(inner) {
+      const helpers = window.wickEditorHelpers;
+      const args = helpers.collectArgs(container());
+      const modes = helpers.collectArgModes(container());
+      inner.url = args.url || '';
+      inner.method = args.method || 'GET';
+      // Headers/Query kvlist → map[string]string. kvJSONToMap drops blanks.
+      inner.headers = kvJSONToMap(args.headers || '');
+      // Track per-field arg_modes for the engine to honor at runtime.
+      const trimmed = {};
+      for (const k of Object.keys(modes)) if (modes[k] === 'expression') trimmed[k] = 'expression';
+      if (Object.keys(trimmed).length > 0) inner.__arg_modes = trimmed;
+      else delete inner.__arg_modes;
+    },
+
+    attach({ requestUpdate }) {
+      // editor.js delegates input/change on document.body for .wf-arg-field —
+      // no extra wiring needed. Use attach only for custom widgets (regen
+      // buttons, mode toggles inside the partial, etc.).
+      void requestUpdate;
+    },
+  };
+  window.WickNodes = window.WickNodes || {};
+  window.WickNodes.mytype = mod;
+})();
+```
+
+The shared helpers exposed on `window.wickEditorHelpers` (defined in [`internal/tools/agents/js/workflow/editor.js`](../../../internal/tools/agents/js/workflow/editor.js)):
+
+| Helper | What it does |
+|---|---|
+| `hydrateArgsForm(container, html, args, modes, lookupModule)` | Re-injects HTML, wires Fixed/Expression toggles, repaints kvlist + picker rows, attaches drop targets, fires `wireVisibleWhen` |
+| `collectArgs(container)` | Walks every `.wf-arg-field` and returns `{[key]: value}` (kvlist hidden serializes to JSON array; picker hidden serializes to chip JSON) |
+| `collectArgModes(container)` | Returns `{[key]: "fixed"\|"expression"}` from wrappers' `dataset.argMode` |
+| `setArgFieldMode(wrap, mode, persist)` | Programmatically flip the toggle |
+
+### `all/all.go` + `static.go`
+
+Register the new subpackage with a blank import so `init()` fires at boot, and extend the embed glob so the inspector JS is reachable at `/static/nodes/<type>/inspector.js`:
+
+```go
+// internal/tools/agents/workflow/nodes/all/all.go
+import (
+    _ "github.com/yogasw/wick/internal/tools/agents/workflow/nodes/http"
+    _ "github.com/yogasw/wick/internal/tools/agents/workflow/nodes/mytype"
+    _ "github.com/yogasw/wick/internal/tools/agents/workflow/nodes/session_init"
+)
+```
+
+```go
+// internal/tools/agents/workflow/nodes/static.go
+//go:embed all:http all:mytype all:session_init
+var StaticFS embed.FS
+```
+
+## Fixed vs Expression — runtime contract
+
+`ArgForm` gives every single-string field a `Fixed | Expression` toggle. The toggle state is persisted as `n.ArgModes[<key>]` (one of `"fixed"` or `"expression"`, default `"fixed"` for new fields when nothing is recorded).
+
+The executor MUST honor `ArgModes` for any field that supports it. Use a helper:
+
+```go
+func renderField(n workflow.Node, key, raw string, rctx workflow.RenderCtx) (string, error) {
+    if mode, ok := n.ArgModes[key]; ok && mode == "fixed" {
+        return raw, nil
+    }
+    return template.Render(raw, rctx)
+}
+```
+
+Map fields (`kvlist=name|value` → `map[string]string` like Headers / Query) are typically always-expression — each value is rendered as a template. Don't expose a per-row toggle (cell-by-cell mode is awkward UX); document that values can use templates and tell users to escape literal `{{` with `{{` + `"{{x}}"` + `}}` if they really need it.
+
 ## Contract
 
 ### `Executor` interface (`workflow/executor.go`)
@@ -175,16 +380,20 @@ Implement on the executor struct (pointer receiver). Optional but **strongly rec
 
 ### Schema struct tags
 
-Same `wick:"..."` grammar as Tools / Connectors / Channel events. See the **config-tags** skill (sibling folder) for the full grid. Common modifiers:
+Same `wick:"..."` grammar as Tools / Connectors / Channel events. See the **config-tags** skill (sibling folder) for the full grid. Common modifiers for node schemas:
 
 | Tag | Effect |
 |---|---|
 | `required` | Field must be present |
 | `key=name` | Override the snake_cased field name |
 | `desc=...` | Help text — surfaces in inspector + AI schema |
-| `textarea` | Multi-line input widget |
+| `textarea` | Multi-line input widget — pair with `visible_when` to hide irrelevant bodies |
 | `dropdown=a\|b\|c` | Enum constraint |
-| `picker=<source>` | Lookup-backed picker (rare for nodes; common for channel match) |
+| `number` | Numeric input (auto-applied for `int` / `float` Go fields too) |
+| `secret` | Masked input; value never sent to browser as plaintext |
+| `kvlist=col1\|col2` | Editable row table — use `kvlist=name\|value` for map-shaped fields like Headers / Query. Stores as JSON `[{name,value},...]`; on save the inspector glue converts to `map[string]string` |
+| `picker=<source>` | Lookup-backed typeahead (rare for nodes; common for channel match) |
+| `visible_when=field:a\|b\|c` | Conditional row — hide unless dependency field equals one of the pipe-separated values. Use for method-gated bodies (`visible_when=method:POST\|PUT\|PATCH\|DELETE`) |
 
 ### `NodeOutput` shape
 
@@ -277,7 +486,9 @@ Smoke from MCP:
 
 ## Reference
 
-- Canonical example: [`nodes/http.go`](../../../internal/agents/workflow/nodes/http.go) — schema + Descriptor pattern
+**Engine side**
+
+- Canonical example: [`nodes/http.go`](../../../internal/agents/workflow/nodes/http.go) — exported `HTTPSchema`, `Descriptor()`, `ArgModes` honouring via `renderHTTPField`
 - Multi-type executor: [`nodes/dataset.go`](../../../internal/agents/workflow/nodes/dataset.go) — `DatasetDescriptor(t)` switch
 - Engine + Descriptor types: [`engine/engine.go`](../../../internal/agents/workflow/engine/engine.go)
 - Executor interface: [`executor.go`](../../../internal/agents/workflow/executor.go)
@@ -286,3 +497,14 @@ Smoke from MCP:
 - MCP catalog builder: [`mcp/mcp.go::NodeTypesCatalog`](../../../internal/agents/workflow/mcp/mcp.go)
 - Template engine: [`template/template.go`](../../../internal/agents/workflow/template/template.go)
 - Tag grammar: sibling `config-tags` skill folder
+
+**Editor UI side**
+
+- Canonical example: [`tools/agents/workflow/nodes/http/`](../../../internal/tools/agents/workflow/nodes/http/) — ArgForm + kvlist + Fixed/Expression toggle + visible_when
+- Simpler example (hand-coded inputs): [`tools/agents/workflow/nodes/session_init/`](../../../internal/tools/agents/workflow/nodes/session_init/)
+- Registry: [`tools/agents/workflow/nodes/registry.go`](../../../internal/tools/agents/workflow/nodes/registry.go)
+- Aggregator blank-imports: [`tools/agents/workflow/nodes/all/all.go`](../../../internal/tools/agents/workflow/nodes/all/all.go)
+- Embed glob: [`tools/agents/workflow/nodes/static.go`](../../../internal/tools/agents/workflow/nodes/static.go)
+- ArgForm + chrome: [`tools/agents/view/workflow/argform.templ`](../../../internal/tools/agents/view/workflow/argform.templ)
+- Shared editor helpers: [`tools/agents/js/workflow/editor.js`](../../../internal/tools/agents/js/workflow/editor.js) — `window.wickEditorHelpers`
+- Widget pool: [`internal/manager/view/type/`](../../../internal/manager/view/type/) — `fieldtype.Text` / `Textarea` / `Dropdown` / `KVList` / `Picker` / `Secret` / `Number` / …

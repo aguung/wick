@@ -60,8 +60,6 @@ func renderFor(t wf.NodeType) nodeRender {
 		return nodeRender{head: "connector", hint: "module · op", cssType: "connector", inputs: 1, outputs: 1}
 	case wf.NodeShell:
 		return nodeRender{head: "shell", hint: "cmd", cssType: "shell", inputs: 1, outputs: 1}
-	case wf.NodeHTTP:
-		return nodeRender{head: "http", hint: "GET / POST", cssType: "http", inputs: 1, outputs: 1}
 	case wf.NodeDBQuery:
 		return nodeRender{head: "db_query", hint: "sql", cssType: "db_query", inputs: 1, outputs: 1}
 	case wf.NodeBranch:
@@ -113,9 +111,6 @@ func nodeDataFromWorkflow(n wf.Node) map[string]any {
 		data["session_from"] = n.SessionFrom
 	case wf.NodeShell:
 		data["command"] = n.Command
-	case wf.NodeHTTP:
-		data["url"] = n.URL
-		data["method"] = n.Method
 	case wf.NodeChannel:
 		data["channel"] = n.ChannelName
 		data["op"] = n.Op
@@ -760,9 +755,6 @@ func workflowNodeFromDrawflow(dn drawflowNode) wf.Node {
 		wn.SessionFrom, _ = inner["session_from"].(string)
 	case wf.NodeShell:
 		wn.Command = stringSliceFromAny(inner["command"])
-	case wf.NodeHTTP:
-		wn.URL, _ = inner["url"].(string)
-		wn.Method, _ = inner["method"].(string)
 	case wf.NodeChannel:
 		wn.ChannelName, _ = inner["channel"].(string)
 		wn.Op, _ = inner["op"].(string)

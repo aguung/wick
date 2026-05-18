@@ -10,5 +10,5 @@ import "embed"
 // internal/tools/agents/handler.go so the editor can
 // `<script src="/static/nodes/<type>/inspector.js">`.
 //
-//go:embed all:session_init
+//go:embed all:http all:session_init
 var StaticFS embed.FS

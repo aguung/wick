@@ -140,7 +140,6 @@ func BuildPalette(channels []wfchannel.Info, connectors []wfconnector.Info) []Pa
 
 	actions := []PaletteItem{
 		{Type: "shell", Label: "shell", Dot: "bg-slate-500"},
-		{Type: "http", Label: "http", Dot: "bg-amber-500"},
 		{Type: "db_query", Label: "db_query", Dot: "bg-sky-500"},
 		{Type: "transform", Label: "transform", Dot: "bg-cyan-500"},
 	}

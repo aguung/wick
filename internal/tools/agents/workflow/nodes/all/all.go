@@ -5,5 +5,6 @@
 package all
 
 import (
+	_ "github.com/yogasw/wick/internal/tools/agents/workflow/nodes/http"
 	_ "github.com/yogasw/wick/internal/tools/agents/workflow/nodes/session_init"
 )
