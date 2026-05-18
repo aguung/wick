@@ -35,14 +35,22 @@ templ EditorInspector(vm EditorVM) {
 				// ── Input pane ─────────────────────────────────────
 				<div class="wf-inspector-col wf-inspector-input">
 					<div class="wf-inspector-col-head">INPUT</div>
+					// Single unified input panel — dropdown selects which upstream
+					// node's output to preview. Default = direct parent. Trigger
+					// nodes show "No input data" (no parent exists).
 					<div id="ins-input-empty" class="wf-inspector-empty">
 						<div class="text-3xl mb-2">⤓</div>
 						<div class="font-medium text-black-900 dark:text-white-100">No input data</div>
 						<button type="button" id="ins-input-from-parent" class="mt-3 rounded-lg bg-red-500 px-3 py-1.5 text-xs font-medium text-white-100 hover:bg-red-600">Execute previous nodes</button>
 						<div class="mt-2 text-[11px] text-black-700 dark:text-black-600">to view input data</div>
 					</div>
-					<div id="ins-input-data" class="hidden flex-1 overflow-y-auto p-3">
-						<div class="flex items-center gap-2 mb-2 text-[11px]">
+					<div id="ins-input-data" class="hidden flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+						<div class="flex items-center gap-2">
+							<select id="ins-allnodes-select" class="wf-input text-xs flex-1">
+								<option value="">— select node —</option>
+							</select>
+						</div>
+						<div class="flex items-center gap-2 text-[11px]">
 							<button type="button" data-input-view="json" class="px-2 py-0.5 rounded bg-red-500/20 text-red-700 dark:text-red-300 font-medium">JSON</button>
 							<button type="button" data-input-view="schema" class="px-2 py-0.5 rounded text-black-700 dark:text-black-600">Schema</button>
 						</div>
@@ -94,6 +102,16 @@ templ EditorInspector(vm EditorVM) {
 						<div id="ins-command-panel" class="hidden">
 							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Command (one arg per line)</label>
 							<textarea id="ins-command" class="wf-input font-mono" rows="3"></textarea>
+						</div>
+
+						<div id="ins-transform-panel" class="hidden">
+							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Engine</label>
+							<select id="ins-transform-engine" class="wf-input">
+								<option value="gotemplate">gotemplate</option>
+								<option value="jsonpath">jsonpath</option>
+							</select>
+							<label class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1 mt-3">Expression</label>
+							<textarea id="ins-transform-expression" class="wf-input font-mono" rows="6" placeholder="Go template expression…"></textarea>
 						</div>
 
 						@nodeModulePartials()
@@ -227,7 +245,7 @@ templ EditorInspector(vm EditorVM) {
 						OUTPUT
 						<span id="ins-exec-latency" class="ml-2 text-[11px] text-black-700 dark:text-black-600"></span>
 					</div>
-					<div id="ins-exec-status" class="px-3 py-2 text-xs italic text-black-700 dark:text-black-600 border-b border-white-300 dark:border-navy-700"></div>
+					<div id="ins-exec-status" class="px-3 py-2 text-xs italic text-black-700 dark:text-black-600 border-b border-white-300 dark:border-navy-700 break-words whitespace-pre-wrap overflow-hidden"></div>
 					<div id="ins-output-empty" class="wf-inspector-empty">
 						<div class="text-3xl mb-2">⤒</div>
 						<div class="font-medium text-black-900 dark:text-white-100">No output data</div>
