@@ -95,14 +95,20 @@ func registerActionSendMessage(reg *integration.Registry, ch *slack.Channel) {
 // wrapping the raw JSON in {"blocks":[...]} when it's a bare array.
 func decodeBlocks(raw string, out *[]slackgo.Block) error {
 	s := strings.TrimSpace(raw)
-	var wrapped string
-	if strings.HasPrefix(s, "[") {
-		wrapped = `{"blocks":` + s + `}`
-	} else {
-		wrapped = s
+	// Normalize: if the input is an object with a "blocks" key (Block Kit
+	// Builder export format), extract the array value first.
+	if strings.HasPrefix(s, "{") {
+		var wrapper struct {
+			Blocks json.RawMessage `json:"blocks"`
+		}
+		if err := json.Unmarshal([]byte(s), &wrapper); err != nil {
+			return err
+		}
+		s = string(wrapper.Blocks)
 	}
+	// slack.Blocks.UnmarshalJSON expects a bare JSON array [...].
 	var b slackgo.Blocks
-	if err := json.Unmarshal([]byte(wrapped), &b); err != nil {
+	if err := json.Unmarshal([]byte(s), &b); err != nil {
 		return err
 	}
 	*out = b.BlockSet

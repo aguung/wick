@@ -2173,9 +2173,15 @@
     }
     empty.classList.add('hidden');
     out.classList.remove('hidden');
-    if (json) json.textContent = JSON.stringify(cached, null, 2);
-    if (schema) schema.textContent = inferSchema(cached);
-    if (status) status.textContent = '✓ Last recorded output';
+    if (cached && cached.__error) {
+      if (status) { status.textContent = '✕ ' + cached.__error; status.className = 'text-xs text-red-500'; }
+      if (json) json.textContent = '';
+      if (schema) schema.textContent = '';
+    } else {
+      if (json) json.textContent = JSON.stringify(cached, null, 2);
+      if (schema) schema.textContent = inferSchema(cached);
+      if (status) { status.textContent = '✓ Last recorded output'; status.className = 'text-xs text-green-600 dark:text-green-400'; }
+    }
   }
 
   // hydrateInputPane fills the left "INPUT" column from the parent
@@ -2210,6 +2216,55 @@
     if (schemaEl) schemaEl.textContent = inferSchema(parentOutput);
     // Refresh inline preview on every visible arg field.
     refreshArgPreviews();
+  }
+
+  // getNodeByID returns the Drawflow node data object for a node ID string.
+  function getNodeByID(nodeID) {
+    const live = editor.drawflow && editor.drawflow.drawflow.Home && editor.drawflow.drawflow.Home.data;
+    if (!live) return null;
+    for (const k in live) {
+      const n = live[k];
+      if (n && n.data && (n.data.id || n.name) === nodeID) return n;
+    }
+    return null;
+  }
+
+  // renderAllNodesPanel fills #ins-allnodes-list with collapsible
+  // sections for every node that has run output in lastRunOutputs.
+  // Each leaf value is a draggable span like the parent JSON panel.
+  function renderAllNodesPanel() {
+    const list = document.getElementById('ins-allnodes-list');
+    const empty = document.getElementById('ins-allnodes-empty');
+    if (!list || !empty) return;
+    const ids = Object.keys(lastRunOutputs);
+    if (ids.length === 0) {
+      list.innerHTML = '';
+      empty.classList.remove('hidden');
+      return;
+    }
+    empty.classList.add('hidden');
+    list.innerHTML = '';
+    ids.forEach((nodeID) => {
+      const output = lastRunOutputs[nodeID];
+      const section = document.createElement('details');
+      section.open = false;
+      section.className = 'border border-black-300/20 dark:border-white-100/10 rounded';
+      const summary = document.createElement('summary');
+      summary.className = 'cursor-pointer px-2 py-1 text-[11px] font-medium text-black-800 dark:text-black-600 select-none';
+      // Show node label if available, fall back to ID
+      const nodeObj = getNodeByID(nodeID);
+      const label = (nodeObj && nodeObj.data && nodeObj.data.label) || nodeID;
+      summary.textContent = label + (label !== nodeID ? ' (' + nodeID + ')' : '');
+      section.appendChild(summary);
+      const pre = document.createElement('pre');
+      pre.className = 'px-2 pb-2 font-mono text-xs text-black-900 dark:text-white-100 whitespace-pre-wrap';
+      // Use trigger prefix for trigger nodes, node prefix otherwise
+      const isTrigger = nodeObj && nodeObj.data && nodeObj.data.type === 'trigger';
+      const prefix = isTrigger ? '.Event' : '.Node.' + nodeID;
+      renderInteractiveJSON(pre, output, prefix);
+      section.appendChild(pre);
+      list.appendChild(section);
+    });
   }
 
   // inputPrefixForParent returns the template-path prefix for drags
@@ -2373,12 +2428,21 @@
     let root;
     let lowercaseRoot = false;
     if (parts[0] === 'Event') {
-      // Resolve against the cached input data when it's actually the
-      // event envelope (parent === trigger). The JSON representation
-      // of workflow.Event uses lowercase tags (payload, type, …) so
-      // the preview walker has to lowercase the immediate root-level
-      // segment even though the canonical template path is Capital.
+      // Prefer lastInputData when parent is a trigger.
+      // Fallback: find any trigger node output in lastRunOutputs.
       root = lastInputData;
+      if (!root) {
+        const live = editor.drawflow && editor.drawflow.drawflow.Home && editor.drawflow.drawflow.Home.data;
+        if (live) {
+          for (const k in live) {
+            const n = live[k];
+            if (n && n.data && n.data.type === 'trigger') {
+              const nid = n.data.id || n.name;
+              if (lastRunOutputs[nid]) { root = lastRunOutputs[nid]; break; }
+            }
+          }
+        }
+      }
       parts.shift();
       lowercaseRoot = true;
     } else if (parts[0] === 'Node') {
@@ -2625,6 +2689,14 @@
   // node|case) tuple is identical across sources. Reset per run.
   let seenEventKeys = new Set();
 
+  function clearAllNodeBadges() {
+    document.querySelectorAll('.drawflow-node').forEach((el) => {
+      el.classList.remove('wf-node-running', 'wf-node-success', 'wf-node-failed', 'wf-node-skipped');
+      const badge = el.querySelector('.wf-node-badge');
+      if (badge) badge.textContent = '';
+    });
+  }
+
   function setNodeBadge(domID, state, latencyMs) {
     const el = document.getElementById('node-' + domID);
     if (!el) return;
@@ -2829,8 +2901,23 @@
           hydrateOutputPane(node);
         }
       }
+      // If "All nodes" tab is active, refresh it with the new output.
+      const allTab = document.querySelector('[data-input-col-tab="allnodes"]');
+      if (allTab && allTab.classList.contains('font-medium')) {
+        renderAllNodesPanel();
+      }
     }
-    if (ev.event === 'node_failed' && domID) setNodeBadge(domID, 'failed');
+    if (ev.event === 'node_failed' && domID) {
+      setNodeBadge(domID, 'failed');
+      // Cache the error so hydrateOutputPane can show it.
+      if (ev.node && ev.data && ev.data.error) {
+        lastRunOutputs[ev.node] = { __error: ev.data.error };
+      }
+      if (selectedID) {
+        const node = editor.getNodeFromId(selectedID);
+        if (node) hydrateOutputPane(node);
+      }
+    }
     if (ev.event === 'node_skipped' && domID) setNodeBadge(domID, 'skipped');
     if (ev.event === 'workflow_completed' || ev.event === 'workflow_failed') {
       finishRun(ev.event === 'workflow_completed');
@@ -2990,6 +3077,8 @@
       }
       currentRunID = data.run_id;
       setStatus('saving', `⟳ Running ${currentRunID.slice(0, 8)}…`);
+      clearAllNodeBadges();
+      for (const k in lastRunOutputs) delete lastRunOutputs[k];
       startRunStream(currentRunID);
       // Backfill events that fired between enqueue and SSE subscribe.
       // Broadcaster has no replay buffer, so a fast first node can
@@ -3199,7 +3288,7 @@
     });
   });
 
-  // Input pane JSON / Schema toggle.
+  // Input pane JSON / Schema toggle (within parent tab).
   document.querySelectorAll('[data-input-view]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const key = btn.dataset.inputView;
@@ -3211,6 +3300,39 @@
       });
       document.getElementById('ins-input-json')?.classList.toggle('hidden', key !== 'json');
       document.getElementById('ins-input-schema')?.classList.toggle('hidden', key !== 'schema');
+    });
+  });
+
+  // Input column tab: Parent (default) vs All nodes.
+  document.querySelectorAll('[data-input-col-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.inputColTab;
+      document.querySelectorAll('[data-input-col-tab]').forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle('bg-red-500/20', on);
+        b.classList.toggle('text-red-700', on);
+        b.classList.toggle('dark:text-red-300', on);
+        b.classList.toggle('font-medium', on);
+        b.classList.toggle('text-black-700', !on);
+        b.classList.toggle('dark:text-black-600', !on);
+      });
+      if (key === 'allnodes') {
+        document.getElementById('ins-input-empty')?.classList.add('hidden');
+        document.getElementById('ins-input-data')?.classList.add('hidden');
+        document.getElementById('ins-allnodes-data')?.classList.remove('hidden');
+        renderAllNodesPanel();
+      } else {
+        document.getElementById('ins-allnodes-data')?.classList.add('hidden');
+        // restore parent tab state
+        const hasParent = selectedID && findParentNodeID(getNodeByID(selectedID));
+        if (hasParent && lastRunOutputs[findParentNodeID(getNodeByID(selectedID))]) {
+          document.getElementById('ins-input-empty')?.classList.add('hidden');
+          document.getElementById('ins-input-data')?.classList.remove('hidden');
+        } else {
+          document.getElementById('ins-input-empty')?.classList.remove('hidden');
+          document.getElementById('ins-input-data')?.classList.add('hidden');
+        }
+      }
     });
   });
 
