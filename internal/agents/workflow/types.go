@@ -20,29 +20,29 @@ import (
 type NodeType string
 
 const (
-	NodeClassify       NodeType = "classify"
-	NodeAgent          NodeType = "agent"
-	NodeChannel        NodeType = "channel"
-	NodeConnector      NodeType = "connector"
-	NodeShell          NodeType = "shell"
-	NodeSwitch         NodeType = "switch"
-	NodeGoScript       NodeType = "go_script"
-	NodePython         NodeType = "python"
-	NodeHTTP           NodeType = "http"
-	NodeDBQuery        NodeType = "db_query"
-	NodeTransform      NodeType = "transform"
-	NodeBranch         NodeType = "branch"
-	NodeParallel       NodeType = "parallel"
-	NodeMerge          NodeType = "merge"
-	NodeEnd            NodeType = "end"
-	NodeDatasetGet     NodeType = "dataset_get"
-	NodeDatasetExists  NodeType = "dataset_exists"
-	NodeDatasetQuery   NodeType = "dataset_query"
-	NodeDatasetInsert  NodeType = "dataset_insert"
-	NodeDatasetUpsert  NodeType = "dataset_upsert"
-	NodeDatasetDelete  NodeType = "dataset_delete"
-	NodeDatasetCount   NodeType = "dataset_count"
-	NodeSessionInit    NodeType = "session_init"
+	NodeClassify      NodeType = "classify"
+	NodeAgent         NodeType = "agent"
+	NodeChannel       NodeType = "channel"
+	NodeConnector     NodeType = "connector"
+	NodeShell         NodeType = "shell"
+	NodeSwitch        NodeType = "switch"
+	NodeGoScript      NodeType = "go_script"
+	NodePython        NodeType = "python"
+	NodeHTTP          NodeType = "http"
+	NodeDBQuery       NodeType = "db_query"
+	NodeTransform     NodeType = "transform"
+	NodeBranch        NodeType = "branch"
+	NodeParallel      NodeType = "parallel"
+	NodeMerge         NodeType = "merge"
+	NodeEnd           NodeType = "end"
+	NodeDatasetGet    NodeType = "dataset_get"
+	NodeDatasetExists NodeType = "dataset_exists"
+	NodeDatasetQuery  NodeType = "dataset_query"
+	NodeDatasetInsert NodeType = "dataset_insert"
+	NodeDatasetUpsert NodeType = "dataset_upsert"
+	NodeDatasetDelete NodeType = "dataset_delete"
+	NodeDatasetCount  NodeType = "dataset_count"
+	NodeSessionInit   NodeType = "session_init"
 )
 
 // IsDatasetNode reports whether t is one of the dataset_* variants.
@@ -237,13 +237,13 @@ type Node struct {
 	DefaultCase string       `yaml:"default_case,omitempty"`
 
 	// dataset_*
-	Dataset    string         `yaml:"dataset,omitempty"`
-	Where      map[string]any `yaml:"where,omitempty"`
-	Key        map[string]any `yaml:"key,omitempty"`
-	RowValues  map[string]any `yaml:"row,omitempty"`
-	OrderBy    []DatasetOrder `yaml:"order_by,omitempty"`
-	Limit      int            `yaml:"limit,omitempty"`
-	Offset     int            `yaml:"offset,omitempty"`
+	Dataset   string         `yaml:"dataset,omitempty"`
+	Where     map[string]any `yaml:"where,omitempty"`
+	Key       map[string]any `yaml:"key,omitempty"`
+	RowValues map[string]any `yaml:"row,omitempty"`
+	OrderBy   []DatasetOrder `yaml:"order_by,omitempty"`
+	Limit     int            `yaml:"limit,omitempty"`
+	Offset    int            `yaml:"offset,omitempty"`
 
 	// end
 	Result string `yaml:"result,omitempty"`
@@ -290,8 +290,8 @@ const (
 // means "use rc.DefaultAgentSessionID (or the engine fallback)".
 //
 //   - From  — copy the resolved sessionID from another node in this run
-//             (must be an upstream agent/session_init node, validator
-//             rejects forward refs + cycles)
+//     (must be an upstream agent/session_init node, validator
+//     rejects forward refs + cycles)
 //   - Mode  — "new" forces a fresh UUID per call; empty inherits
 type NodeSession struct {
 	From string `yaml:"from,omitempty"`
@@ -359,7 +359,7 @@ type DatasetBinding struct {
 // Trigger is one polymorphic trigger entry. Fields are a flat union
 // like Node — the validator gates each field to its Type.
 //
-// ID is the stable canvas identifier (e.g. "trigger-manual",
+// ID is the stable canvas identifier (e.g. "trigger_manual",
 // "trigger-cron-2"). The codec uses it to merge per-trigger
 // metadata (channel name, schedule, …) across save cycles so the
 // canvas can re-wire EntryNode without losing the config the user
@@ -535,14 +535,14 @@ type RunEvent struct {
 
 // Event types emitted to events.jsonl.
 const (
-	EventNodeStarted        = "node_started"
-	EventNodeCompleted      = "node_completed"
-	EventNodeFailed         = "node_failed"
-	EventNodeSkipped        = "node_skipped"
-	EventEdgeTraversed      = "edge_traversed"
-	EventWorkflowStarted    = "workflow_started"
-	EventWorkflowCompleted  = "workflow_completed"
-	EventWorkflowFailed     = "workflow_failed"
+	EventNodeStarted       = "node_started"
+	EventNodeCompleted     = "node_completed"
+	EventNodeFailed        = "node_failed"
+	EventNodeSkipped       = "node_skipped"
+	EventEdgeTraversed     = "edge_traversed"
+	EventWorkflowStarted   = "workflow_started"
+	EventWorkflowCompleted = "workflow_completed"
+	EventWorkflowFailed    = "workflow_failed"
 )
 
 // WorkflowState is the persisted approval/governance snapshot.
