@@ -62,6 +62,16 @@ func NewAgentExecutor(reg *provider.Registry, p *pool.Pool, sub AgentSubscribeFn
 	return &AgentExecutor{Providers: reg, Pool: p, Subscribe: sub}
 }
 
+// Dependencies surfaces provider name + each declared skill so
+// workflow_describe shows the impact surface of the agent node.
+func (e *AgentExecutor) Dependencies(n workflow.Node) []engine.NodeDependency {
+	var out []engine.NodeDependency
+	if n.Provider != "" {
+		out = append(out, engine.NodeDependency{Kind: engine.DepKindProvider, Ref: n.Provider})
+	}
+	return out
+}
+
 func (e *AgentExecutor) Descriptor() engine.NodeDescriptor {
 	return engine.NodeDescriptor{
 		Description: "Spawn an AI agent with a prompt file and optional skills.",

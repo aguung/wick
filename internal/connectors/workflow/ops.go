@@ -320,7 +320,29 @@ func (h *handlers) hasDraft(c *connector.Ctx) (any, error) {
 // ── Tier 3: action ─────────────────────────────────────────────────────
 
 func (h *handlers) validate(c *connector.Ctx) (any, error) {
-	return h.ops.Validate(c.Input("id")), nil
+	return h.ops.ValidateRich(c.Input("id")), nil
+}
+
+func (h *handlers) templateTest(c *connector.Ctx) (any, error) {
+	in := wfmcp.TemplateTestInput{
+		Template:    c.Input("template"),
+		Context:     c.Input("context"),
+		SampleEvent: c.Input("sample_event"),
+	}
+	return h.ops.TemplateTest(in)
+}
+
+func (h *handlers) pickerResolve(c *connector.Ctx) (any, error) {
+	in := wfmcp.PickerResolveInput{
+		Source: c.Input("source"),
+		Query:  c.Input("query"),
+		Limit:  c.InputInt("limit"),
+	}
+	return h.ops.PickerResolve(ctxFrom(c), in)
+}
+
+func (h *handlers) describe(c *connector.Ctx) (any, error) {
+	return h.ops.Describe(c.Input("id"))
 }
 
 func (h *handlers) simulate(c *connector.Ctx) (any, error) {
