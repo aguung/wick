@@ -168,6 +168,7 @@ func Register(r tool.Router) {
 	r.DELETE("/providers/{type}/{name}", deleteProviderInstance)
 	r.GET("/providers/spawns/{file}", providerSpawnDetail)
 	r.POST("/providers/gate/toggle", toggleGate)
+	r.POST("/providers/gate/modes", saveGateModes)
 	r.POST("/providers/rescan", rescanAllProviders)
 	r.POST("/providers/rescan/{type}/{name}", rescanOneProvider)
 	r.POST("/providers/probe-gate/{type}/{name}", probeProviderGate)

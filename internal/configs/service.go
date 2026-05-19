@@ -174,6 +174,22 @@ func (s *Service) DeleteOwned(ctx context.Context, owner string) error {
 	return nil
 }
 
+// DeleteOwnedKey removes one (owner, key) row from the DB and the
+// in-memory cache. Used by one-shot migrations that retire a config
+// key without touching siblings. Returns nil even when no such row
+// existed — callers treat it as idempotent.
+func (s *Service) DeleteOwnedKey(ctx context.Context, owner, key string) error {
+	if err := s.repo.DeleteByOwnerKey(ctx, owner, key); err != nil {
+		return fmt.Errorf("delete config %s/%s: %w", owner, key, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ck := ownerKey{Owner: owner, Key: key}
+	delete(s.cache, ck)
+	delete(s.meta, ck)
+	return nil
+}
+
 func (s *Service) reconcile(ctx context.Context, row entity.Config) error {
 	existing, err := s.repo.FindByOwnerKey(ctx, row.Owner, row.Key)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {

@@ -161,18 +161,37 @@ templ gateStatusCard(g GateStatusVM, base string) {
 				}
 			</div>
 		</div>
-		<div class="px-5 py-3 space-y-2 text-xs">
+		<div class="px-5 py-3 space-y-3 text-xs">
 			if g.Enabled {
 				<div class="flex gap-2">
-					<dt class="w-20 shrink-0 text-black-700 dark:text-black-600">binary</dt>
+					<dt class="w-24 shrink-0 text-black-700 dark:text-black-600">binary</dt>
 					<dd class="font-mono text-black-900 dark:text-white-100 break-all">{ g.Binary }</dd>
 				</div>
 			} else if g.Reason != "" {
 				<div class="flex gap-2">
-					<dt class="w-20 shrink-0 text-black-700 dark:text-black-600">error</dt>
+					<dt class="w-24 shrink-0 text-black-700 dark:text-black-600">error</dt>
 					<dd class="font-mono text-red-600 dark:text-red-400 break-all">{ g.Reason }</dd>
 				</div>
 			}
+			<form method="POST" action={ templ.SafeURL(base + "/providers/gate/modes") } class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+				<label class="block">
+					<span class="text-xs text-black-800 dark:text-black-600">Permission policy</span>
+					<select name="permission_mode" class="mt-1 w-full rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 text-xs text-black-900 dark:text-white-100">
+						<option value="on" selected?={ g.PermissionMode != "bypass" }>on — prompt the user per tool call</option>
+						<option value="bypass" selected?={ g.PermissionMode == "bypass" }>bypass — run unguarded (Slack/HTTP)</option>
+					</select>
+				</label>
+				<label class="block">
+					<span class="text-xs text-black-800 dark:text-black-600">Ask-user policy</span>
+					<select name="ask_user_mode" class="mt-1 w-full rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 text-xs text-black-900 dark:text-white-100">
+						<option value="on" selected?={ g.AskUserMode != "off" }>on — route ask_user to the web UI</option>
+						<option value="off" selected?={ g.AskUserMode == "off" }>off — agent picks a default</option>
+					</select>
+				</label>
+				<div class="md:col-span-2 flex justify-end">
+					<button type="submit" class="rounded-lg bg-green-500 px-3 py-1 text-xs font-medium text-white-100 hover:bg-green-600">Save policies</button>
+				</div>
+			</form>
 			<p class="pt-1 text-black-800 dark:text-black-600 leading-relaxed">{ g.Note }</p>
 		</div>
 	</div>

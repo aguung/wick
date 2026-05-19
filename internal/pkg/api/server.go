@@ -20,6 +20,7 @@ import (
 	"github.com/yogasw/wick/internal/accesstoken"
 	"github.com/yogasw/wick/internal/admin"
 	"github.com/yogasw/wick/internal/appname"
+	"github.com/yogasw/wick/internal/agents/askuser"
 	agentchannels "github.com/yogasw/wick/internal/agents/channels"
 	slackch "github.com/yogasw/wick/internal/agents/channels/slack"
 	channelsetup "github.com/yogasw/wick/internal/agents/channels/setup"
@@ -282,6 +283,25 @@ func NewServer() *Server {
 	agentsBcast := agentstool.NewBroadcaster()
 	agentsSpawnLogger := provider.NewSpawnLogger(agentsLayout.BaseDir)
 
+	// One-shot migration: the deprecated agents.bypass_permissions checkbox
+	// folded into the new GateConfig.PermissionMode dropdown. When the
+	// legacy row exists, map its boolean into the new key and drop the
+	// old one so the UI only shows the current control.
+	if legacy := configsSvc.GetOwned("agents", "bypass_permissions"); legacy != "" {
+		mode := "on"
+		if legacy == "true" {
+			mode = "bypass"
+		}
+		if cur := configsSvc.GetOwned("agents", "permission_mode"); cur == "" {
+			if err := configsSvc.SetOwned(context.Background(), "agents", "permission_mode", mode); err != nil {
+				log.Warn().Err(err).Msg("agents: migrate bypass_permissions → permission_mode")
+			}
+		}
+		if err := configsSvc.DeleteOwnedKey(context.Background(), "agents", "bypass_permissions"); err != nil {
+			log.Warn().Err(err).Msg("agents: drop legacy bypass_permissions row")
+		}
+	}
+
 	// Resolve the gate binary up front: sibling-of-executable first, embedded
 	// extract as backup, PATH lookup as last resort. Failure is non-fatal —
 	// gate stays disabled and pool falls back to whitelist-only mode.
@@ -335,8 +355,17 @@ func NewServer() *Server {
 		killAfterIdleSec = n
 	}
 
-	agentsFactory.BypassPermissionsLoader = func() bool {
-		return configsSvc.GetOwned("agents", "bypass_permissions") == "true"
+	agentsFactory.PermissionModeLoader = func() string {
+		// Gate master switch off → every sub-policy snaps to its
+		// unguarded default; for permission that means "bypass".
+		if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
+			return "bypass"
+		}
+		mode := configsSvc.GetOwned("agents", "permission_mode")
+		if mode == "" {
+			mode = "on"
+		}
+		return mode
 	}
 	agentsFactory.SystemPromptLoader = func() string {
 		return configsSvc.GetOwned("agents", "system_prompt")
@@ -402,6 +431,21 @@ func NewServer() *Server {
 	agentstool.SetDB(db)
 	agentstool.SetChannelRegistry(channelReg)
 	agentstool.SetSyncManager(syncMgr)
+
+	// ask_user Manager: blocks the calling agent over MCP until the
+	// user clicks an option / types an answer in the web UI. SSE
+	// fan-out goes through the broadcaster (one event per request +
+	// one on resolve) so every open tab updates without polling.
+	askUsersMgr := askuser.NewManager(askuser.Options{
+		OnRequest: func(req askuser.AskRequest) {
+			payload, _ := json.Marshal(req)
+			agentsBcast.PublishAskUser(req.SessionID, req.AgentName, payload)
+		},
+		OnResolved: func(sessionID, requestID string) {
+			agentsBcast.PublishAskUserResolved(sessionID, requestID)
+		},
+	})
+	agentstool.SetAskUsers(askUsersMgr)
 
 	// Workflow stack — bundles every workflow subpkg into one Manager
 	// and bootstraps the router with every workflow folder found on disk.
@@ -704,7 +748,25 @@ func NewServer() *Server {
 	// Bearer auth in front, connector dispatch behind. PAT and
 	// OAuth-issued tokens both flow through the same middleware —
 	// dispatch by prefix.
-	mcpHandler := mcp.NewHandler(connectorsSvc).WithAppURL(configsSvc.AppURL)
+	mcpHandler := mcp.NewHandler(connectorsSvc).
+		WithAppURL(configsSvc.AppURL).
+		WithAskUser(askUsersMgr).
+		WithAskUserPolicy(func() (bool, string) {
+			// Master gate off → ask_user short-circuits along with every
+			// other sub-policy. Slack/HTTP installs that disable the gate
+			// don't want the LLM hanging on a prompt no one will answer.
+			if configsSvc.GetOwned("agents", "gate_enabled") != "true" {
+				return false, "master gate is off"
+			}
+			mode := configsSvc.GetOwned("agents", "ask_user_mode")
+			if mode == "" {
+				mode = "on"
+			}
+			if mode != "on" {
+				return false, "ask_user_mode=" + mode
+			}
+			return true, ""
+		})
 	mcpAuth := mcp.NewAuthMiddleware(
 		tokensSvc,
 		authSvc,
