@@ -590,7 +590,7 @@ func NewServer() *Server {
 	// event sink that fires router.Dispatch. Per-channel calls so
 	// telegram/rest can opt in independently as they grow workflow
 	// surfaces.
-	wfsetup.RegisterSlackIntegration(wfMgr.Integration, channelReg, wfMgr.Router)
+	wfsetup.RegisterSlackIntegration(wfMgr.Integration, channelReg, wfMgr.Router, wfMgr.MCP.Pickers)
 
 	// ── Connectors (LLM-facing via MCP) ──────────────────────────
 	// Register the code-side definitions for dispatch and auto-seed
@@ -1218,6 +1218,10 @@ func RunMCPStdio(version, commit, buildTime string) {
 	// actually fires, but AI discovery + workflow_validate work fully.
 	stdioStubSlack := agentslack.New(agentconfig.SlackChannelConfig{})
 	slackwf.RegisterAll(stdioWfMgr.Integration, stdioStubSlack)
+	// stdio path: register pickers too, even though the stub channel
+	// has no live API — calls will surface the configuration error
+	// rather than silently returning empty lists.
+	slackwf.RegisterPickers(stdioWfMgr.MCP.Pickers, stdioStubSlack)
 	if err := stdioWfMgr.Start(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("stdio: workflow bootstrap failed; workflow_* ops unavailable")
 	} else {

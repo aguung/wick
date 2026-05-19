@@ -174,8 +174,17 @@ func Operations(ops *wfmcp.Ops, runner *wftest.Runner) []connector.Operation {
 				Docs{}),
 
 		connector.Op("workflow_validate", "Validate Workflow",
-			"Parse + validate a workflow: cycle detect, schema check, guard dry-run. Returns {ok, errors[], warnings[]}. Call before simulate or run.",
+			"Parse + validate a workflow: cycle detect, schema check, guard dry-run. Errors are decorated with did_you_mean / hint pointers when wick recognises the failure (lowercase JSON key, misspelt match field, picker scalar vs object shape). Returns {ok, errors[], warnings[]}.",
 			idInput{}, h.validate, wickdocs.Docs{}),
+		connector.Op("workflow_template_test", "Test Go Template",
+			"Render a Go template against a synthetic context. On missing-key errors the response lists available keys at the offending path plus a did-you-mean hint. Use sample_event for canned payload shapes (slack.message, slack.block_action, slack.view_submission, cron) or pass a hand-built context JSON.",
+			templateTestInput{}, h.templateTest, wickdocs.Docs{}),
+		connector.Op("workflow_picker_resolve", "Resolve Picker Source",
+			"Resolve a picker source (e.g. slack.channels, slack.users, slack.usergroups) to [{id, name}] items. Use when populating Match filter picker fields so AI passes valid IDs instead of guessing.",
+			pickerResolveInput{}, h.pickerResolve, wickdocs.Docs{}),
+		connector.Op("workflow_describe", "Describe Workflow",
+			"Human-readable summary of a workflow: triggers, graph shape, dependencies (channels/connectors/providers), plus dangling-edge and template-reference warnings. Call before editing to orient yourself; safer than walking the full YAML.",
+			idInput{}, h.describe, wickdocs.Docs{}),
 		connector.Op("workflow_simulate", "Simulate Workflow",
 			"Dry-run a workflow with a synthetic event. No state persisted, no external calls. Returns per-node outputs + path_taken + final_result. Pass event as JSON string.",
 			simulateInput{}, h.simulate, wickdocs.Docs{}),
@@ -238,6 +247,18 @@ type idInput struct {
 
 type nodeDetailInput struct {
 	NodeType string `wick:"required;desc=Node type key. Built-in: agent, branch, http, etc. Channel: channel:slack.message, channel:slack.send_message. Connector: connector:slack.chat_postMessage. Trigger: trigger:cron, trigger:channel."`
+}
+
+type templateTestInput struct {
+	Template    string `wick:"required;textarea;desc=Go template snippet to render, e.g. {{.Node.trigger.payload.text}}."`
+	Context     string `wick:"textarea;desc=Optional JSON-encoded RenderCtx ({Event, Node, Env, Secret, Workflow, Run, Dataset})."`
+	SampleEvent string `wick:"key=sample_event;desc=Optional preset event payload: slack.message, slack.block_action, slack.view_submission, cron."`
+}
+
+type pickerResolveInput struct {
+	Source string `wick:"required;desc=Picker source name (e.g. slack.channels, slack.users, slack.usergroups)."`
+	Query  string `wick:"desc=Optional case-insensitive substring filter on id/name."`
+	Limit  int    `wick:"number;desc=Optional cap on returned items (0 = no limit)."`
 }
 
 type listInput struct {

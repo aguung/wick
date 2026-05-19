@@ -17,6 +17,34 @@ type channelSchema struct {
 	ArgModes    string `wick:"key=arg_modes;desc=Per-field mode: fixed=literal value, expression=Go template render (default)"`
 }
 
+// Dependencies surfaces (channel, action) pairs through
+// workflow_describe so impact analysis sees the exact op the node
+// invokes — not just the channel module name.
+func (e *ChannelExecutor) Dependencies(n workflow.Node) []engine.NodeDependency {
+	if n.ChannelName == "" {
+		return nil
+	}
+	ref := n.ChannelName
+	if n.Op != "" {
+		ref += "." + n.Op
+	}
+	return []engine.NodeDependency{{Kind: engine.DepKindChannel, Ref: ref}}
+}
+
+// TemplateableFields surfaces the per-arg values so describe's
+// template cross-ref scan reaches them. Each Args entry is exposed as
+// args.<key> in issue paths so the warning shows which arg referenced
+// an undeclared node.
+func (e *ChannelExecutor) TemplateableFields(n workflow.Node) map[string]string {
+	out := map[string]string{}
+	for k, v := range n.Args {
+		if s, ok := v.(string); ok {
+			out["args."+k] = s
+		}
+	}
+	return out
+}
+
 func (e *ChannelExecutor) Descriptor() engine.NodeDescriptor {
 	return engine.NodeDescriptor{
 		Description: "Invoke a channel action (send_message, open_modal, …). Call workflow_integration for available ops + schemas.",

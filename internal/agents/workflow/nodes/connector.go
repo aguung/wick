@@ -19,6 +19,30 @@ type connectorSchema struct {
 	ArgModes string `wick:"key=arg_modes;desc=Per-field mode: fixed=literal, expression=Go template render"`
 }
 
+// Dependencies surfaces "<module>.<op>" pairs to workflow_describe.
+func (e *ConnectorExecutor) Dependencies(n workflow.Node) []engine.NodeDependency {
+	if n.Module == "" {
+		return nil
+	}
+	ref := n.Module
+	if n.Op != "" {
+		ref += "." + n.Op
+	}
+	return []engine.NodeDependency{{Kind: engine.DepKindConnector, Ref: ref}}
+}
+
+// TemplateableFields exposes each Args value as args.<key> for the
+// describe scan.
+func (e *ConnectorExecutor) TemplateableFields(n workflow.Node) map[string]string {
+	out := map[string]string{}
+	for k, v := range n.Args {
+		if s, ok := v.(string); ok {
+			out["args."+k] = s
+		}
+	}
+	return out
+}
+
 func (e *ConnectorExecutor) Descriptor() engine.NodeDescriptor {
 	return engine.NodeDescriptor{
 		Description: "Invoke a registered connector operation. Call workflow_connectors for available modules.",

@@ -39,6 +39,11 @@ type Ops struct {
 	Datasets    dataset.Service
 	StateStore  state.Store
 	Integration *integration.Registry
+	// Pickers maps picker source names (e.g. "slack.channels") to
+	// resolver functions wired at setup. Powers workflow_picker_resolve.
+	// Always non-nil after New(); setup code registers sources via
+	// Pickers.Register(...). See picker.go.
+	Pickers *PickerRegistry
 }
 
 // New wires the dispatcher.
@@ -53,6 +58,7 @@ func New(svc service.Service, e *engine.Engine, router *trigger.Router, c *canva
 		Providers:  providers,
 		Datasets:   datasets,
 		StateStore: ss,
+		Pickers:    NewPickerRegistry(),
 	}
 }
 

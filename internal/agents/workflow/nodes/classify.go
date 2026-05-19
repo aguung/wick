@@ -23,6 +23,14 @@ type classifyNodeSchema struct {
 	RetryOnMismatch int    `wick:"key=retry_on_mismatch;desc=Retry count when LLM returns unrecognized label"`
 }
 
+// Dependencies surfaces the provider name to workflow_describe.
+func (e *ClassifyExecutor) Dependencies(n workflow.Node) []engine.NodeDependency {
+	if n.Provider == "" {
+		return nil
+	}
+	return []engine.NodeDependency{{Kind: engine.DepKindProvider, Ref: n.Provider}}
+}
+
 func (e *ClassifyExecutor) Descriptor() engine.NodeDescriptor {
 	return engine.NodeDescriptor{
 		Description: "Classify natural-language input into an enum via LLM. Route downstream via case: labels matching verdict.",

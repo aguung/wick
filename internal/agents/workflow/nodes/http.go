@@ -42,6 +42,30 @@ type HTTPSchema struct {
 	TimeoutSec    string `wick:"key=timeout_sec;number;desc=Request timeout in seconds (default 30)"`
 }
 
+// Dependencies surfaces the URL (or its host when easy to extract)
+// as a generic http dependency so workflow_describe groups HTTP
+// outbound under deps.other.http.
+func (e *HTTPExecutor) Dependencies(n workflow.Node) []engine.NodeDependency {
+	if n.URL == "" {
+		return nil
+	}
+	return []engine.NodeDependency{{Kind: engine.DepKindHTTP, Ref: n.URL}}
+}
+
+// TemplateableFields exposes per-header / per-query values to
+// workflow_describe's cross-ref scan in addition to the generic
+// pool (url + body live in the default set).
+func (e *HTTPExecutor) TemplateableFields(n workflow.Node) map[string]string {
+	out := map[string]string{}
+	for k, v := range n.Headers {
+		out["headers."+k] = v
+	}
+	for k, v := range n.Query {
+		out["query."+k] = v
+	}
+	return out
+}
+
 // Descriptor exposes the schema + docs for the MCP catalog.
 func (e *HTTPExecutor) Descriptor() engine.NodeDescriptor {
 	return engine.NodeDescriptor{

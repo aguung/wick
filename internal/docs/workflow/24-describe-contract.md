@@ -21,7 +21,8 @@ biasa. Detail auto-generate dari descriptor yg sudah ada.
 - [x] Populate Tier-1 descriptors (Slack 7 events + 10 actions + 6 connector ops, GitHub 3 connector ops, 4 built-in nodes, channel trigger). Total ~32 descriptors.
 - [x] Smoke test via real `lab mcp serve` → all 4 routing branches resolve + 8 sampled descriptors return populated Docs
 - [ ] **Tier 2 (deferred):** wickmanager / workflow / httprest / crudcrud connector ops, secondary slack ops (search_channels, get_channel_info, get_thread_replies, get_user_info, get_permalink, send_ephemeral, delete_message, remove_reaction), secondary github ops (get_file, list_prs, add_comment), remaining built-in nodes (shell, transform, db_query, dataset, go_script, switch, end, channel, connector)
-- [ ] **Helper ops (deferred):** `workflow_validate`, `workflow_template_test`, `workflow_picker_resolve`, `workflow_describe`
+- [x] **Helper ops (4):** `workflow_validate` upgrade (did-you-mean + hints), `workflow_template_test` (render + introspect available keys), `workflow_picker_resolve` (slack.channels / slack.users / slack.usergroups), `workflow_describe` (graph + deps + template cross-ref). See [mcp/template_check.go](../../agents/workflow/mcp/template_check.go), [mcp/picker.go](../../agents/workflow/mcp/picker.go), [mcp/validate_rich.go](../../agents/workflow/mcp/validate_rich.go), [mcp/describe.go](../../agents/workflow/mcp/describe.go).
+- [x] **Flexibility design:** optional `engine.DependencyDeclarer` + `engine.TemplateableFieldsDeclarer` interfaces on executors. `workflow_describe` honors them per-node, falls back to a generic switch + fixed field pool. Future node types (`js`, `python`, `google_sheet`, …) get full coverage by implementing the declarer — no `describe.go` edit needed. See [engine/declarers.go](../../agents/workflow/engine/declarers.go).
 - [ ] **Skill slim (deferred):** strip skill `wick-workflow` ke pointer doang setelah catalog complete
 
 ### Why this doc exists
@@ -261,7 +262,12 @@ yang connect via HTTP MCP dapat full context dari descriptor.
 ### Implementation summary (2026-05-19)
 
 **Surface added:**
-- 1 MCP op: `workflow_node_detail(node_type)` — single universal lookup. Prefix routing: `channel:`, `connector:`, `trigger:`, no-prefix = built-in.
+- 1 detail op: `workflow_node_detail(node_type)` — single universal lookup. Prefix routing: `channel:`, `connector:`, `trigger:`, no-prefix = built-in.
+- 3 new helper ops + 1 upgrade:
+  - `workflow_template_test(template, sample_event?|context?)` — renders a Go template; on missing-key errors returns `available_keys` at the offending path + did-you-mean hint. Sample events available: `slack.message`, `slack.block_action`, `slack.view_submission`, `cron`.
+  - `workflow_picker_resolve(source, query?, limit?)` — resolves picker sources to `[{id, name}]`. Initial sources: `slack.channels`, `slack.users`, `slack.usergroups`. Registry pattern — channels/connectors register backends at setup.
+  - `workflow_validate(id)` UPGRADED — errors now carry `did_you_mean` + `hint` when the message matches a known failure shape (lowercase JSON key, misspelt match field, picker scalar vs object, missing identifier).
+  - `workflow_describe(id)` — human summary: triggers, graph shape, dependencies (channels/connectors/providers), dangling edges, undeclared template references.
 - `connector.Op` / `connector.OpDestructive` signature now takes `wickdocs.Docs` as the last param (breaking — all 117 existing callsites updated via one-shot AST rewriter, then discarded).
 
 **Tier 1 descriptors populated** (representative quirks/examples/I-O samples):

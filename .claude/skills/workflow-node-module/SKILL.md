@@ -377,6 +377,47 @@ Implement on the executor struct (pointer receiver). Optional but **strongly rec
 | `Example` | YAML snippet copy-pasteable into workflow.yaml. Use real field values, not placeholders |
 | `Schema` | `integration.StructSchema(myOpSchema{})` — never hardcode the map |
 | `Output` | `map[string]string` field name → description. Becomes `{{.Node.<id>.<key>}}` reference in templates |
+| `Docs` (embedded `wickdocs.Docs`) | Opt-in self-documentation: `Quirks`, `Examples`, `InputSample`, `OutputSample`, `TemplateableFields`, `PairWith`, `CommonPitfalls`. Surfaced by `workflow_node_detail`. Zero-value = no extra context. See [pkg/wickdocs/docs.go](../../../pkg/wickdocs/docs.go) and design [doc 24](../../../internal/docs/workflow/24-describe-contract.md). |
+
+### Optional declarer interfaces (`engine/declarers.go`)
+
+When your node has runtime semantics that `workflow_describe` / `workflow_validate` can't infer from the common pool, implement one or both of these optional interfaces on the executor:
+
+```go
+// engine.DependencyDeclarer — surface external surfaces the node touches.
+type DependencyDeclarer interface {
+    Dependencies(n workflow.Node) []engine.NodeDependency
+}
+
+// engine.TemplateableFieldsDeclarer — extend the cross-ref scan.
+type TemplateableFieldsDeclarer interface {
+    TemplateableFields(n workflow.Node) map[string]string
+}
+```
+
+`workflow_describe` calls these per node when present, falling back to a generic switch (channel / connector / agent / classify) and a fixed field pool (`prompt`, `prompt_file`, `url`, `body`, `expr`, `input`, `expression`, `sql`) otherwise. **No registration needed** — implementing the interface on your executor is the wiring.
+
+Implement `Dependencies` when the node touches an external surface a future maintainer would want to find via impact search ("which workflows break if we retire sheet ABC?"). Canonical kinds:
+
+| `engine.DepKind*` | Use for |
+|---|---|
+| `Channel` | Inbound/outbound channel nodes — emit `<channel>.<op>` for outbound, channel name for triggers |
+| `Connector` | Connector op invocation — emit `<module>.<op>` |
+| `Provider` | LLM provider — `claude` / `codex` / `gemini` |
+| `Dataset` | Dataset binding |
+| `Env` / `Secret` | When the node consumes a named env / secret key |
+| `Webhook` | Outbound webhook |
+| `Sheet` / `HTTP` / `File` | Self-explanatory |
+| custom string | Anything else — appears under `deps.other.<kind>` |
+
+Implement `TemplateableFields` when your schema carries Go-template strings on fields outside the default pool. Each returned entry is `path → value`; `path` is the label used in `workflow_describe` issue paths (e.g. `args.channel`, `headers.Authorization`, `sheet.range`).
+
+**Canonical examples to read:**
+
+- `nodes/channel.go::Dependencies` + `TemplateableFields` — declares `<channel>.<op>` and exposes per-arg templates.
+- `nodes/connector.go` — same pattern for connector ops.
+- `nodes/http.go` — declares the URL as an HTTP dep and exposes Headers + Query map values for the template scan.
+- `nodes/agent.go` / `nodes/classify.go` — declares the provider as a `provider` dep.
 
 ### Schema struct tags
 
@@ -463,6 +504,25 @@ Available built-in template functions live in `template/template.go::BuiltinFunc
 | **End nodes** | Terminator. Set `Result` field — surfaces as `{{.Run.final_result}}`. |
 | **Parallel / merge** | No new schema fields needed — engine reads `Branches` / `Inputs` / `Strategy` directly off `Node`. Descriptor doc should explain the fan-out/fan-in shape. |
 
+## MCP discovery surface
+
+AI clients reach your node via the workflow connector. Five ops to know:
+
+| Op | What it does | Powered by |
+|---|---|---|
+| `workflow_node_types` | List of all node types with summary + schema | `engine.Descriptors` (from your `Descriptor()`) |
+| `workflow_node_detail(node_type)` | Full self-doc for ONE type: schema, output, quirks, examples, samples, pair_with, pitfalls | `Descriptor()` + embedded `wickdocs.Docs` |
+| `workflow_template_test(template, sample_event?\|context?)` | Render a Go template against a synthetic context. Missing-key errors return `available_keys` + did-you-mean hint | `template.Render` + context introspection |
+| `workflow_picker_resolve(source, query?, limit?)` | Resolve picker source (`slack.channels`, `slack.users`, `slack.usergroups`) to `[{id, name}]` | `mcp.PickerRegistry` — channels register backends at setup |
+| `workflow_validate(id)` | Parse + validate with did-you-mean / hint pointers on common error shapes | `parse.Validate` + `mcp.ValidateRich` |
+| `workflow_describe(id)` | Human summary: triggers, graph shape, deps, dangling-edge + template-ref warnings | walks workflow + honors declarer interfaces above |
+
+**Contract guarantees for the declarers:**
+
+- `wickdocs.Docs.InputSample` / `OutputSample` — JSON string (not Go literal). Surfaced as-is by `workflow_node_detail` so the editor can render "try it" panels and AI sees realistic shapes.
+- `wickdocs.Docs.Examples` — full YAML node blocks copy-pasteable into `workflow.yaml`. Use them for usage patterns; reserve InputSample/OutputSample for request/response shapes.
+- `Dependencies` return value is JSON-serialised verbatim — pick stable `Ref` strings; refactors that change them break impact-analysis queries.
+
 ## Verifying your work
 
 ```bash
@@ -473,9 +533,12 @@ Smoke from MCP:
 
 1. Boot wick — `go run main.go server &`
 2. Call `workflow_node_types` — verify your new entry appears with the schema you declared.
-3. Create a draft workflow that uses the node, call `workflow_validate` — confirms no schema errors.
-4. Call `workflow_simulate` with a synthetic event — confirms `Execute` runs and outputs match your `Output` doc.
-5. Kill the port.
+3. Call `workflow_node_detail("<your_type>")` — confirm `quirks`, `examples`, `input_sample`, `output_sample` show what you populated (omitted when empty; that's intentional).
+4. Create a draft workflow that uses the node, call `workflow_validate` — confirms no schema errors and that any did-you-mean hints surface on typos.
+5. Call `workflow_describe(id)` — confirm your `Dependencies` declarer (if any) surfaces the right `Ref`, and `TemplateableFields` (if any) catches templates pointing at undeclared nodes.
+6. Call `workflow_simulate` with a synthetic event — confirms `Execute` runs and outputs match your `Output` doc.
+7. For templating bugs use `workflow_template_test` with `sample_event` instead of round-tripping through write_file → simulate.
+8. Kill the port.
 
 ## When to ask before acting
 
