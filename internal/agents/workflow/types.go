@@ -25,6 +25,8 @@ const (
 	NodeChannel        NodeType = "channel"
 	NodeConnector      NodeType = "connector"
 	NodeShell          NodeType = "shell"
+	NodeSwitch         NodeType = "switch"
+	NodeGoScript       NodeType = "go_script"
 	NodePython         NodeType = "python"
 	NodeHTTP           NodeType = "http"
 	NodeDBQuery        NodeType = "db_query"
@@ -56,7 +58,7 @@ func (t NodeType) IsDatasetNode() bool {
 // IsBranchSource reports whether nodes of this type produce a verdict
 // that filters outgoing edges by `case:`.
 func (t NodeType) IsBranchSource() bool {
-	return t == NodeClassify || t == NodeBranch
+	return t == NodeClassify || t == NodeBranch || t == NodeSwitch
 }
 
 // TriggerType discriminator for the polymorphic Trigger body.
@@ -218,8 +220,21 @@ type Node struct {
 	Input      string `yaml:"input,omitempty"`
 	Expression string `yaml:"expression,omitempty"`
 
+	// go_script — full Go program. Engine pipes RenderCtx JSON to
+	// stdin, parses stdout as JSON for the result.
+	Code string `yaml:"code,omitempty"`
+
 	// branch
 	Expr string `yaml:"expr,omitempty"`
+
+	// switch — first-match-wins rule list. Each rule's `when` is a Go
+	// template that renders to a bool (supports the same binary ops as
+	// `branch`: ==, !=, <, <=, >, >=) or any non-empty string (truthy).
+	// First rule whose `when` evaluates true wins; engine emits
+	// Verdict=<rule.case> so the edge `case: <label>` filter routes
+	// downstream. DefaultCase fires when no rule matches.
+	Cases       []SwitchCase `yaml:"cases,omitempty"`
+	DefaultCase string       `yaml:"default_case,omitempty"`
 
 	// dataset_*
 	Dataset    string         `yaml:"dataset,omitempty"`
@@ -293,6 +308,16 @@ type RetryPolicy struct {
 type ClassifyExample struct {
 	Input  string `yaml:"input"`
 	Output string `yaml:"output"`
+}
+
+// SwitchCase is one rule row for `switch` nodes. `When` is a Go
+// template expression (e.g. `{{.Event.Payload.action}} == "approve"`)
+// rendered against the run context; `Case` is the verdict label the
+// engine emits when the rule wins, matched against outgoing edge
+// `case:` filters.
+type SwitchCase struct {
+	When string `yaml:"when"`
+	Case string `yaml:"case"`
 }
 
 // DatasetOrder is one order-by clause.

@@ -453,6 +453,14 @@ func validateNodeBody(r *Result, path string, n workflow.Node) {
 		if n.Expr == "" {
 			r.Errors = append(r.Errors, Error{Path: path + ".expr", Message: "is required"})
 		}
+	case workflow.NodeSwitch:
+		if len(n.Cases) == 0 {
+			r.Errors = append(r.Errors, Error{Path: path + ".cases", Message: "is required"})
+		}
+	case workflow.NodeGoScript:
+		if n.Code == "" {
+			r.Errors = append(r.Errors, Error{Path: path + ".code", Message: "is required"})
+		}
 	case workflow.NodeParallel:
 		if len(n.Branches) == 0 {
 			r.Errors = append(r.Errors, Error{Path: path + ".branches", Message: "is required"})

@@ -81,8 +81,10 @@ func New(layout config.Layout) *Manager {
 	// registries have content.
 	// Executors with Descriptor() method auto-register schema via Engine.Register.
 	eng.Register(workflow.NodeShell, nodes.NewShellExecutor())
+	eng.Register(workflow.NodeGoScript, nodes.NewGoScriptExecutor())
 	eng.Register(workflow.NodeHTTP, nodes.NewHTTPExecutor())
 	eng.Register(workflow.NodeBranch, nodes.NewBranchExecutor())
+	eng.Register(workflow.NodeSwitch, nodes.NewSwitchExecutor())
 	eng.Register(workflow.NodeTransform, nodes.NewTransformExecutor())
 	eng.Register(workflow.NodeEnd, nodes.NewEndExecutor())
 	eng.Register(workflow.NodeClassify, nodes.NewClassifyExecutor(provReg))
