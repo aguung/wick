@@ -25,7 +25,10 @@
     {
       "label": "css: watch",
       "type": "shell",
-      "command": "bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css --watch",
+      "command": "bin/tailwindcss -i web/src/input.css -o web/public/css/app.css --watch",
+      "windows": {
+        "command": "bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css --watch"
+      },
       "isBackground": true,
       "problemMatcher": [
         {
@@ -46,7 +49,10 @@
     {
       "label": "debug: prep",
       "type": "shell",
-      "command": "templ generate ./... && bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-lab-gate.exe ./cmd/gate",
+      "command": "templ generate ./... && bin/tailwindcss -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-lab-gate ./cmd/gate",
+      "windows": {
+        "command": "templ generate ./... && bin/tailwindcss.exe -i web/src/input.css -o web/public/css/app.css && go build -o bin/wick-lab-gate.exe ./cmd/gate"
+      },
       "problemMatcher": []
     },
     {

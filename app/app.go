@@ -377,7 +377,7 @@ func Run() {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			ctx = log.With().Str("component", "server").Logger().WithContext(ctx)
-			return api.NewServer().Run(ctx, port)
+			return api.NewServer().WithBuildInfo(BuildAppVersion, BuildCommit, BuildTime).Run(ctx, port)
 		},
 	}
 	serverCmd.Flags().IntVar(&port, "port", defaultPort, "Listen on given port (env: PORT)")
@@ -404,7 +404,7 @@ func Run() {
 			defer stop()
 			ctx = log.With().Str("component", "server").Logger().WithContext(ctx)
 
-			srv := api.NewServer()
+			srv := api.NewServer().WithBuildInfo(BuildAppVersion, BuildCommit, BuildTime)
 
 			schedCtx := log.With().Str("component", "worker").Logger().WithContext(ctx)
 			// Auto-respawn loop. RunScheduler should only return when

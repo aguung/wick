@@ -30,7 +30,7 @@ func allCmd() *cobra.Command {
 			defer stop()
 			ctx = log.Logger.With().Str("component", "server").Logger().WithContext(ctx)
 
-			srv := api.NewServer()
+			srv := api.NewServer().WithBuildInfo(buildVersion, buildCommit, buildTime)
 
 			schedCtx := log.Logger.With().Str("component", "worker").Logger().WithContext(ctx)
 			// Auto-respawn loop. RunScheduler should only return when

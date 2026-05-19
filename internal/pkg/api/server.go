@@ -763,7 +763,7 @@ func NewServer() *Server {
 	// Home
 	r.Handle("/", http.HandlerFunc(homeHandler.Index))
 
-	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, channelReg: channelReg, db: db, gateBin: resolvedGateBin, jobsSvc: jobsSvc}
+	return &Server{router: r, configsSvc: configsSvc, authMidd: authMidd, agentsPool: agentsPool, channelReg: channelReg, db: db, gateBin: resolvedGateBin, jobsSvc: jobsSvc, mcpHandler: mcpHandler}
 }
 
 type Server struct {
@@ -775,6 +775,7 @@ type Server struct {
 	db         *gorm.DB
 	gateBin    string // resolved gate binary path; used for hook cleanup on shutdown
 	jobsSvc    *manager.Service
+	mcpHandler *mcp.Handler
 }
 
 // JobsSvc returns the manager.Service the API server owns. Exposed so
@@ -782,6 +783,13 @@ type Server struct {
 // — both the HTTP handlers and the cron loop then share one Service,
 // avoiding the double-fire race two independent Services would have.
 func (s *Server) JobsSvc() *manager.Service { return s.jobsSvc }
+
+// WithBuildInfo injects version/commit/buildTime into the HTTP MCP handler
+// so wick_info returns the same values as the stdio MCP server.
+func (s *Server) WithBuildInfo(version, commit, buildTime string) *Server {
+	s.mcpHandler.WithBuildInfo(version, commit, buildTime)
+	return s
+}
 
 // startChannels starts every configured channel and launches the
 // registry's hot-reload watcher. Replaces the per-channel watchSlack /

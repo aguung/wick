@@ -22,7 +22,7 @@ func serverCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			ctx = log.Logger.With().Str("component", "server").Logger().WithContext(ctx)
-			return api.NewServer().Run(ctx, port)
+			return api.NewServer().WithBuildInfo(buildVersion, buildCommit, buildTime).Run(ctx, port)
 		},
 	}
 
