@@ -103,37 +103,69 @@ func providersPage(c *tool.Ctx) {
 }
 
 // gateStatusVM converts the boot-time GateStatus + the live master
-// switch into the view-model rendered by gateStatusCard. The Note
-// field carries the human payoff: a one-sentence summary of what
-// happens given the current state. We compute it here so the wording
-// stays next to the UI it shows on.
+// switch + sub-policy modes into the view-model rendered by
+// gateStatusCard. Note carries a one-sentence consequence summary so
+// operators understand what each combination actually does at spawn
+// time.
 func gateStatusVM() view.GateStatusVM {
 	s := GetGateStatus()
 	configEnabled := masterGateEnabled()
-	bypass := bypassPermissionsEnabled()
-	// Bypass trumps the master switch — the spawner strips hook configs
-	// when bypass is on, so the gate cannot enforce regardless of intent.
+	permMode := currentPermissionMode()
+	askMode := currentAskUserMode()
+	// Permission bypass trumps the per-provider hook — spawner strips
+	// the hook config when mode=bypass, so the gate cannot enforce
+	// regardless of per-provider intent.
+	bypass := permMode == "bypass"
 	enabled := configEnabled && s.Binary != "" && !bypass
 	vm := view.GateStatusVM{
-		Enabled:      enabled,
-		Binary:       s.Binary,
-		Source:       s.Source,
-		Reason:       s.Reason,
-		BypassLocked: bypass,
+		Enabled:        enabled,
+		Binary:         s.Binary,
+		Source:         s.Source,
+		Reason:         s.Reason,
+		PermissionMode: permMode,
+		AskUserMode:    askMode,
+		BypassLocked:   bypass,
 	}
 	switch {
+	case !configEnabled:
+		vm.Note = "Gate is off — every sub-policy snaps to its unguarded default (permission bypass, ask_user off). Turn the master switch on to honour the modes below."
 	case bypass:
-		vm.Note = "Bypass permissions is on in agents config — the gate is locked off. Spawns run unguarded so non-interactive channels (Slack/HTTP) don't hang on permission prompts. Turn bypass off in agents settings to use the gate."
+		vm.Note = "Permission policy is set to bypass — spawns run unguarded so non-interactive channels (Slack/HTTP) don't hang on permission prompts. Switch to 'on' to gate per-provider hooks."
 	case enabled:
-		vm.Note = "Master switch is on. Per-provider hooks installed for providers you've explicitly enabled below — others fall through to their own permission flow."
+		vm.Note = "Gate is on. Permission prompts route through the per-provider hook below; ask_user routes to the web UI when set to 'on'."
 	case configEnabled && s.Binary == "":
 		vm.Note = "Gate is on in config but the gate binary did not resolve. Run `wick build` so the sibling sidecar or embedded fallback is available."
-	case !configEnabled:
-		vm.Note = "Gate is off. No provider has hook configs installed — every provider falls back to its own default permission handling. Turn this on, then enable individual providers below to start gating."
 	default:
-		vm.Note = "Gate binary not resolved — turn the master switch on after running `wick build`."
+		vm.Note = "Gate binary not resolved — re-run `wick build` and reload."
 	}
 	return vm
+}
+
+// currentPermissionMode returns the active GateConfig.PermissionMode,
+// defaulting to "on" when the row is empty so a fresh install enforces
+// permission prompts out of the box.
+func currentPermissionMode() string {
+	if globalConfigs == nil {
+		return "on"
+	}
+	v := globalConfigs.GetOwned("agents", "permission_mode")
+	if v == "" {
+		return "on"
+	}
+	return v
+}
+
+// currentAskUserMode returns the active GateConfig.AskUserMode,
+// defaulting to "on" when the row is empty.
+func currentAskUserMode() string {
+	if globalConfigs == nil {
+		return "on"
+	}
+	v := globalConfigs.GetOwned("agents", "ask_user_mode")
+	if v == "" {
+		return "on"
+	}
+	return v
 }
 
 // toggleGate flips the agents.gate_enabled master switch AND
@@ -162,11 +194,15 @@ func toggleGate(c *tool.Ctx) {
 		c.Error(http.StatusServiceUnavailable, "configs service not wired")
 		return
 	}
-	if bypassPermissionsEnabled() {
-		c.Error(http.StatusConflict, "bypass permissions is on — disable it in agents settings before toggling the gate")
+	// PermissionMode=bypass strips the per-provider hook config at spawn
+	// time, so enabling the master switch in that state silently no-ops.
+	// Refuse the toggle and tell the operator to flip permission_mode
+	// back to "on" first.
+	before, _ := strconv.ParseBool(globalConfigs.GetOwned("agents", "gate_enabled"))
+	if !before && bypassPermissionsEnabled() {
+		c.Error(http.StatusConflict, "permission_mode is set to bypass — switch it to 'on' in agents settings before turning the gate on")
 		return
 	}
-	before, _ := strconv.ParseBool(globalConfigs.GetOwned("agents", "gate_enabled"))
 	next := !before
 
 	if err := globalConfigs.SetOwned(c.Context(), "agents", "gate_enabled", strconv.FormatBool(next)); err != nil {
@@ -191,6 +227,34 @@ func toggleGate(c *tool.Ctx) {
 		go runBackgroundProbeAll()
 	}
 
+	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
+}
+
+// saveGateModes writes GateConfig.PermissionMode + GateConfig.AskUserMode
+// from the gate card form. Both fields constrained to a known enum;
+// unknown values fall back to "on" so a malformed POST never bricks
+// the gate into an unknown state.
+func saveGateModes(c *tool.Ctx) {
+	if globalConfigs == nil {
+		c.Error(http.StatusServiceUnavailable, "configs service not wired")
+		return
+	}
+	perm := strings.TrimSpace(c.Form("permission_mode"))
+	if perm != "bypass" {
+		perm = "on"
+	}
+	ask := strings.TrimSpace(c.Form("ask_user_mode"))
+	if ask != "off" {
+		ask = "on"
+	}
+	if err := globalConfigs.SetOwned(c.Context(), "agents", "permission_mode", perm); err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := globalConfigs.SetOwned(c.Context(), "agents", "ask_user_mode", ask); err != nil {
+		c.Error(http.StatusInternalServerError, err.Error())
+		return
+	}
 	c.Redirect(c.Base()+"/providers", http.StatusSeeOther)
 }
 
@@ -517,15 +581,13 @@ func masterGateEnabled() bool {
 	return b
 }
 
-// bypassPermissionsEnabled reads agents.bypass_permissions. Bypass and
-// gate are mutually exclusive: when this is true the spawner strips the
-// hook config and runs unguarded, so the gate UI must surface the lock
-// rather than offering enable buttons that wouldn't take effect.
+// bypassPermissionsEnabled reports whether the active permission
+// policy is "bypass" — i.e. spawns run unguarded. Mirrors the legacy
+// `agents.bypass_permissions` flag now that it lives under
+// GateConfig.PermissionMode. Used by the UI lock + the toggleGate
+// pre-check.
 func bypassPermissionsEnabled() bool {
-	if globalConfigs == nil {
-		return false
-	}
-	return globalConfigs.GetOwned("agents", "bypass_permissions") == "true"
+	return currentPermissionMode() == "bypass"
 }
 
 // autoRescanEnabled reads agents.auto_rescan from configs. Defaults

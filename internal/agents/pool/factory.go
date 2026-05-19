@@ -44,12 +44,12 @@ type ClaudeFactory struct {
 	// over Gate when non-nil. This lets operators toggle gate_enabled
 	// or edit AllowedCmds in the UI without restarting the server.
 	GateLoader func() *GateConfig
-	// BypassPermissionsLoader (optional) is called on every Build to
-	// check whether --permission-mode bypassPermissions should be added
-	// when no gate is active. Useful for non-interactive channels
-	// (Slack, HTTP) where the operator wants to skip prompts without
-	// enabling the full command gate.
-	BypassPermissionsLoader func() bool
+	// PermissionModeLoader (optional) is called on every Build to read
+	// the current GateConfig.PermissionMode value. Return "bypass" to
+	// force --permission-mode bypassPermissions on Claude (and the
+	// equivalent on codex/gemini) when no gate hook is installed.
+	// Any other value (including empty) means "prompt as normal".
+	PermissionModeLoader func() string
 
 	// SystemPromptLoader (optional) returns a global system prompt
 	// fragment appended to the loaded preset body on every spawn.
@@ -114,8 +114,8 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 	}
 
 	bypassPerms := false
-	if f.BypassPermissionsLoader != nil {
-		bypassPerms = f.BypassPermissionsLoader()
+	if f.PermissionModeLoader != nil {
+		bypassPerms = f.PermissionModeLoader() == "bypass"
 	}
 
 	// Normalize provider keys once — used by spawner dispatch, instance

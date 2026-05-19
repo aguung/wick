@@ -223,12 +223,11 @@ type MCPStatusVM struct {
 	Clients []MCPClientStatusVM
 }
 
-// GateStatusVM is the small "is the command gate alive?" card on
-// the Providers page. The fields cover the three things an operator
-// needs to glance at when claude is misbehaving:
-//   - Enabled: was the parent able to resolve a gate binary?
-//   - Binary:  which one (env override / sibling / PATH)?
-//   - Note:    one-sentence consequence text — what gets blocked.
+// GateStatusVM is the umbrella "what is the gate doing right now?"
+// card on the Providers page. Gate covers two sub-policies — the
+// permission prompt and the ask_user MCP tool — so the VM carries
+// both, plus the boot-time binary resolution state for the permission
+// hook.
 type GateStatusVM struct {
 	Enabled bool
 	Binary  string // absolute path (when enabled)
@@ -236,11 +235,19 @@ type GateStatusVM struct {
 	Reason  string // why disabled, when Enabled=false
 	Note    string // human-readable behavior summary; rendered as-is
 
-	// BypassLocked is true when agents.bypass_permissions=true. In that
-	// state the gate is forced off (spawner strips the hook config) and
-	// the UI must hide the toggle / per-provider enable buttons so the
-	// operator can't trigger no-op actions. Mutually exclusive with
-	// Enabled — never both true at once.
+	// PermissionMode is the active value of GateConfig.PermissionMode
+	// ("on" | "bypass"). "bypass" means the spawner strips the hook
+	// config and runs unguarded — UI surfaces that as a locked badge
+	// so operators can't toggle individual provider hooks (no-op).
+	PermissionMode string
+	// AskUserMode is the active value of GateConfig.AskUserMode
+	// ("on" | "off"). "off" causes the MCP ask_user tool to short-
+	// circuit with a policy error so the agent picks a default.
+	AskUserMode string
+
+	// BypassLocked is true when PermissionMode=="bypass". Retained for
+	// templ branches that already key off this flag; equivalent to
+	// PermissionMode == "bypass".
 	BypassLocked bool
 }
 
