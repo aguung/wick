@@ -31,11 +31,8 @@ func AppName() string {
 		// embedded "gate") must fall through to appname.Resolve() so the
 		// BuildAppName ldflag — baked into both server and gate builds — is
 		// the single source of truth regardless of how the binary is named.
-		if strings.HasSuffix(base, "-gate") {
-			stem := strings.TrimSuffix(base, "-gate")
-			if stem != "" {
-				return stem
-			}
+		if stem, ok := strings.CutSuffix(base, "-gate"); ok && stem != "" {
+			return stem
 		}
 	}
 	return appname.Resolve()
