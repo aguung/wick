@@ -1089,8 +1089,21 @@ func NewServer() *Server {
 	// Channel webhooks — public, no session auth (each channel enforces
 	// integrity inside its handler, e.g. Slack HMAC). Mounted from
 	// whichever channels implement HTTPHandlerProvider.
+	// REST channel endpoints need CORS so external SDKs and the in-page
+	// "Try it" panel can reach them from any origin.
 	for path, h := range channelReg.HTTPHandlers() {
-		r.Handle(path, h)
+		if strings.Contains(path, "/integrations/rest/") {
+			r.Handle(path, corsHandler(h))
+			// Register an explicit OPTIONS route for preflight on this path.
+			// Go's ServeMux method-qualified patterns (e.g. "POST /foo") do
+			// not match OPTIONS requests, so we need a separate handler.
+			parts := strings.SplitN(path, " ", 2)
+			if len(parts) == 2 && parts[0] != "OPTIONS" {
+				r.Handle("OPTIONS "+parts[1], corsHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})))
+			}
+		} else {
+			r.Handle(path, h)
+		}
 	}
 
 	// Workflow webhook triggers — public path /hooks/<...>. The handler

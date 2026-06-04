@@ -109,7 +109,7 @@ templ integrationTestPanel(testURL string) {
 		<div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
 			<div>
 				<h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Integration health</h3>
-				<p class="text-xs text-black-700 dark:text-black-600">Verify credentials and required Slack scopes.</p>
+				<p class="text-xs text-black-700 dark:text-black-600">Verify that the channel is configured and reachable.</p>
 			</div>
 			<button
 				type="button"
@@ -437,6 +437,77 @@ templ RestDocs(vm RestDocsVM) {
 			}
 			btns.forEach(function(b){
 				b.addEventListener('click', function(){ activate(b.getAttribute('data-rest-tab')); });
+			});
+		})();
+		</script>
+	</div>
+
+	<!-- Try it — simple in-browser test panel -->
+	<div class="mt-6 rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm p-5" data-rest-tryit data-endpoint={ vm.ChatEndpoint }>
+		<h2 class="text-base font-semibold text-black-900 dark:text-white-100 mb-1">Try it</h2>
+		<p class="text-sm text-black-700 dark:text-black-600 mb-4">Send a quick chat message using your Personal Access Token.</p>
+		<div class="flex flex-col gap-3">
+			<div>
+				<label class="block text-xs font-medium text-black-700 dark:text-black-600 mb-1" for="rest-tryit-pat">Personal Access Token</label>
+				<input
+					id="rest-tryit-pat"
+					type="password"
+					placeholder="wick_pat_…"
+					class="w-full rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 text-black-900 dark:text-white-100 text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
+				/>
+			</div>
+			<div>
+				<label class="block text-xs font-medium text-black-700 dark:text-black-600 mb-1" for="rest-tryit-msg">Message</label>
+				<textarea
+					id="rest-tryit-msg"
+					rows="3"
+					placeholder="Hello, who are you?"
+					class="w-full rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 text-black-900 dark:text-white-100 text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+				></textarea>
+			</div>
+			<button
+				type="button"
+				id="rest-tryit-send"
+				class="self-start rounded-lg bg-green-500 hover:bg-green-600 text-white-100 text-sm font-medium px-4 py-2 transition-colors"
+			>Send</button>
+			<div id="rest-tryit-result" class="hidden rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 text-black-900 dark:text-white-100 text-xs font-mono p-3 whitespace-pre-wrap break-words"></div>
+		</div>
+		<script>
+		(function(){
+			var panel = document.currentScript.closest('[data-rest-tryit]');
+			var endpoint = panel.getAttribute('data-endpoint');
+			var patInput = panel.querySelector('#rest-tryit-pat');
+			var msgInput = panel.querySelector('#rest-tryit-msg');
+			var sendBtn = panel.querySelector('#rest-tryit-send');
+			var result = panel.querySelector('#rest-tryit-result');
+			sendBtn.addEventListener('click', function(){
+				var pat = patInput.value.trim();
+				var msg = msgInput.value.trim();
+				if (!pat) { alert('Enter a Personal Access Token.'); return; }
+				if (!msg) { alert('Enter a message.'); return; }
+				sendBtn.disabled = true;
+				sendBtn.textContent = 'Sending…';
+				result.classList.remove('hidden');
+				result.textContent = 'Waiting for response…';
+				fetch(endpoint, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': 'Bearer ' + pat,
+					},
+					body: JSON.stringify({ model: '', messages: [{ role: 'user', content: msg }] }),
+				})
+					.then(function(resp) { return resp.json().then(function(b){ return { ok: resp.ok, body: b }; }); })
+					.then(function(res){
+						if (!res.ok) {
+							result.textContent = 'Error: ' + (res.body.error || JSON.stringify(res.body));
+							return;
+						}
+						var text = (res.body.choices && res.body.choices[0] && res.body.choices[0].message && res.body.choices[0].message.content) || JSON.stringify(res.body, null, 2);
+						result.textContent = text;
+					})
+					.catch(function(err){ result.textContent = 'Request failed: ' + err; })
+					.then(function(){ sendBtn.disabled = false; sendBtn.textContent = 'Send'; });
 			});
 		})();
 		</script>

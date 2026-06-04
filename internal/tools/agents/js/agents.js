@@ -1781,7 +1781,12 @@
         confirmAt(btn, "Kill the running agent?", { confirmLabel: "Kill" }).then(function (ok) {
           if (!ok) return;
           fetch(base + "/sessions/" + encodeURIComponent(id) + "/kill", { method: "POST" })
-            .then(function () { location.reload(); })
+            .then(function (resp) {
+              if (!resp.ok) {
+                return resp.json().then(function (b) { alert("Kill failed: " + (b.error || "HTTP " + resp.status)); });
+              }
+              location.reload();
+            })
             .catch(function (err) { console.error("kill failed:", err); });
         });
       });

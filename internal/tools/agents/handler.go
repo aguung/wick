@@ -1108,17 +1108,12 @@ func killAgent(c *tool.Ctx) {
 		return
 	}
 	id := c.PathValue("id")
-	sess, ok := globalMgr.Registry().Session(id)
-	if !ok {
+	if _, ok := globalMgr.Registry().Session(id); !ok {
 		c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	agentName := sess.Meta.ActiveAgent
-	if agentName == "" && len(sess.Agents) > 0 {
-		agentName = sess.Agents[0].Name
-	}
-	if err := globalPool.Kill(id, agentName); err != nil {
-		log.Ctx(c.Context()).Error().Msgf("kill agent %s/%s: %s", id, agentName, err.Error())
+	if err := globalPool.KillSession(id); err != nil {
+		log.Ctx(c.Context()).Error().Msgf("kill session %s: %s", id, err.Error())
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -978,6 +978,30 @@ func (p *Pool) Kill(sessionID, agentName string) error {
 	return entry.agent.Stop()
 }
 
+// KillSession stops every active agent whose key is prefixed by sessionID.
+// Use this from the operator UI where only the session id is known — Kill
+// requires an exact agent name which the UI often can't supply. Idempotent
+// if no agent is active; the normal onAgentExit hook still fires for each
+// stopped agent.
+func (p *Pool) KillSession(sessionID string) error {
+	prefix := sessionID + "::"
+	p.mu.Lock()
+	var targets []*runEntry
+	for k, e := range p.active {
+		if strings.HasPrefix(k, prefix) {
+			targets = append(targets, e)
+		}
+	}
+	p.mu.Unlock()
+	var lastErr error
+	for _, e := range targets {
+		if err := e.agent.Stop(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // Dequeue drops every queued request matching sessionID+agentName.
 // Returns the number of removed entries — operators use this to
 // cancel a session that has been waiting too long without ever
