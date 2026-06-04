@@ -993,13 +993,13 @@ func (p *Pool) KillSession(sessionID string) error {
 		}
 	}
 	p.mu.Unlock()
-	var lastErr error
+	var errs []error
 	for _, e := range targets {
 		if err := e.agent.Stop(); err != nil {
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // Dequeue drops every queued request matching sessionID+agentName.

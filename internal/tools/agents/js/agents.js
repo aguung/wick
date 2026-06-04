@@ -1783,7 +1783,7 @@
           fetch(base + "/sessions/" + encodeURIComponent(id) + "/kill", { method: "POST" })
             .then(function (resp) {
               if (!resp.ok) {
-                return resp.json().then(function (b) { alert("Kill failed: " + (b.error || "HTTP " + resp.status)); });
+                return resp.json().then(function (b) { alert(`Kill failed: ${b.error || `HTTP ${resp.status}`}`); });
               }
               location.reload();
             })
