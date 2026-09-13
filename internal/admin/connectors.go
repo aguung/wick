@@ -37,7 +37,11 @@ func (h *Handler) connectorsAdminPage(w http.ResponseWriter, r *http.Request) {
 	}
 	perms, _ := h.repo.ListToolPerms(ctx, paths)
 
-	accountsByRow, accountPerms, ownerLabels := h.connectorAccountsAdmin(ctx, rows)
+	accountsByRow, accountPerms, ownerLabels, err := h.connectorAccountsAdmin(ctx, rows)
+	if err != nil {
+		http.Error(w, "cannot load connected accounts: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	items := make([]view.ConnectorAdminRow, len(rows))
 	for i, c := range rows {
@@ -61,6 +65,31 @@ func (h *Handler) connectorsAdminPage(w http.ResponseWriter, r *http.Request) {
 		items[i] = row
 	}
 
+	// Reach badges: the instance row and every account under it are gated
+	// separately, so both get their own count.
+	accessPaths := make([]string, 0, len(paths))
+	accessPaths = append(accessPaths, paths...)
+	for i := range items {
+		for _, acc := range items[i].Accounts {
+			accessPaths = append(accessPaths, connectors.AccountTagPath(acc.Account.ID))
+		}
+	}
+	access := h.accessSummaries(ctx, accessPaths)
+	// One batch for every account on the page: resolving each account on its
+	// own was ~6 round trips each, which on a remote database is seconds.
+	batch := h.newAccountReachBatch(ctx, accessPaths)
+	for i := range items {
+		items[i].Access = access["/connectors/"+items[i].Connector.ID]
+		items[i].TagNames = view.TagNames(allTags, items[i].TagIDs)
+		for j := range items[i].Accounts {
+			acc := &items[i].Accounts[j]
+			// An account's reach is wider than its tags (owner, creator,
+			// admins, shared pool), so it is counted on its own terms.
+			acc.Access = batch.summaryFor(items[i].Connector, acc.Account)
+			acc.TagNames = view.TagNames(allTags, acc.TagIDs)
+		}
+	}
+
 	view.ConnectorsAdminPage(items, allTags, user).Render(ctx, w)
 }
 
@@ -69,17 +98,24 @@ func (h *Handler) connectorsAdminPage(w http.ResponseWriter, r *http.Request) {
 // on AccountTagPath) and their owners' display labels in one batched query
 // each. Returns accounts keyed by connector id, tag ids keyed by tool path,
 // and owner labels keyed by wick user id.
-func (h *Handler) connectorAccountsAdmin(ctx context.Context, rows []entity.Connector) (map[string][]entity.ConnectorAccount, map[string][]string, map[string]string) {
-	byRow := make(map[string][]entity.ConnectorAccount, len(rows))
+func (h *Handler) connectorAccountsAdmin(ctx context.Context, rows []entity.Connector) (map[string][]entity.ConnectorAccount, map[string][]string, map[string]string, error) {
+	ids := make([]string, 0, len(rows))
+	for _, c := range rows {
+		ids = append(ids, c.ID)
+	}
+	// One query for every instance's accounts. Asking per row was a round
+	// trip each, and this page lists every instance on the install.
+	byRow, err := h.connectors.ListAccountsFor(ctx, ids)
+	if err != nil {
+		// Swallowing this would render the page with accounts missing and
+		// nothing saying so — on the one screen whose job is showing who can
+		// reach which account, a silently short list is worse than an error.
+		return nil, nil, nil, err
+	}
 	paths := []string{}
 	ownerIDs := []string{}
 	for _, c := range rows {
-		accs, err := h.connectors.ListAccounts(ctx, c.ID)
-		if err != nil || len(accs) == 0 {
-			continue
-		}
-		byRow[c.ID] = accs
-		for _, acc := range accs {
+		for _, acc := range byRow[c.ID] {
 			paths = append(paths, connectors.AccountTagPath(acc.ID))
 			if acc.WickUserID != "" {
 				ownerIDs = append(ownerIDs, acc.WickUserID)
@@ -94,7 +130,7 @@ func (h *Handler) connectorAccountsAdmin(ctx context.Context, rows []entity.Conn
 			}
 		}
 	}
-	return byRow, tagsByPath, h.repo.UserLabels(ctx, ownerIDs)
+	return byRow, tagsByPath, h.repo.UserLabels(ctx, ownerIDs), nil
 }
 
 // setConnectorDisabledAdmin toggles the row-level Disabled flag on the
