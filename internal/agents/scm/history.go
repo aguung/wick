@@ -41,6 +41,10 @@ const (
 // LogOptions selects how much history to walk and which references.
 type LogOptions struct {
 	Limit int
+	// Skip is how many commits to pass over before collecting — the paging
+	// cursor. The state sets below are bounded by Skip+Limit rather than
+	// Limit, because a commit on page three still has to be found in them.
+	Skip int
 	// Refs is the set of history item references to walk. Empty or
 	// [RefsAuto] means the current branch plus its upstream; [RefsAll]
 	// means every branch; anything else is taken as literal ref names.
@@ -138,8 +142,12 @@ func History(ctx context.Context, dir string, opts LogOptions) ([]LogEntry, erro
 
 	// %H full sha for set membership, %h short for display, %p parents for
 	// the lanes, %D the refs pointing AT this commit for the badges.
-	format := strings.Join([]string{"%H", "%h", "%s", "%an", "%cr", "%cI", "%p", "%D"}, logFieldSep) + logRecSep
-	args := append([]string{"log", "--max-count=" + strconv.Itoa(limit), "--pretty=format:" + format}, refs...)
+	format := strings.Join([]string{"%H", "%h", "%s", "%an", "%cr", "%cI", "%p", "%D", "%ae"}, logFieldSep) + logRecSep
+	logArgs := []string{"log", "--max-count=" + strconv.Itoa(limit), "--pretty=format:" + format}
+	if opts.Skip > 0 {
+		logArgs = append(logArgs, "--skip="+strconv.Itoa(opts.Skip))
+	}
+	args := append(logArgs, refs...)
 	out, err := run(ctx, dir, args...)
 	if err != nil {
 		return nil, err
@@ -147,11 +155,19 @@ func History(ctx context.Context, dir string, opts LogOptions) ([]LogEntry, erro
 
 	// Commits on no remote branch at all, and commits not on the trunk.
 	// Both bounded by the same limit as the log above.
-	unpushed := revSet(ctx, dir, limit, append(append([]string{}, refs...), "--not", "--remotes")...)
+	// Bound the membership walks. A caller that asks to skip a million
+	// commits would otherwise make git walk a million commits twice to
+	// answer a question about the eighty on screen.
+	const maxBound = 10000
+	bound := limit + opts.Skip
+	if bound > maxBound || bound < limit {
+		bound = maxBound
+	}
+	unpushed := revSet(ctx, dir, bound, append(append([]string{}, refs...), "--not", "--remotes")...)
 	offTrunk := map[string]bool{}
 	trunk := TrunkRef(ctx, dir)
 	if trunk != "" {
-		offTrunk = revSet(ctx, dir, limit, append(append([]string{}, refs...), "--not", trunk)...)
+		offTrunk = revSet(ctx, dir, bound, append(append([]string{}, refs...), "--not", trunk)...)
 	}
 
 	entries := []LogEntry{}
@@ -168,6 +184,9 @@ func History(ctx context.Context, dir string, opts LogOptions) ([]LogEntry, erro
 			SHA: f[1], Subject: f[2], Author: f[3], RelDate: f[4], ISODate: f[5],
 			Parents: strings.Fields(f[6]),
 			Refs:    parseDecoration(f[7]),
+		}
+		if len(f) >= 9 {
+			e.AuthorEmail = f[8]
 		}
 		switch {
 		case unpushed[f[0]]:
