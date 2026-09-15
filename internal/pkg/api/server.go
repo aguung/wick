@@ -105,6 +105,7 @@ import (
 	"github.com/yogasw/wick/internal/startupscript"
 	"github.com/yogasw/wick/internal/tags"
 	"github.com/yogasw/wick/internal/tools"
+	"github.com/yogasw/wick/internal/agents/clitoken"
 	agentstool "github.com/yogasw/wick/internal/tools/agents"
 	encfieldstool "github.com/yogasw/wick/internal/tools/encfields"
 	providerstoragetool "github.com/yogasw/wick/internal/tools/provider-storage"
@@ -1349,6 +1350,15 @@ func NewServer() *Server {
 	// rather than beside the dispatcher because tokensSvc lives at this
 	// point in boot.
 	agentstool.SetTicketAPIAuth(tokensSvc, authSvc)
+	// A CLI token is useless without the address to send it to, and on a
+	// host behind a proxy that address is not the loopback port.
+	clitoken.SetBaseURL(configsSvc.AppURL)
+	// CLI tokens are signed statements, not rows in a map: the app's own
+	// session secret is what lets ANY process — including a successor that
+	// booted after the token was minted — verify one. Rotating that secret
+	// invalidates outstanding CLI tokens too, which is the behaviour
+	// somebody rotating it expects.
+	clitoken.SetSecret(configsSvc.SessionSecret)
 
 	// One call wires every built-in channel: setup.All handles EnsureChannel,
 	// config load, NewChannel, setters, and registry.Add per transport.
@@ -2527,8 +2537,15 @@ func NewServer() *Server {
 	//     allowlist (agentstool isTicketAPIPath) — the shim forwards it;
 	//   - a new module mounts its own r.Handle("/api/<thing>/", h) — the
 	//     longer ServeMux pattern wins over this catch-all automatically.
+	//
+	// Two validators sit in front of it, each owning its own paths and its
+	// own token prefix: PATs reach the ticket endpoints, and the CLI
+	// channel's session-bound tokens reach /api/cli/… and nothing else.
+	// Neither can widen the other, and a request the CLI middleware does
+	// not recognise as its own passes straight through to the ticket one.
 	r.Handle(agentstool.TicketRESTBase+"/",
-		agentstool.TicketRESTShim(agentstool.TicketAPIAuthMW(gatedTools)))
+		agentstool.TicketRESTShim(
+			agentstool.CLIAPIAuthMW(agentstool.TicketAPIAuthMW(gatedTools))))
 
 	// AI-router dashboards + OpenAI-compatible API proxies, mounted at the wick
 	// root (not under the tool) so each embedded Next.js app's root-absolute
@@ -2795,6 +2812,7 @@ func mcpLoopbackExempt(path, host string) bool {
 	return path == "/mcp" && isLoopbackHost(host)
 }
 
+
 // withAirouterRedirect 302-redirects a root-absolute request that belongs to an
 // embedded router's SPA (e.g. GET /home) to that router's mount
 // (/airouter/<id>/home). A Next.js dashboard navigates client-side to
@@ -3036,9 +3054,9 @@ func (s *Server) Run(ctx context.Context, port int) error {
 			n, err := s.mcpScopedTokens.SaveHandoff(baseDir)
 			if err != nil {
 				logger.Warn().Err(err).Msg("upgrade: could not hand MCP tokens to the successor")
-				return
+			} else {
+				logger.Info().Int("grants", n).Msg("upgrade: MCP tokens handed to the successor")
 			}
-			logger.Info().Int("grants", n).Msg("upgrade: MCP tokens handed to the successor")
 		}
 		// The other side of that: adopt what a predecessor left, then delete
 		// it. Unconditional — a file only exists when one was written.

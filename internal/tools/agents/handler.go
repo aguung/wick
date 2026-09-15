@@ -361,6 +361,19 @@ func Register(r tool.Router) {
 	// A custom ticket button was clicked — POST the ticket to that button's
 	// URL and report the outcome to the clicker.
 	r.POST("/api/tickets/{ticketID}/actions/{buttonID}", apiTicketAction)
+	// The same, one level up: a custom button in the ticket LIST's toolbar.
+	// It POSTs the list's filter (and the tickets it selects) rather than a
+	// single ticket, so it hangs off the project, not a ticket id.
+	r.POST("/api/projects/{id}/board-actions/{buttonID}", apiBoardAction)
+	// …and a way to follow the run it started, for a receiver that answered
+	// immediately and kept working. Only its OWN origin may be polled.
+	r.POST("/api/projects/{id}/board-actions/{buttonID}/poll", apiBoardActionPoll)
+
+	// The CLI channel: a shell speaking into the session that minted its
+	// token. No session id in any of these paths — the token IS the
+	// session, so there is nothing to substitute. See api_cli.go.
+	r.POST("/api/cli/send", apiCLISend)
+	r.GET("/api/cli/whoami", apiCLIWhoami)
 
 	// JSON API — ticket integrations. The event catalogue is served from the
 	// code so the settings UI and the docs cannot drift from what actually

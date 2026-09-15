@@ -657,6 +657,43 @@ func MetaToolDescriptors() []ToolDescriptor {
 			},
 		},
 		{
+			Name: "wick_cli_token",
+			Description: "Mint a short-lived token a SHELL can use to talk back into THIS session — " +
+				"the way to hand off long work (a build, a deploy, a migration) and be told how it went " +
+				"instead of guessing when to check.\n\n" +
+				"Pattern: mint a token, run the work detached with the token in its environment, end your " +
+				"turn. When the work finishes it runs `support-tools agent send --text \"…\"` and this " +
+				"session wakes on that message like any other. Failure reports itself the same way, so a " +
+				"build that dies at 3am is a message, not a silence you discover later.\n\n" +
+				"The token is bound to this session and cannot be pointed anywhere else: the endpoints take " +
+				"no session id at all. It expires (30 minutes by default, 2 hours at most), lives in memory " +
+				"so a daemon restart voids it, and carries your identity so everything the script sends is " +
+				"attributed to you.\n\n" +
+				"It survives a wick restart because it is signed rather than remembered, which is what " +
+				"makes it usable for deploying wick itself. It cannot be revoked: let it expire, or " +
+				"rotate the app's session secret to void every outstanding token at once.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"ttl": map[string]any{
+						"type": "string",
+						"description": "How long the token lives, as a Go duration (30m, 90m, 2h). " +
+							"Default 30m, capped at 2h — ask for the build's length, not for comfort.",
+					},
+					"note": map[string]any{
+						"type":        "string",
+						"description": "What this token is for ('build 0.1.261'). Travels in the token and comes back from whoami.",
+					},
+				},
+			},
+			Annotations: &ToolAnnotation{
+				Title:           "Mint a CLI token for this session",
+				ReadOnlyHint:    PtrBool(false),
+				DestructiveHint: PtrBool(false),
+				IdempotentHint:  PtrBool(false),
+			},
+		},
+		{
 			Name: "wick_schedule_message",
 			Description: "Schedule a message to be delivered into an agent session, once or repeatedly — " +
 				"the way to make yourself 'check back later' or run something on a cadence without staying running. " +
