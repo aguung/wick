@@ -18,6 +18,43 @@
   let open = $state(false);
   let filter = $state("");
 
+  // This button is not always near the right edge of the screen: the panel is
+  // a side rail that can be narrow, and the toolbar used to wrap, which put
+  // the button at the LEFT edge. A panel anchored `absolute right-0` then
+  // extends ~200px past the left side of a container whose ancestors are
+  // overflow-hidden, and the list is clipped down to a sliver — the tail of
+  // the placeholder and a column of shas.
+  //
+  // The toolbar no longer wraps, but "where is this button" is still not this
+  // component's to assume. So position from the button's own rect and clamp
+  // to the viewport, the way the commit hover card in HistoryView already
+  // does. `fixed` also takes it out of those overflow-hidden ancestors, so no
+  // later layout change can clip it again.
+  let btnEl = $state<HTMLElement | null>(null);
+  let panelLeft = $state(0);
+  let panelAt = $state(0);
+  let flip = $state(false);
+
+  const PANEL_W = 288; // w-72
+  const EDGE = 8; // keep this much clear of the viewport edge
+  const NEED_BELOW = 260; // roughly the panel at its usual height
+
+  function place() {
+    const r = btnEl?.getBoundingClientRect();
+    if (!r) return;
+    // Prefer right-aligned to the button (where it used to sit), but never
+    // past either edge.
+    panelLeft = Math.max(EDGE, Math.min(r.right - PANEL_W, window.innerWidth - PANEL_W - EDGE));
+    const below = window.innerHeight - r.bottom;
+    flip = below < NEED_BELOW && r.top > below;
+    panelAt = flip ? window.innerHeight - r.top + 4 : r.bottom + 4;
+  }
+
+  function toggle() {
+    open = !open;
+    if (open) place();
+  }
+
   const isAll = $derived(selected.length === 1 && selected[0] === "all");
   const isAuto = $derived(selected.length === 0);
   const label = $derived(
@@ -40,10 +77,13 @@
   }
 </script>
 
-<div class="relative">
+<svelte:window onresize={() => { if (open) place(); }} />
+
+<div class="relative shrink-0">
   <button
     type="button"
-    onclick={() => (open = !open)}
+    bind:this={btnEl}
+    onclick={toggle}
     title="Which branches the graph shows"
     class="flex items-center gap-1 rounded border border-white-300 dark:border-navy-600 px-1.5 py-0.5 text-[10px] text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors"
   >
@@ -56,7 +96,10 @@
     <!-- Click-away: a bare overlay rather than a document listener, which
          would also have to be torn down on unmount. -->
     <button type="button" class="fixed inset-0 z-10 cursor-default" aria-label="Close" onclick={() => (open = false)}></button>
-    <div class="absolute right-0 top-full z-20 mt-1 w-72 rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-1.5 shadow-lg">
+    <div
+      class="fixed z-20 w-72 max-w-[calc(100vw-1rem)] rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-1.5 shadow-lg"
+      style={`${flip ? "bottom" : "top"}:${panelAt}px;left:${panelLeft}px`}
+    >
       <input
         bind:value={filter}
         placeholder="Select references to view, type to filter"
