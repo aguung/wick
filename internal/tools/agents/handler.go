@@ -294,6 +294,8 @@ func Register(r tool.Router) {
 	// The session's checklists — the live one and the ones before it. The
 	// trace carries the same calls, but not which list is current.
 	r.GET("/api/sessions/{id}/todos", apiSessionTodos)
+	// Context meter for the composer ring + its panel.
+	r.GET("/api/sessions/{id}/context", apiSessionContext)
 	r.POST("/api/sessions/{id}/hops/reset", resetSessionHops)
 	r.POST("/api/delegations/{delegationID}/interrupt", interruptSubAgent)
 	r.POST("/api/delegations/{delegationID}/continue", continueSubAgent)
@@ -405,6 +407,8 @@ func Register(r tool.Router) {
 	// JSON API — providers SPA endpoints (mirrors templ providers handlers).
 	r.GET("/api/providers", apiProvidersList)
 	r.GET("/api/providers/storage", apiProvidersStorage)
+	// Token ledger: fleet-wide report, and one provider's slice of it.
+	r.GET("/api/providers/usage", apiUsageReport)
 	// Account + usage for every instance in one request, so the list can
 	// badge each card. Registered before the {type} pattern so the
 	// literal path wins.
@@ -413,6 +417,7 @@ func Register(r tool.Router) {
 
 	// Reconnect (login TTY): run the CLI's interactive login inside a
 	// wick PTY, streamed to the browser terminal over ws. TTL-bound.
+	r.GET("/api/providers/{type}/{name}/usage", apiProviderUsage)
 	r.GET("/api/providers/{type}/{name}/logintty", apiProviderLoginTTYStatus)
 	r.GET("/api/providers/{type}/{name}/logintty/usage", apiProviderLoginTTYUsage)
 	r.POST("/api/providers/{type}/{name}/logintty/usage/refresh", apiProviderLoginTTYUsageRefresh)

@@ -329,7 +329,6 @@ func TestRecordRawAppendsRawJSONL(t *testing.T) {
 	}
 }
 
-
 func TestApplyThinkingBufferedInEvents(t *testing.T) {
 	st, layout := newStore(t, "backend", false)
 	st.Apply(event.AgentEvent{Type: event.Thinking, Text: "let me think"})
@@ -835,5 +834,178 @@ func TestFlushSilentWhenNothingBufferedAndNoCause(t *testing.T) {
 	}
 	if lines := readConvLines(t, layout); len(lines) != 0 {
 		t.Fatalf("an unclaimed empty flush wrote %d turn(s): %+v", len(lines), lines)
+	}
+}
+
+// newStoreWithProvider is newStore plus a provider snapshot, which the
+// usage ledger keys its buckets by.
+func newStoreWithProvider(t *testing.T, provider string) (*Store, config.Layout) {
+	t.Helper()
+	st, layout := newStore(t, "backend", false)
+	st.provider = provider
+	return st, layout
+}
+
+// TestUsageLedgerRecordsPerProvider: the ledger is keyed by provider so a
+// session that switches mid-conversation keeps the two bills apart —
+// blending claude tokens with codex tokens produces a number nobody can
+// act on, since the prices and windows differ.
+func TestUsageLedgerRecordsPerProvider(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "claude/opus")
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "hi"})
+	st.Apply(event.AgentEvent{Type: event.Done, Usage: &event.TokenUsage{
+		Input: 10, CacheRead: 194475, CacheWrite: 16409, Output: 501,
+		ContextUsed: 210886, Window: 1000000, Model: "claude-opus-5", CostUSD: 0.27,
+	}})
+
+	su, err := LoadSessionUsage(layout, st.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := su.Providers[st.provider]
+	if p == nil {
+		t.Fatalf("no bucket for provider %q: %+v", st.provider, su.Providers)
+	}
+	if p.Turns != 1 || p.Output != 501 || p.CacheRead != 194475 {
+		t.Fatalf("flows: %+v", p.UsageTotals)
+	}
+	if p.ContextUsed != 210886 || p.ContextWindow != 1000000 {
+		t.Fatalf("level: used=%d window=%d", p.ContextUsed, p.ContextWindow)
+	}
+	if su.Totals.Output != 501 || su.Turns != 1 {
+		t.Fatalf("session totals: %+v turns=%d", su.Totals, su.Turns)
+	}
+	if len(p.Series) != 1 || p.Series[0].ContextUsed != 210886 {
+		t.Fatalf("series: %+v", p.Series)
+	}
+}
+
+// TestUsageLedgerAddsFlowsReplacesLevel: two turns must SUM the token
+// flows but keep only the latest context level. Summing the level would
+// report a window fuller than any model ever saw.
+func TestUsageLedgerAddsFlowsReplacesLevel(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "codex/gpt")
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "a"})
+	st.Apply(event.AgentEvent{Type: event.Done, Usage: &event.TokenUsage{
+		Input: 100, Output: 10, ContextUsed: 5000, CostUSD: 0.01,
+	}})
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "b"})
+	st.Apply(event.AgentEvent{Type: event.Done, Usage: &event.TokenUsage{
+		Input: 50, Output: 5, ContextUsed: 5200, CostUSD: 0.02,
+	}})
+
+	su, _ := LoadSessionUsage(layout, st.sessionID)
+	p := su.Providers[st.provider]
+	if p == nil {
+		t.Fatalf("no bucket for %q: %+v", st.provider, su.Providers)
+	}
+	if p.Input != 150 || p.Output != 15 {
+		t.Fatalf("flows should add: %+v", p.UsageTotals)
+	}
+	if p.ContextUsed != 5200 {
+		t.Fatalf("level should be the latest, got %d", p.ContextUsed)
+	}
+	if p.CostUSD < 0.029 || p.CostUSD > 0.031 {
+		t.Fatalf("cost should add: %v", p.CostUSD)
+	}
+	if len(p.Series) != 2 {
+		t.Fatalf("series should keep both turns: %+v", p.Series)
+	}
+}
+
+// TestUsageLedgerSkipsTurnsWithoutUsage: a provider that reports nothing
+// must leave no bucket at all, rather than a row of zeroes that reads as
+// "this turn was free".
+func TestUsageLedgerSkipsTurnsWithoutUsage(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "claude/opus")
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "a"})
+	st.Apply(event.AgentEvent{Type: event.Done})
+
+	su, _ := LoadSessionUsage(layout, st.sessionID)
+	if len(su.Providers) != 0 || su.Turns != 0 {
+		t.Fatalf("want an empty ledger, got %+v", su)
+	}
+}
+
+// TestApplyCompactionWritesMarkerTurn: a compaction must leave a visible
+// record. The turn above it is flushed first so the marker lands after
+// the reply it followed, and the turn does NOT end — the CLI keeps going
+// in the same session.
+func TestApplyCompactionWritesMarkerTurn(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "claude/opus")
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "before"})
+	ended, err := st.Apply(event.AgentEvent{
+		Type: event.Compaction,
+		Compaction: &event.CompactionInfo{
+			Trigger: "manual", PreTokens: 31261, PostTokens: 4051,
+			DroppedTokens: 27210, DurationMS: 13226,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended {
+		t.Fatal("compaction must not end the turn")
+	}
+
+	lines := readConvLines(t, layout)
+	if len(lines) != 2 {
+		t.Fatalf("want the flushed reply + the marker, got %d: %+v", len(lines), lines)
+	}
+	if lines[0].Text != "before" {
+		t.Fatalf("the reply should be flushed first: %+v", lines[0])
+	}
+	m := lines[1]
+	if m.Role != "system" || m.Kind != KindCompaction {
+		t.Fatalf("marker: role=%q kind=%q", m.Role, m.Kind)
+	}
+	if m.Extras["trigger"] != "manual" || m.Extras["pre_tokens"] != "31261" || m.Extras["post_tokens"] != "4051" {
+		t.Fatalf("extras should carry the numbers as data: %+v", m.Extras)
+	}
+	// The text is the plain-channel fallback, so it has to read on its own.
+	if m.Text != "Context compacted (manual) — 31.3k → 4.1k tokens" {
+		t.Fatalf("fallback text: %q", m.Text)
+	}
+}
+
+// TestApplyCompactionWithoutInfoIsIgnored: a malformed frame must not
+// write a marker with zeroes, which would read as "compacted to nothing".
+func TestApplyCompactionWithoutInfoIsIgnored(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "claude/opus")
+	st.Apply(event.AgentEvent{Type: event.Compaction})
+	if lines := readConvLines(t, layout); len(lines) != 0 {
+		t.Fatalf("want no turns, got %+v", lines)
+	}
+}
+
+// TestApplyCompactionSyncsTheMeter: the recorded context level must drop
+// with the compaction, not on the next turn. Otherwise the ring shows
+// the pre-compaction number right beside a marker saying it shrank.
+func TestApplyCompactionSyncsTheMeter(t *testing.T) {
+	st, layout := newStoreWithProvider(t, "claude/opus")
+	st.Apply(event.AgentEvent{Type: event.TextDelta, Text: "a"})
+	st.Apply(event.AgentEvent{Type: event.Done, Usage: &event.TokenUsage{
+		Input: 10, Output: 5, ContextUsed: 94_400, Window: 1_000_000,
+	}})
+	st.Apply(event.AgentEvent{Type: event.Compaction, Compaction: &event.CompactionInfo{
+		Trigger: "manual", PreTokens: 94_400, PostTokens: 6_800,
+	}})
+
+	su, _ := LoadSessionUsage(layout, st.sessionID)
+	p := su.Providers[st.provider]
+	if p.ContextUsed != 6_800 {
+		t.Fatalf("level should follow the compaction, got %d", p.ContextUsed)
+	}
+	// The window is a property of the model, not of the history — it must
+	// survive a compaction untouched.
+	if p.ContextWindow != 1_000_000 {
+		t.Fatalf("window should be unchanged, got %d", p.ContextWindow)
+	}
+	// Spend is not refunded by compaction.
+	if p.Output != 5 || p.Input != 10 {
+		t.Fatalf("flows should be untouched: %+v", p.UsageTotals)
+	}
+	if len(p.Series) != 2 || p.Series[1].ContextUsed != 6_800 {
+		t.Fatalf("series should record the cliff: %+v", p.Series)
 	}
 }
