@@ -941,6 +941,27 @@ func notesScopeFromQuery(c *tool.Ctx) (notes.Scope, bool) {
 	return sc, true
 }
 
+// notesProjectID names the project a notes scope belongs to.
+//
+// A session that is NOT on a ticket resolves to its own scope, which carries
+// no project id — but the session still belongs to one, and the rail needs
+// that project to know whether tickets run here at all. Reading it off the
+// scope alone left the field missing on every ticket-less session, and the
+// rail reads a missing field as "older server, show the tab" — so a project
+// with tickets switched off still got a Ticket tab and lost its Notes one.
+func notesProjectID(sc notes.Scope) string {
+	if sc.ProjectID != "" {
+		return sc.ProjectID
+	}
+	if sc.SessionID == "" {
+		return ""
+	}
+	if sess, ok := globalMgr.Registry().Session(sc.SessionID); ok {
+		return sess.Meta.ProjectID
+	}
+	return ""
+}
+
 // apiNotesList handles GET /api/notes?ticket_id=…|session_id=…
 func apiNotesList(c *tool.Ctx) {
 	if notReady(c) {
@@ -969,7 +990,7 @@ func apiNotesList(c *tool.Ctx) {
 	// never turned on produces one nobody will ever look at. Sent
 	// unconditionally — a missing field means an older server, and the rail
 	// falls back to showing the tab rather than hiding it on a guess.
-	if p, pok := globalMgr.Registry().Project(sc.ProjectID); pok {
+	if p, pok := globalMgr.Registry().Project(notesProjectID(sc)); pok {
 		out["ticket_enabled"] = p.Meta.Ticket.Enabled
 	}
 	// When the scope resolved to a ticket, name it: the conversation rail
