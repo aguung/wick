@@ -2200,6 +2200,52 @@ func NewServer() *Server {
 	// onto existing instance rows. Idempotent — rows that already carry
 	// tags keep their admin edits.
 	customConnSvc.SetTags(tagsSvc)
+
+	// What a tool module is allowed to know about its caller. Wired here
+	// rather than at the router, because tag NAMES need tagsSvc and that
+	// only exists at this point in boot.
+	//
+	// Two doors, one shape: a browser session (Ctx.User) and a Personal
+	// Access Token (WebhookCtx.TokenUser). Both carry the person's access
+	// tags, so a tool everyone may read can still gate its writes.
+	toolTagNames := func(ctx context.Context, ids []string) []string {
+		if len(ids) == 0 {
+			return nil
+		}
+		rows, err := tagsSvc.TagsByIDs(ctx, ids)
+		if err != nil {
+			return nil
+		}
+		names := make([]string, 0, len(rows))
+		for _, t := range rows {
+			names = append(names, t.Name)
+		}
+		return names
+	}
+	tool.SetUserResolver(func(r *http.Request) (tool.User, bool) {
+		u := login.GetUser(r.Context())
+		if u == nil {
+			return tool.User{}, false
+		}
+		return tool.User{
+			ID: u.ID, Name: u.Name, Email: u.Email, IsAdmin: u.IsAdmin(),
+			Tags: toolTagNames(r.Context(), login.GetUserTagIDs(r.Context())),
+		}, true
+	})
+	tool.SetTokenResolver(func(ctx context.Context, plain string) (tool.User, bool) {
+		uid, err := tokensSvc.Authenticate(ctx, plain)
+		if err != nil {
+			return tool.User{}, false
+		}
+		u, err := authSvc.GetUserByID(ctx, uid)
+		if err != nil || u == nil || !u.Approved {
+			return tool.User{}, false
+		}
+		return tool.User{
+			ID: u.ID, Name: u.Name, Email: u.Email, IsAdmin: u.IsAdmin(),
+			Tags: toolTagNames(ctx, authSvc.GetUserFilterTagIDs(ctx, uid)),
+		}, true
+	})
 	agentstool.SetTagsService(tagsSvc)
 	agentstool.SetSkillStore(agentskills.NewStore(db))
 	customConnSvc.EnsureInstanceTags(context.Background())
