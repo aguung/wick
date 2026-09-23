@@ -676,11 +676,14 @@ func apiTicketUpdate(c *tool.Ctx) {
 			tk.Fields[k] = v
 		}
 	}
-	if err := saveWithRequestedTime(tk, callerActor(c), req.UpdatedAt); err != nil {
+	saved, err := saveWithRequestedTime(tk, callerActor(c), req.UpdatedAt)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, tk)
+	// The SAVED ticket, so the card that just moved shows the time it moved
+	// and the board re-sorts on it without waiting for a reload.
+	c.JSON(http.StatusOK, saved)
 }
 
 // saveWithRequestedTime applies the PATCH's updated_at choice.
@@ -693,16 +696,19 @@ func apiTicketUpdate(c *tool.Ctx) {
 // a mirror that mis-formats its timestamps would otherwise stamp every
 // ticket with the sync's clock and nobody would notice until the board's
 // order stopped meaning anything.
-func saveWithRequestedTime(tk ticket.Ticket, actor ticket.Actor, want string) error {
+// It returns the SAVED ticket, not the one handed in: the save stamps
+// updated_at, and answering with the caller's copy told the board a time that
+// was already wrong.
+func saveWithRequestedTime(tk ticket.Ticket, actor ticket.Actor, want string) (ticket.Ticket, error) {
 	switch v := strings.TrimSpace(want); v {
 	case "":
-		return ticket.SaveAs(globalLayout, tk, actor)
+		return ticket.SaveAsAt(globalLayout, tk, actor, time.Time{})
 	case "keep":
 		return ticket.SaveAsKeeping(globalLayout, tk, actor)
 	default:
 		at, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return fmt.Errorf("updated_at must be RFC3339 or \"keep\": %w", err)
+			return ticket.Ticket{}, fmt.Errorf("updated_at must be RFC3339 or \"keep\": %w", err)
 		}
 		return ticket.SaveAsAt(globalLayout, tk, actor, at)
 	}

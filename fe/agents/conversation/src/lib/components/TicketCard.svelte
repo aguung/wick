@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { TicketCard, TicketField, TicketSessionRow } from "../types/agents.js";
   import { timeAgo } from "../timeFormat.js";
+  /* The clock, so a card's "5h ago" ages on its own instead of freezing at
+     whatever it said when the board was drawn. */
+  import { now } from "../stores/now.js";
   import { Effect } from "effect";
   import { WickClientLayer } from "@wick-fe/common-api";
   import { getTicket } from "../api/tickets.js";
@@ -210,7 +213,7 @@
     {:else}
       <span>unassigned</span>
     {/if}
-    <span class="ml-auto shrink-0">{timeAgo(ticket.updated_at)}</span>
+    <span class="ml-auto shrink-0">{timeAgo(ticket.updated_at, $now)}</span>
   </div>
 
   <!-- The ticket's sessions, listed rather than counted: a row is the drag

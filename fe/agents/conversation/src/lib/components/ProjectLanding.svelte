@@ -259,6 +259,54 @@
       .catch(() => { /* keep the previous board on a transient failure */ });
   }
 
+  /* ── keeping the board honest about time ──
+
+     A ticket does not only change from this page. A sync writes one, an
+     agent moves one, somebody else drags one — and until now the board only
+     re-fetched when the FILTER changed, so it sat on whatever it was handed
+     at open. "Updated 5h ago" stayed 5h ago for the rest of the day, and the
+     column order with it, because the order IS the timestamp.
+
+     So it polls. Only while the tab is actually being looked at: a
+     background tab that keeps asking is wasted work on the server and, on
+     this box, wasted CPU somebody else needs. Returning to the tab refetches
+     at once rather than waiting out the remainder of an interval — coming
+     back is exactly when the board is most likely to be stale. */
+  const BOARD_POLL_MS = 30_000;
+
+  /* A drag pauses it. The board applies a move optimistically and confirms
+     it with a PATCH; a poll landing in that gap would hand back the
+     pre-move board and the card would visibly jump home and back. */
+  let dragging = $state(false);
+  $effect(() => {
+    const on = () => { dragging = true; };
+    const off = () => { dragging = false; };
+    window.addEventListener("dragstart", on);
+    window.addEventListener("dragend", off);
+    window.addEventListener("drop", off);
+    return () => {
+      window.removeEventListener("dragstart", on);
+      window.removeEventListener("dragend", off);
+      window.removeEventListener("drop", off);
+    };
+  });
+
+  $effect(() => {
+    if (!filterLoaded) return;
+    const due = () => {
+      if (dragging) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      reloadBoard();
+    };
+    const id = setInterval(due, BOARD_POLL_MS);
+    const onVisible = () => { if (!document.hidden) due(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  });
+
   /* ── a ticket that just lost its last chat ──
      A ticket with no sessions tracks nothing, so removal is offered. The
      answer can be made standing ("don't ask again"), which is safe here

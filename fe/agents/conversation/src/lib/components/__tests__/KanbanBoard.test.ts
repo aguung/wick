@@ -526,3 +526,4 @@ describe("KanbanBoard — search", () => {
     expect(screen.getAllByText("No match here").length).toBeGreaterThan(0);
   });
 });
+
