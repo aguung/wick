@@ -23,6 +23,7 @@
   import KanbanBoard from "./KanbanBoard.svelte";
   import TicketDetail from "./TicketDetail.svelte";
   import OwnerTabs from "./OwnerTabs.svelte";
+  import ProjectMenu from "./ProjectMenu.svelte";
 
   type Props = {
     base: string;
@@ -389,59 +390,7 @@
      width — they are work surfaces, like any ticketing tool. The back link,
      header, and composer stay a centered column no matter the view, so
      typing a message never happens in a viewport-wide input. -->
-<div class="flex flex-col h-full p-6 mx-auto w-full gap-6">
-  <!-- One slim top bar for every view: breadcrumb identity on the left, the
-       project's two actions on the right. The old hero header (icon, path,
-       big title) said the same things with far more chrome; the path and
-       chat count now live in the name's tooltip and a muted suffix. -->
-  <div class="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-x-2 gap-y-1 text-xs text-black-700 dark:text-black-600">
-    <a
-      href={`${base}/sessions`}
-      class="inline-flex items-center gap-1 transition-colors hover:text-green-600 dark:hover:text-green-400"
-    >
-      <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <path d="M10 4L6 8l4 4" stroke-linecap="round" stroke-linejoin="round"></path>
-      </svg>
-      All chats
-    </a>
-    <span aria-hidden="true">/</span>
-    <span
-      class="max-w-[240px] truncate text-sm font-semibold text-black-900 dark:text-white-100"
-      title={project.path || project.name}
-    >{project.name}</span>
-    {#if ticketEnabled && openTicketId}
-      <span aria-hidden="true">/</span>
-      <span class="min-w-0 truncate font-mono" title={openTicketId}>{openTicketId}</span>
-    {:else}
-      <span class="text-black-600 dark:text-black-700">{chatCount} chats · {project.managed ? "managed" : "custom"}</span>
-    {/if}
-
-    <span class="ml-auto flex items-center gap-2">
-      <button
-        type="button"
-        onclick={onPin}
-        aria-pressed={project.pinned}
-        title={project.pinned ? "Pinned as default" : "Pin as default"}
-        class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors {project.pinned
-          ? 'border-green-500 bg-green-500 text-white-100 hover:bg-green-600'
-          : 'border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-700 text-black-800 dark:text-white-100 hover:bg-white-200 dark:hover:bg-navy-600'}"
-      >
-        <span class="text-[11px] leading-none {project.pinned ? '' : 'grayscale'}">📌</span>
-        {project.pinned ? "Pinned" : "Pin"}
-      </button>
-      <a
-        href={`${base}/projects/${project.id}`}
-        class="inline-flex items-center gap-1.5 rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-700 px-2.5 py-1 text-[11px] font-medium text-black-800 dark:text-white-100 hover:bg-white-200 dark:hover:bg-navy-600 transition-colors"
-      >
-        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="8" cy="8" r="6"></circle>
-          <path d="M8 5v3l2 2" stroke-linecap="round" stroke-linejoin="round"></path>
-        </svg>
-        Settings
-      </a>
-    </span>
-  </div>
-
+<div class="flex flex-col h-full p-6 mx-auto w-full gap-4">
   <!-- Session list / ticket board. The List|Card toggle appears only when
        this project has ticket mode enabled; the choice is saved per user.
        Width follows the job: the plain list stays the composer's column, the
@@ -476,15 +425,25 @@
               : "text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-600")}
           >Card</button>
         </div>
-        {#if viewMode === "list"}
-          <OwnerTabs value={ownerTab} onChange={onOwnerTab} />
-        {/if}
+        <div class="ml-auto flex items-center gap-2">
+          {#if viewMode === "list"}
+            <OwnerTabs value={ownerTab} onChange={onOwnerTab} />
+          {/if}
+          <ProjectMenu {base} {project} {chatCount} {onPin} />
+        </div>
       </div>
     {:else if !ticketEnabled && !openTicketId}
       <!-- No board here, but the same scope choice: your chats first, the
            whole project's on request. -->
-      <div class="flex items-center justify-end">
+      <div class="flex items-center justify-end gap-2">
         <OwnerTabs value={ownerTab} onChange={onOwnerTab} />
+        <ProjectMenu {base} {project} {chatCount} {onPin} />
+      </div>
+    {:else if ticketEnabled && openTicketId}
+      <!-- A ticket's page has its own Back; only the project's actions need
+           somewhere to live. -->
+      <div class="flex items-center justify-end">
+        <ProjectMenu {base} {project} {chatCount} {onPin} />
       </div>
     {/if}
 

@@ -2135,6 +2135,19 @@
   // and the Sub-agents tab until this session has actually delegated. The
   // Sub-agents filter uses the TOTAL count, not the live one, so finished
   // results stay reachable after every sub-agent has returned.
+  /* Whether the Ticket tab is in the strip at all. It is also what decides
+     the Notes tab's fate: when tickets are on, the Ticket panel already
+     shows the description AND the notes, so a second tab holding the same
+     notes was two doors into one room — you opened Ticket to read the ask,
+     then Notes to read the answer, both of which were already on the first
+     one. With tickets off there is no Ticket tab and Notes stands alone,
+     which is the case it was built for. */
+  const ticketTabShown = $derived(
+    notesInfo !== null &&
+      activeProjectId !== null &&
+      (notesInfo.ticket_enabled !== false || notesInfo.ticket != null),
+  );
+
   const railTabs = $derived(
     railTabsAll.filter(
       (t) =>
@@ -2143,18 +2156,15 @@
         // own — the badge promotes it into the strip from there.
         (t.id !== "todos" || todosActive !== null || todosHistory.length > 0) &&
         (t.id !== "subagents" || subAgents.length > 0) &&
-        // Notes need nothing but a reachable scope; the Ticket tab needs a
-        // project, since a chat outside one cannot hold a ticket.
-        (t.id !== "notes" || notesInfo !== null) &&
+        // Notes need nothing but a reachable scope — and no Ticket tab to
+        // have absorbed them.
+        (t.id !== "notes" || (notesInfo !== null && !ticketTabShown)) &&
         // The Ticket tab also needs the project to actually run tickets.
         // Offering to file one on a board nobody turned on produces a ticket
         // no board will ever show. A session already ON a ticket keeps the
         // tab whatever the setting says — tickets can be switched off after
         // the fact, and that must not strand the ones already filed.
-        (t.id !== "ticket" ||
-          (notesInfo !== null &&
-            activeProjectId !== null &&
-            (notesInfo.ticket_enabled !== false || notesInfo.ticket != null))),
+        (t.id !== "ticket" || ticketTabShown),
     ),
   );
 
@@ -2299,6 +2309,12 @@
   $effect(() => {
     if ((railTab === "ticket" || railTab === "notes") && notesInfo === null) railTab = null;
   });
+  // Notes was the last-open tab and this project runs tickets: the notes did
+  // not go anywhere, they are on the Ticket panel. Land there rather than on
+  // a closed rail, which would read as the tab having been taken away.
+  $effect(() => {
+    if (railTab === "notes" && ticketTabShown) railTab = "ticket";
+  });
   // If the Browser panel is open but its tab just disappeared, close the panel.
   $effect(() => {
     if (railTab === "browser" && !hasBrowserInstance) railTab = null;
@@ -2354,6 +2370,10 @@
   function railCount(id: RailTab): number {
     if (id === "todos") return openTodoCount;
     if (id === "notes") return noteCount;
+    // The Ticket tab wears the note badge once it holds the notes: the count
+    // is the reason anyone opens it, and dropping the badge with the Notes
+    // tab would hide that anything had been written.
+    if (id === "ticket" && ticketTabShown) return noteCount;
     if (id === "files") return filesCount;
     if (id === "process") return processCount;
     if (id === "workspace") return workspaceCount;
@@ -2668,7 +2688,6 @@
           notes={notesInfo?.notes}
           users={notesInfo?.users}
           onOpenTicket={(id) => { window.location.href = `${base}/sessions?project=${encodeURIComponent(activeProjectId ?? "")}&ticket=${encodeURIComponent(id)}`; }}
-          onOpenNotes={() => { railTab = "notes"; }}
           onChanged={loadTicket}
         />
       {:else if railTab === "notes" && notesInfo}
@@ -2857,7 +2876,6 @@
               notes={notesInfo?.notes}
               users={notesInfo?.users}
               onOpenTicket={(id) => { window.location.href = `${base}/sessions?project=${encodeURIComponent(activeProjectId ?? "")}&ticket=${encodeURIComponent(id)}`; }}
-              onOpenNotes={() => { railTab = "notes"; }}
               onChanged={loadTicket}
             />
           {:else if railTab === "notes" && notesInfo}
