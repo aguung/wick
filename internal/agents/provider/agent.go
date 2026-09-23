@@ -949,6 +949,10 @@ func (a *Agent) run(ctx context.Context) {
 	// restarted on ToolResult so the normal idle-kill still applies once
 	// the tool finishes.
 	toolInFlight := false
+	// Separates the assistant messages of one turn (text → tool → text) so
+	// they do not arrive glued together. Per-run state; the loop below is
+	// the only writer.
+	var joiner textJoiner
 
 	for {
 		var line string
@@ -993,6 +997,21 @@ func (a *Agent) run(ctx context.Context) {
 			// the policy the design specifies; we surface as Error
 			// event so the store + UI still see it.
 			ev = event.AgentEvent{Type: event.Error, ErrorMsg: err.Error(), Raw: line}
+		}
+
+		// A tool boundary ends the current assistant message: text that comes
+		// after it is a NEW message and needs a paragraph break, or the two
+		// sentences arrive glued to each other on every surface. Done here,
+		// on the one path all providers feed and all channels read, rather
+		// than per channel.
+		switch ev.Type {
+		case event.ToolUse, event.ToolResult:
+			joiner.toolRan()
+		case event.Done, event.Error:
+			joiner.turnEnded()
+		}
+		if ev.Type == event.TextDelta {
+			ev.Text = joiner.breakBefore(ev.Text) + ev.Text
 		}
 
 		switch ev.Type {

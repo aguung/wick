@@ -77,3 +77,46 @@ describe("TicketPanel — notes in place", () => {
     expect(screen.getByText("Checked the webhook, it 401s")).toBeTruthy();
   });
 });
+
+/* The ticket's DESCRIPTION is on the panel too. With ticket mode on there is
+   no separate Notes tab, so this is the one place both halves of the story
+   are readable: what was asked, and what was found. */
+describe("TicketPanel — the ticket's description", () => {
+  test("a description renders above the notes", () => {
+    renderPanel({ ticket: { id: "T-1", title: "Fix retries", status: "open", body: "Webhook 401s on retry" } });
+    expect(screen.getByText("Webhook 401s on retry")).toBeTruthy();
+    expect(screen.getByTestId("ticket-body")).toBeTruthy();
+  });
+
+  test("no description means no empty section", () => {
+    renderPanel();
+    expect(screen.queryByTestId("ticket-body")).toBeNull();
+  });
+
+  // Folded past a few lines: a long description would push the notes off the
+  // panel, which is the opposite of helping.
+  test("a long description is folded behind Show more", async () => {
+    renderPanel({
+      ticket: { id: "T-1", title: "Fix retries", status: "open", body: "line\n".repeat(20) },
+    });
+    const toggle = screen.getByTestId("ticket-body-toggle") as HTMLButtonElement;
+    expect(toggle.textContent).toContain("Show more");
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId("ticket-body-toggle").textContent).toContain("Show less");
+  });
+
+  test("a short description gets no toggle", () => {
+    renderPanel({ ticket: { id: "T-1", title: "Fix retries", status: "open", body: "one line" } });
+    expect(screen.queryByTestId("ticket-body-toggle")).toBeNull();
+  });
+
+  // The link to the Notes tab is only offered when that tab exists; with the
+  // two merged it would be a dead end.
+  test("the Notes-tab link is absent unless a handler is given", () => {
+    renderPanel();
+    expect(screen.queryByText("Open tab →")).toBeNull();
+    renderPanel({ onOpenNotes: () => {} });
+    expect(screen.getAllByText("Open tab →").length).toBe(1);
+  });
+});

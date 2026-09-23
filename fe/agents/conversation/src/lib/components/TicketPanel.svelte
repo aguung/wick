@@ -10,6 +10,8 @@
        an existing one. */
   import type { Note, TicketCard, TicketStatus } from "../types/agents.js";
   import NotesPanel from "./NotesPanel.svelte";
+  import { renderMarkdown } from "../markdown.js";
+  import "../notesMarkdown.css";
   import {
     attachSession,
     createTicket,
@@ -26,8 +28,10 @@
     sessionId: string;
     /* Project the session belongs to; needed to create or list tickets. */
     projectId?: string;
-    /* Ticket this session is attached to, when any. */
-    ticket?: { id: string; title: string; status: string } | null;
+    /* Ticket this session is attached to, when any. `body` is its markdown
+       description — what was ASKED, which belongs beside the notes saying
+       what was found. */
+    ticket?: { id: string; title: string; status: string; body?: string } | null;
     /* The project's board columns, so the rail offers the same choices as
        the board rather than the built-in four. */
     statuses?: TicketStatus[];
@@ -41,7 +45,9 @@
     users?: Record<string, string>;
     /* Opens the ticket's own page (sessions, fields, full note list). */
     onOpenTicket?: (ticketId: string) => void;
-    /* Switches the rail to the Notes tab. */
+    /* Switches the rail to the Notes tab — passed only while that tab
+       exists. With ticket mode on there is no separate Notes tab: this panel
+       IS both, and a link to a tab that is not in the strip is a dead end. */
     onOpenNotes?: () => void;
     onChanged?: () => void;
   };
@@ -174,6 +180,15 @@
      Notes tab remains the place notes live on a chat with no ticket. */
   let notesOpen = $state(true);
 
+  /* The ticket's own description, folded past a few lines. It is the half of
+     the story the notes answer, and it used to live only on the Notes tab —
+     so with the two tabs merged it comes here. Folded because a long
+     description would push the notes themselves off the panel, which is the
+     opposite of helping. */
+  const body = $derived((ticket?.body ?? "").trim());
+  let bodyOpen = $state(false);
+  const bodyLong = $derived(body.length > 240 || body.split("\n").length > 4);
+
   function startTitle() {
     if (!ticket) return;
     titleDraft = ticket.title;
@@ -248,6 +263,41 @@
           <option value={s.key}>{s.label || s.key}</option>
         {/each}
       </select>
+
+      {#if body}
+        <!-- What the ticket ASKS, above the record of what was found. -->
+        <section
+          data-testid="ticket-body"
+          class="mt-3 rounded-lg border border-white-300 bg-white-100 p-2.5 dark:border-navy-600 dark:bg-navy-700"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
+              What the ticket asks
+            </h4>
+            {#if bodyLong}
+              <button
+                type="button"
+                data-testid="ticket-body-toggle"
+                class="shrink-0 text-[11px] font-medium text-green-600 hover:underline dark:text-green-400"
+                onclick={() => { bodyOpen = !bodyOpen; }}
+              >{bodyOpen ? "Show less" : "Show more"}</button>
+            {/if}
+          </div>
+          <div class="relative">
+            <div
+              class="wick-note-md mt-1.5 break-words text-xs text-black-900 dark:text-white-100 {bodyLong && !bodyOpen ? 'max-h-24 overflow-hidden' : ''}"
+            >
+              {@html renderMarkdown(body)}
+            </div>
+            {#if bodyLong && !bodyOpen}
+              <div
+                aria-hidden="true"
+                class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-white-100 to-transparent dark:from-navy-700"
+              ></div>
+            {/if}
+          </div>
+        </section>
+      {/if}
 
       {#if picking}
         <div class="mt-3">
@@ -401,12 +451,14 @@
           >{noteCount > 99 ? "99+" : noteCount}</span>
         {/if}
       </button>
-      <button
-        type="button"
-        onclick={() => onOpenNotes?.()}
-        title="Open the Notes tab"
-        class="shrink-0 text-[11px] font-medium text-green-600 hover:underline dark:text-green-400"
-      >Open tab →</button>
+      {#if onOpenNotes}
+        <button
+          type="button"
+          onclick={() => onOpenNotes?.()}
+          title="Open the Notes tab"
+          class="shrink-0 text-[11px] font-medium text-green-600 hover:underline dark:text-green-400"
+        >Open tab →</button>
+      {/if}
     </div>
 
     {#if notesOpen}
