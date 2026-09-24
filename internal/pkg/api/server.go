@@ -3297,7 +3297,11 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	upgrade.RegisterDetailed("http requests", s.httpInflight.Count, s.httpInflight.Names)
 
 	h := chainMiddleware(
-		s.authMidd.Session(withAirouterRedirect(s.router)),
+		// EmbedContext sits inside Session so every page render — tool,
+		// job, error page — can ask whether it is being drawn inside an
+		// <iframe> and drop the chrome accordingly. Context only: it
+		// changes no routing and blocks nothing.
+		s.authMidd.Session(ui.EmbedContext(withAirouterRedirect(s.router))),
 		recoverHandler,
 		loggerHandler(func(w http.ResponseWriter, r *http.Request) bool { return false }),
 		s.appNameHandler,
