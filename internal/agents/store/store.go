@@ -762,7 +762,7 @@ func (s *Store) appendCompactionTurn(info *event.CompactionInfo) error {
 		Agent:     s.agentName,
 		Provider:  s.provider,
 		Kind:      KindCompaction,
-		Text:      compactionSummary(trigger, info),
+		Text:      compactionText(trigger, info),
 		Extras:    extras,
 	}
 	return storage.AppendJSONL(
@@ -773,23 +773,13 @@ func (s *Store) appendCompactionTurn(info *event.CompactionInfo) error {
 	)
 }
 
-// compactionSummary is the plain-text fallback, e.g.
-// "Context compacted (manual) — 31.3k → 4.1k tokens".
-func compactionSummary(trigger string, info *event.CompactionInfo) string {
-	return fmt.Sprintf("Context compacted (%s) — %s → %s tokens",
-		trigger, shortTokens(info.PreTokens), shortTokens(info.PostTokens))
-}
-
-// shortTokens renders a count the way a person reads it: 31261 -> 31.3k.
-func shortTokens(n int) string {
-	switch {
-	case n < 1000:
-		return strconv.Itoa(n)
-	case n < 1_000_000:
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	default:
-		return fmt.Sprintf("%.2fM", float64(n)/1_000_000)
-	}
+// compactionText is the plain-text fallback recorded on the turn, e.g.
+// "Context compacted (manual) — 31.3k → 4.1k tokens". The sentence itself
+// comes from the event so the chat channels can post the identical one.
+func compactionText(trigger string, info *event.CompactionInfo) string {
+	c := *info
+	c.Trigger = trigger
+	return c.Summary()
 }
 
 // writeTraceIndex writes thinking/<turn_id>.json (the index) and, for
