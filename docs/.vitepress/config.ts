@@ -68,6 +68,7 @@ export default withMermaid(defineConfig({
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'AI Quickstart', link: '/guide/ai-quickstart' },
           { text: 'Admin Panel', link: '/guide/admin-panel' },
+          { text: 'Embedding in an iframe', link: '/guide/embedding' },
           { text: 'Glossary', link: '/guide/glossary' },
         ],
       },
