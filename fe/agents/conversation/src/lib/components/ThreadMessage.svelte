@@ -33,8 +33,17 @@
   const isSilentReply = $derived(
     !isUser && !isSystem && /^\s*\[silent\]/i.test(turn.text ?? ""),
   );
+  /* The marker also leaks when the agent puts it on a LATER line — a preamble,
+     then a closing paragraph opened with [silent]. That turn is never
+     suppressed (the flag above only reads the opening), but the plumbing still
+     must not be shown, so line-opening markers are stripped too. One
+     mid-sentence is the agent talking about the marker and is left alone. */
   const displayText = $derived(
-    isSilentReply ? (turn.text ?? "").replace(/^\s*\[silent\]\s*/i, "") : (turn.text ?? ""),
+    isUser || isSystem
+      ? (turn.text ?? "")
+      : (turn.text ?? "")
+          .replace(/^\s*\[silent\]\s*/i, "")
+          .replace(/^[ \t]*\[silent\][ \t]*/gim, ""),
   );
 
   /* "Interrupted — response was cut off" answers what happened and not the

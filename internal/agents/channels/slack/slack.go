@@ -2292,21 +2292,32 @@ func (s *Channel) stopEditTicker(t *turn) {
 // whitespace and any case — the same shape the web UI strips for display.
 var silentMarkerPrefix = regexp.MustCompile(`(?i)^\s*\[silent\]\s*`)
 
-// stripSilentMarker removes a leading [silent] marker from reply text.
+// silentMarkerLine matches a [silent] marker that OPENS A LINE further down the
+// reply, which is exactly where the leaked ones sit: the agent writes a
+// preamble, runs its tools, then opens its closing paragraph with the marker.
+// Only spaces/tabs are allowed before it so the paragraph break ahead of it
+// survives, and a marker mid-sentence is left alone — that one is the agent
+// talking ABOUT the marker, not using it.
+var silentMarkerLine = regexp.MustCompile(`(?im)^[ \t]*\[silent\][ \t]*`)
+
+// stripSilentMarker removes [silent] markers from reply text.
 //
 // The marker is plumbing: it tells wick to keep a turn off channels, and is
 // never meant to be read by a human. The registry normally suppresses such a
 // turn entirely, so text reaching Slack with the marker still attached means
 // the suppression did not apply to it — most often because the agent opened
 // with a preamble and put the marker on a later line, so the prefix test the
-// suppression relies on did not match.
+// suppression relies on did not match. That case is the common one, so
+// stripping only the very start of the reply is not enough: the marker has to
+// go wherever it opens a line.
 //
 // Whatever the reason, showing "[silent]" to the operator is never right, so
 // this strips it at the two points where reply text is actually posted. The web
 // UI does the same for the conversation view; this keeps Slack consistent with
 // it rather than inventing separate rules for the two surfaces.
 func stripSilentMarker(text string) string {
-	return silentMarkerPrefix.ReplaceAllString(text, "")
+	out := silentMarkerPrefix.ReplaceAllString(text, "")
+	return silentMarkerLine.ReplaceAllString(out, "")
 }
 
 // flushLiveMessage posts (first call) or edits (subsequent calls) the live

@@ -147,6 +147,25 @@ describe("ThreadMessage - silent assistant reply", () => {
     });
     expect(screen.queryByTestId("silent-flag")).toBeNull();
   });
+
+  // The leaking shape: preamble first, marker opening a LATER line. Such a turn
+  // is not silent (no flag), but the marker is still plumbing and must go.
+  test("[silent] opening a later line is stripped but does not flag the turn", () => {
+    render(ThreadMessage, {
+      props: {
+        turn: makeTurn({ role: "assistant", text: "Now the Go tests:\n\n[silent] build 0.1.334 jalan." }),
+      },
+    });
+    expect(screen.queryByTestId("silent-flag")).toBeNull();
+    expect(screen.queryByText(/\[silent\]/i)).toBeNull();
+  });
+
+  test("a user turn is never rewritten", () => {
+    render(ThreadMessage, {
+      props: { turn: makeTurn({ role: "user", text: "[silent] kenapa kebawa ke slack?" }) },
+    });
+    expect(screen.getByText("[silent] kenapa kebawa ke slack?")).toBeDefined();
+  });
 });
 
 describe("ThreadMessage - system turn", () => {

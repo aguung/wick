@@ -48,9 +48,18 @@ func TestStripSilentMarker(t *testing.T) {
 		{"  [silent]   padded", "padded"},
 		{"\n[silent] leading newline", "leading newline"},
 		{"no marker here", "no marker here"},
-		// Only a LEADING marker is plumbing. One mid-text is the agent talking
-		// about the marker, and rewriting that would corrupt the message.
+		// A marker that OPENS A LATER LINE is the shape that actually leaks:
+		// the agent writes a preamble, runs its tools, then starts its closing
+		// paragraph with the marker — so the turn is never suppressed and the
+		// leading-only strip misses it. The paragraph break must survive.
+		{"Now the Go tests:\n\n[silent] build 0.1.334 jalan.", "Now the Go tests:\n\nbuild 0.1.334 jalan."},
+		{"one\n[silent] two\n[SILENT] three", "one\ntwo\nthree"},
+		{"head\n  [silent]  indented", "head\nindented"},
+		// Still only a marker that OPENS text or a line. One mid-sentence is the
+		// agent talking about the marker, and rewriting that would corrupt the
+		// message.
 		{"see the [silent] marker docs", "see the [silent] marker docs"},
+		{"line one\nsee the [silent] marker docs", "line one\nsee the [silent] marker docs"},
 		{"", ""},
 	}
 	for _, tc := range cases {
