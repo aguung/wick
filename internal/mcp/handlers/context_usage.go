@@ -331,7 +331,8 @@ func WickCompact(w http.ResponseWriter, r *http.Request, req RPCRequest, rsp Res
 		"status":     "queued",
 		"provider":   ptype,
 		"note": "/compact was delivered as a message. A running turn finishes first; " +
-			"an idle session is woken to do it. The result appears in that session's transcript.",
+			"an idle session is woken to do it. The result appears in that session's " +
+			"transcript, and — for a session bound to a chat thread — as a notice in that thread.",
 	}
 	if agentName != "" {
 		out["agent_name"] = agentName
