@@ -276,17 +276,35 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#snippet tree()}
-  <!-- Breadcrumb: where the tree is rooted, and the way back up. -->
-  <div class="flex items-center gap-0.5 overflow-x-auto border-b border-white-300 dark:border-navy-600 px-2 py-1 text-[11px]">
-    {#each crumbs as c, i (c.path)}
-      {#if i > 0}<span class="shrink-0 text-black-600">/</span>{/if}
-      <button
-        type="button"
-        onclick={() => setRoot(c.path)}
-        class={"shrink-0 truncate rounded px-1 py-0.5 transition-colors hover:bg-white-200 dark:hover:bg-navy-800 " + (i === crumbs.length - 1 ? "font-medium text-black-900 dark:text-white-100" : "text-black-700 dark:text-black-600")}
-      >{c.name}</button>
-    {/each}
-  </div>
+  <!-- Breadcrumb: where the tree is rooted, and the way back up. At the repo
+       root there is nothing to say — the crumb would just repeat the repo
+       name the header above already carries — so the row only appears once
+       you are inside a folder, and the root itself is a home button rather
+       than the repo's name spelled a second time. -->
+  {#if crumbs.length > 1}
+    <div class="flex items-center gap-0.5 overflow-x-auto border-b border-white-300 dark:border-navy-600 px-2 py-1 text-[11px]">
+      {#each crumbs as c, i (c.path)}
+        {#if i > 0}<span class="shrink-0 text-black-600">/</span>{/if}
+        {#if i === 0}
+          <button
+            type="button"
+            onclick={() => setRoot("")}
+            title="Repository root"
+            aria-label="Repository root"
+            class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-black-700 transition-colors hover:bg-white-200 dark:text-black-600 dark:hover:bg-navy-800"
+          >
+            <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7l6-4.5L14 7M3.5 6v7h9V6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={() => setRoot(c.path)}
+            class={"shrink-0 truncate rounded px-1 py-0.5 transition-colors hover:bg-white-200 dark:hover:bg-navy-800 " + (i === crumbs.length - 1 ? "font-medium text-black-900 dark:text-white-100" : "text-black-700 dark:text-black-600")}
+          >{c.name}</button>
+        {/if}
+      {/each}
+    </div>
+  {/if}
 
   <!-- Filter + create + refresh -->
   <div class="flex items-center gap-1 border-b border-white-300 dark:border-navy-600 px-2 py-1">
@@ -328,7 +346,7 @@
       class="flex items-center gap-1 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-2 py-1"
       onsubmit={(e) => { e.preventDefault(); void submitCreate(); }}
     >
-      <span class="shrink-0 text-[10px] text-black-600">{creating.isDir ? "Folder" : "File"} in {crumbs[crumbs.length - 1].name}/</span>
+      <span class="shrink-0 text-[10px] text-black-600">{creating.isDir ? "Folder" : "File"} in {crumbs.length > 1 ? crumbs[crumbs.length - 1].name + "/" : "repo root"}</span>
       <input
         type="text"
         autofocus
