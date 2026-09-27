@@ -86,6 +86,75 @@ func killOrphanSpawnsWith(
 	return killed
 }
 
+// sessionPIDs is the pids this pool believes are running for a session,
+// including its sub-agents.
+func sessionPIDs(sessionID string) []int {
+	if globalPool == nil {
+		return nil
+	}
+	var pids []int
+	for _, e := range globalPool.ActiveSnapshot() {
+		if e.PID > 0 && sessionMatches(e.SessionID, sessionID) {
+			pids = append(pids, e.PID)
+		}
+	}
+	return pids
+}
+
+// enforceStop makes sure the processes a Stop was supposed to end are
+// actually gone, and ends the ones that are not.
+//
+// Agent.Stop terminates through the exec handle it kept when it STARTED the
+// process. An entry this wick adopted rather than spawned — what a binary
+// swap leaves behind — has no such handle, so Stop tears down the
+// bookkeeping, returns nil, and the process keeps running with the panel
+// still showing it. Checking afterwards is the only way to tell that apart
+// from a stop that worked: a pid that is still alive a moment later did not
+// get the message.
+//
+// Returns the pids it had to signal itself.
+func enforceStop(pids []int) []int {
+	return enforceStopWith(pids, processctl.ProcessAlive, terminate,
+		func() { time.Sleep(250 * time.Millisecond) }, 8)
+}
+
+// enforceStopWith is enforceStop with its waiting and killing injected, so
+// the give-it-a-moment logic is testable without real processes or a real
+// two seconds.
+func enforceStopWith(pids []int, alive func(int) bool, kill func(int) error, wait func(), attempts int) []int {
+	if len(pids) == 0 {
+		return nil
+	}
+	remaining := append([]int(nil), pids...)
+	for i := 0; i < attempts; i++ {
+		still := remaining[:0:0]
+		for _, pid := range remaining {
+			if alive(pid) {
+				still = append(still, pid)
+			}
+		}
+		remaining = still
+		if len(remaining) == 0 {
+			// A clean stop is the normal case and must cost nothing extra:
+			// return as soon as everything is gone rather than sitting out
+			// the rest of the grace window.
+			return nil
+		}
+		wait()
+	}
+	var signalled []int
+	for _, pid := range remaining {
+		if !alive(pid) {
+			continue
+		}
+		if err := kill(pid); err != nil {
+			continue
+		}
+		signalled = append(signalled, pid)
+	}
+	return signalled
+}
+
 // sessionMatches reports whether a spawn's session id is the session being
 // stopped, or one of its sub-agents.
 func sessionMatches(spawnSession, sessionID string) bool {

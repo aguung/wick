@@ -144,3 +144,62 @@ func TestSessionMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestEnforceStopLetsACleanStopThrough(t *testing.T) {
+	waits := 0
+	killed := []int{}
+	// Both pids die on the second look: the normal case, where Agent.Stop
+	// did its job and we are only confirming it.
+	looks := 0
+	alive := func(int) bool {
+		looks++
+		return looks <= 2
+	}
+
+	got := enforceStopWith([]int{1, 2}, alive,
+		func(pid int) error { killed = append(killed, pid); return nil },
+		func() { waits++ }, 8)
+
+	if len(got) != 0 {
+		t.Errorf("signalled %v, want none — the stop worked", got)
+	}
+	if len(killed) != 0 {
+		t.Errorf("killed %v, want none", killed)
+	}
+	if waits > 2 {
+		t.Errorf("waited %d times; a clean stop must not sit out the whole grace window", waits)
+	}
+}
+
+func TestEnforceStopSignalsWhatSurvives(t *testing.T) {
+	// 7 never dies — an entry the pool adopted after a handover, whose
+	// Agent.Stop had no exec handle to signal through.
+	var killed []int
+	got := enforceStopWith([]int{7}, func(int) bool { return true },
+		func(pid int) error { killed = append(killed, pid); return nil },
+		func() {}, 3)
+
+	if len(got) != 1 || got[0] != 7 {
+		t.Fatalf("signalled %v, want [7]", got)
+	}
+	if len(killed) != 1 || killed[0] != 7 {
+		t.Errorf("kill called with %v, want [7]", killed)
+	}
+}
+
+func TestEnforceStopReportsNothingWhenTheSignalIsRefused(t *testing.T) {
+	got := enforceStopWith([]int{9}, func(int) bool { return true },
+		func(int) error { return errors.New("operation not permitted") },
+		func() {}, 2)
+	// Reporting a pid as forced when the signal bounced would tell the
+	// caller the process is gone when it is still there.
+	if len(got) != 0 {
+		t.Errorf("signalled %v, want none", got)
+	}
+}
+
+func TestEnforceStopNoPIDs(t *testing.T) {
+	if got := enforceStopWith(nil, func(int) bool { return true }, func(int) error { return nil }, func() {}, 3); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}

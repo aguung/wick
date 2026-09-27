@@ -2193,6 +2193,11 @@ func killAgent(c *tool.Ctx) {
 	// So decide before killing whether this pool has anything at all, and
 	// fall back to the pids the spawn log recorded when it does not.
 	owned := poolHasSession(id)
+	// Remember what the pool claims is running BEFORE the stop, so we can
+	// check afterwards that it really went away. An adopted entry has no
+	// exec handle behind it and Stop cannot signal through one it never
+	// held.
+	pids := sessionPIDs(id)
 	if err := globalPool.KillBy(id, agentName, "user", stoppedByNote(c)); err != nil {
 		log.Ctx(c.Context()).Error().Msgf("kill agent %s/%s: %s", id, agentName, err.Error())
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -2207,6 +2212,14 @@ func killAgent(c *tool.Ctx) {
 			c.JSON(http.StatusOK, map[string]any{"status": "killed", "orphans": killed})
 			return
 		}
+	}
+	if survivors := enforceStop(pids); len(survivors) > 0 {
+		log.Ctx(c.Context()).Warn().
+			Ints("pids", survivors).
+			Str("session", id).
+			Msg("kill agent: agent.Stop left the process running — signalled it directly")
+		c.JSON(http.StatusOK, map[string]any{"status": "killed", "forced": survivors})
+		return
 	}
 	c.JSON(http.StatusOK, map[string]string{"status": "killed"})
 }
