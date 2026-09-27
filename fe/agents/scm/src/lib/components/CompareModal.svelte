@@ -8,6 +8,7 @@
   // half the time. Opened from the repo menu in both layouts, so it is the
   // same big surface either way.
   import { get } from "svelte/store";
+  import { portal } from "$lib/portal";
   import MonacoView from "$lib/components/MonacoView.svelte";
   import { ConfirmDialog } from "@wick-fe/common-ui";
   import * as api from "$lib/api/scm";
@@ -382,7 +383,9 @@
 {/snippet}
 
 <div
-  class="fixed inset-0 z-[70] flex items-stretch justify-center bg-black/60 backdrop-blur-sm sm:p-4"
+  use:portal
+  style="z-index:9999"
+  class="fixed inset-0 flex items-stretch justify-center bg-black/60 backdrop-blur-sm sm:p-4"
   role="presentation"
   onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
 >

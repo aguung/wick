@@ -1,5 +1,6 @@
 <script lang="ts">
   import MonacoView from "$lib/components/MonacoView.svelte";
+  import { portal } from "$lib/portal";
   import { loadCompare, loadCommitCompare, saveFile, langFor, type CompareData, type FileChange } from "$lib/git-actions";
 
   type Props = {
@@ -51,7 +52,9 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && onClose()} />
 
 <div
-  class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4"
+  use:portal
+  style="z-index:9998"
+  class="fixed inset-0 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4"
   role="presentation"
   onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
 >

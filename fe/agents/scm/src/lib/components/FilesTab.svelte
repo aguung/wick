@@ -366,10 +366,10 @@
         >
           {#if e.isDir}
             <svg viewBox="0 0 16 16" class={"h-3 w-3 shrink-0 text-black-600 transition-transform " + (expanded[e.path] ? "rotate-90" : "")} fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-black-800 dark:text-black-500">{e.name}</span>
+            <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-black-900 dark:text-white-100">{e.name}</span>
           {:else}
             <span class="h-3 w-3 shrink-0"></span>
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-black-800 dark:text-black-500">{e.name}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-black-900 dark:text-white-100">{e.name}</span>
           {/if}
           {#if needle && parentRel(e.path)}
             <span class="shrink-0 truncate font-mono text-[9px] text-black-600">{parentRel(e.path)}</span>
