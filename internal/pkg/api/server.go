@@ -455,6 +455,12 @@ func NewServer() *Server {
 	// Trim any backlog of spawn logs from before pruning existed so the
 	// dir is bounded immediately, not only after the next spawn.
 	_ = agentsSpawnLogger.Prune(provider.MaxSpawnLogs)
+	// Close out spawns the PREVIOUS wick was watching when it died. Their
+	// exit is written by the hook that reaps the subprocess, so a binary
+	// swap or a kill leaves the log ending on `start` and every reader
+	// believing the spawn is still running. This is the only moment that
+	// can be fixed: the process is gone and no one else will ever say so.
+	_, _ = agentsSpawnLogger.ReconcileOrphans(nil)
 
 	// Boot restore. Deferred to here (rather than the jobs-bootstrap block
 	// above) so the goroutine can capture agentsMgr and reload the registry
