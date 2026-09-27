@@ -10,6 +10,9 @@
   import { get } from "svelte/store";
   import { portal } from "$lib/portal";
   import MonacoView from "$lib/components/MonacoView.svelte";
+  import CompareTreeNode from "$lib/components/CompareTreeNode.svelte";
+  import { splitPath } from "$lib/tree";
+  import { byPath, compareTree, statsByPath, visibleFiles } from "$lib/compare-tree";
   import { ConfirmDialog } from "@wick-fe/common-ui";
   import * as api from "$lib/api/scm";
   import type { HistoryRef } from "$lib/api/scm";
@@ -44,6 +47,15 @@
   let sides = $state<CompareData | null>(null);
   let sideBySide = $state(true);
   let busy = $state(false);
+  // Tree by default: a compare routinely runs to a few hundred files, and
+  // as a flat list that is a wall of long paths — which is what the folder
+  // view fixes. The Changes dock defaults to tree for the same reason.
+  let viewMode = $state<"tree" | "list">(readViewMode());
+  // Folder collapse state, keyed by folder path, default expanded — the
+  // same shape and the same rule the Changes tree uses.
+  let expanded = $state<Record<string, boolean>>({});
+  // The scroll container, for putting a keyboard-selected row back in view.
+  let listEl = $state<HTMLElement | null>(null);
 
   // Which picker is open, and its filter box. One pair of variables for
   // both pickers: only one can be open at a time anyway.
@@ -77,6 +89,28 @@
     } catch {
       return null;
     }
+  }
+
+  // The tree/list choice is a habit about reading, not about one repo, so
+  // it is remembered globally — next to the per-repo pair, and next to the
+  // panel's own wick.scm.viewMode.
+  const VIEW_KEY = "wick.scm.compare.view";
+
+  function readViewMode(): "tree" | "list" {
+    try {
+      return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "tree";
+    } catch {
+      return "tree";
+    }
+  }
+
+  function setViewMode(m: "tree" | "list") {
+    viewMode = m;
+    try { localStorage.setItem(VIEW_KEY, m); } catch { /* ignore */ }
+  }
+
+  function toggleDir(path: string) {
+    expanded[path] = expanded[path] === false ? true : false;
   }
 
   function writePair(repo: string, b: string, h: string) {
@@ -143,6 +177,8 @@
     head = "";
     result = null;
     selected = null;
+    // Folder state belongs to the tree that is going away with the repo.
+    expanded = {};
     void loadRefs();
   });
 
@@ -199,21 +235,35 @@
       });
   });
 
-  // Row elements, for scrolling the keyboard selection back into view.
-  let rowEls = $state<HTMLElement[]>([]);
+  const changedFiles = $derived(result?.files ?? []);
+  const fileMap = $derived(byPath(changedFiles));
+  const tree = $derived(viewMode === "tree" ? compareTree(changedFiles) : []);
+  const stats = $derived(statsByPath(tree, fileMap));
+  // What ↑/↓ walk: in tree mode the rows actually drawn, so a collapsed
+  // folder's children are stepped over rather than selected off-screen.
+  const walkable = $derived(
+    viewMode === "tree" ? visibleFiles(tree, expanded, fileMap) : changedFiles,
+  );
 
   // ↑/↓ walk the changed-file list. Bound to the window rather than to the
   // column, so it works without clicking into the list first — on a compare
   // with a few hundred files, reaching for the mouse per step is the
   // difference between usable and not.
   function move(delta: number) {
-    const files = result?.files ?? [];
-    if (files.length === 0) return;
+    const list = walkable;
+    if (list.length === 0) return;
     const cur = selected;
-    const at = cur ? files.findIndex((f) => f.path === cur.path) : -1;
-    const next = Math.min(files.length - 1, Math.max(0, at + delta));
-    selected = files[next];
-    rowEls[next]?.scrollIntoView({ block: "nearest" });
+    const at = cur ? list.findIndex((f) => f.path === cur.path) : -1;
+    const next = Math.min(list.length - 1, Math.max(0, at + delta));
+    selected = list[next];
+    scrollIntoView(list[next].path);
+  }
+
+  // The tree renders through a recursive component, so the rows are not an
+  // array this component holds — find the row by the path it carries.
+  function scrollIntoView(path: string) {
+    const sel = `[data-path="${path.replace(/["\\]/g, "\\$&")}"]`;
+    listEl?.querySelector(sel)?.scrollIntoView({ block: "nearest" });
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -241,14 +291,13 @@
   const isBinary = (f: CompareFile) => f.additions < 0 && f.deletions < 0;
 
   const totals = $derived.by(() => {
-    const files = result?.files ?? [];
     let a = 0;
     let d = 0;
-    for (const f of files) {
+    for (const f of changedFiles) {
       if (f.additions > 0) a += f.additions;
       if (f.deletions > 0) d += f.deletions;
     }
-    return { count: files.length, a, d };
+    return { count: changedFiles.length, a, d };
   });
 
   const lang = $derived(selected ? langFor(selected.path) : "plaintext");
@@ -443,6 +492,12 @@
 
       <button
         type="button"
+        onclick={() => setViewMode(viewMode === "tree" ? "list" : "tree")}
+        title={viewMode === "tree" ? "Show the changed files as a flat list" : "Group the changed files by folder"}
+        class="shrink-0 rounded border border-white-300 dark:border-navy-600 px-2 py-1 text-[11px] text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors"
+      >View as {viewMode === "tree" ? "list" : "tree"}</button>
+      <button
+        type="button"
         onclick={() => (sideBySide = !sideBySide)}
         title={sideBySide ? "Inline diff" : "Side-by-side diff"}
         aria-label="Toggle side-by-side diff"
@@ -487,7 +542,7 @@
     <div class="flex min-h-0 flex-1 overflow-hidden">
       <!-- Left: the changed files. Wider than the Changes column: these
            rows carry a status letter and both counts next to the path. -->
-      <aside class="flex w-[320px] shrink-0 flex-col overflow-y-auto border-r border-white-300 dark:border-navy-600">
+      <aside bind:this={listEl} class="flex w-[320px] shrink-0 flex-col overflow-y-auto border-r border-white-300 dark:border-navy-600">
         {#if !base || !head}
           <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">Pick two refs to compare.</p>
         {:else if listLoading}
@@ -503,12 +558,41 @@
           <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">
             No differences between <span class="font-mono">{base}</span> and <span class="font-mono">{head}</span>.
           </p>
+        {:else if viewMode === "tree"}
+          <!-- The Changes tree, fed compare rows: same chevron, same
+               12px-per-depth indent, same default-expanded rule. -->
+          {#each tree as node (node.path)}
+            <CompareTreeNode
+              {node}
+              depth={1}
+              {expanded}
+              files={fileMap}
+              {stats}
+              selectedPath={selected?.path ?? ""}
+              {busy}
+              onToggleDir={toggleDir}
+              onSelect={(f) => (selected = f)}
+              onRestore={askRestore}
+            />
+          {/each}
         {:else}
-          {#each result?.files ?? [] as f, i (f.path)}
-            <div bind:this={rowEls[i]} class={"group flex items-center gap-1.5 px-2 py-1 " + (selected?.path === f.path ? "bg-white-300 dark:bg-navy-600" : "hover:bg-white-200 dark:hover:bg-navy-800")}>
-              <button type="button" onclick={() => (selected = f)} class="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {#each changedFiles as f (f.path)}
+            {@const parts = splitPath(f.path)}
+            <div
+              data-path={f.path}
+              class={"group flex items-center gap-1.5 px-2 py-1 " + (selected?.path === f.path ? "bg-white-300 dark:bg-navy-600" : "hover:bg-white-200 dark:hover:bg-navy-800")}
+            >
+              <!-- Name first, folder after it in grey: the flat list has no
+                   folder rows to carry the path, and this is the only layout
+                   where a long one truncates the part nobody reads. -->
+              <button type="button" onclick={() => (selected = f)} title={f.orig_path ? `${f.orig_path} → ${f.path}` : f.path} class="flex min-w-0 flex-1 items-center gap-1.5 text-left">
                 <span class={"shrink-0 font-mono text-[10px] " + statusColor(f.status)}>{f.status}</span>
-                <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-black-800 dark:text-black-500" title={f.orig_path ? `${f.orig_path} → ${f.path}` : f.path}>{f.path}</span>
+                <span class="shrink-0 truncate text-xs font-medium text-black-900 dark:text-white-100">{parts.name}</span>
+                {#if parts.dir}
+                  <span class="min-w-0 flex-1 truncate text-[11px] text-black-600 dark:text-black-700">{parts.dir}</span>
+                {:else}
+                  <span class="min-w-0 flex-1"></span>
+                {/if}
                 {#if isBinary(f)}
                   <span class="shrink-0 text-[9px] text-black-600">bin</span>
                 {:else}
