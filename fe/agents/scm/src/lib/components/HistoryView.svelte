@@ -8,6 +8,8 @@
   import GraphRail from "$lib/components/GraphRail.svelte";
   import RefPicker from "$lib/components/RefPicker.svelte";
   import { toastError } from "@wick-fe/common-stores";
+  import { ConfirmDialog } from "@wick-fe/common-ui";
+  import { revertCommit } from "$lib/git-actions";
 
   type Props = {
     onOpenCommitFile: (sha: string, file: FileChange) => void;
@@ -314,6 +316,27 @@
     }
   }
 
+  // Revert is the one action a commit row can take on the repository, so
+  // it asks first — and it says what git does, because "revert" means
+  // something else in most other tools (undo my edit) than it does here
+  // (a new commit that undoes an old one).
+  let revertAsk = $state<{ sha: string; subject: string } | null>(null);
+  let reverting = $state(false);
+
+  async function doRevert() {
+    const r = revertAsk;
+    revertAsk = null;
+    if (!r) return;
+    reverting = true;
+    try {
+      await revertCommit(r.sha);
+      // The revert lands a commit; the list on screen no longer has it.
+      await load();
+    } finally {
+      reverting = false;
+    }
+  }
+
   function statusColor(s: string): string {
     if (s === "A") return "text-green-600 dark:text-green-400";
     if (s === "D") return "text-cau-600 dark:text-cau-400";
@@ -565,12 +588,19 @@
                 {#if detail.body}
                   <p class="mb-1.5 whitespace-pre-wrap text-[11px] text-black-800 dark:text-black-600">{detail.body}</p>
                 {/if}
-                <p class="mb-1 flex flex-wrap items-center gap-2 text-[10px] text-black-700 dark:text-black-600">
+                <div class="mb-1 flex flex-wrap items-center gap-2 text-[10px] text-black-700 dark:text-black-600">
                   <span>{detailTotals.files} file{detailTotals.files === 1 ? "" : "s"} changed</span>
                   <span class="text-green-600 dark:text-green-400">+{detailTotals.a}</span>
                   <span class="text-cau-600 dark:text-cau-400">−{detailTotals.d}</span>
-                  {#if detail.email}<span class="truncate">{detail.email}</span>{/if}
-                </p>
+                  {#if detail.email}<span class="min-w-0 truncate">{detail.email}</span>{/if}
+                  <button
+                    type="button"
+                    onclick={() => (revertAsk = { sha: c.sha, subject: c.subject })}
+                    disabled={reverting}
+                    title="Commit the inverse of this change"
+                    class="ml-auto shrink-0 rounded border border-white-300 dark:border-navy-600 px-1.5 py-0.5 text-[10px] text-black-700 dark:text-black-600 hover:border-red-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 transition-colors"
+                  >Revert commit</button>
+                </div>
                 {#if detail.files.length === 0}
                   <p class="text-[11px] text-black-700 dark:text-black-600">No file changes.</p>
                 {:else}
@@ -669,3 +699,16 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  open={!!revertAsk}
+  title="Revert this commit?"
+  body={revertAsk
+    ? `git revert ${revertAsk.sha} — "${revertAsk.subject}". This writes a NEW commit undoing that change; nothing is rewritten. If it conflicts, git stops and leaves the repo mid-revert for you to resolve.`
+    : ""}
+  confirmLabel="Revert"
+  cancelLabel="Cancel"
+  destructive={true}
+  onConfirm={doRevert}
+  onCancel={() => (revertAsk = null)}
+/>

@@ -14,6 +14,7 @@
   import DiffModal from "$lib/components/DiffModal.svelte";
   import HistoryView from "$lib/components/HistoryView.svelte";
   import FilesTab from "$lib/components/FilesTab.svelte";
+  import CompareModal from "$lib/components/CompareModal.svelte";
   import MonacoView from "$lib/components/MonacoView.svelte";
   import * as api from "$lib/api/scm";
   import { get } from "svelte/store";
@@ -62,6 +63,9 @@
   // otherwise staged picks the HEAD↔index vs index↔working sides.
   let compare = $state<{ file: FileChange; staged: boolean; commitSha?: string } | null>(null);
   let view = $state<TabView>(readTab());
+  // Branch compare overlay. Not a tab and not per-layout: it covers the
+  // viewport from either one, so one flag serves both.
+  let comparing = $state(false);
   let viewMode = $state<"tree" | "list">(
     (typeof localStorage !== "undefined" && (localStorage.getItem(VIEW_MODE_KEY) as "tree" | "list")) || "tree",
   );
@@ -234,6 +238,7 @@
         <RepoMenu
           {viewMode}
           onToggleViewMode={() => setViewMode(viewMode === "tree" ? "list" : "tree")}
+          onCompare={() => (comparing = true)}
         />
         <!-- Pin only makes sense for the desktop push dock; on mobile the
              panel is a full-screen overlay, so hide the pin below lg. -->
@@ -334,9 +339,15 @@
           </span>
         {/if}
       </div>
-      <button type="button" onclick={() => loadRepos()} title="Refresh" class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">
-        <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8a6 6 0 0110.5-4M14 8a6 6 0 01-10.5 4M11 2v3h3M5 14v-3H2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
+      <div class="flex shrink-0 items-center gap-0.5">
+        <button type="button" onclick={() => loadRepos()} title="Refresh" class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">
+          <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8a6 6 0 0110.5-4M14 8a6 6 0 01-10.5 4M11 2v3h3M5 14v-3H2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <!-- The same repo menu the dock header carries. It used to live only
+             there, which left branch compare — and Fetch — unreachable once
+             the panel was widened. -->
+        <RepoMenu onCompare={() => (comparing = true)} />
+      </div>
     </div>
 
     {@render tabStrip()}
@@ -493,6 +504,10 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if comparing}
+  <CompareModal onClose={() => (comparing = false)} />
 {/if}
 
 {#if mode === "sidebar" && compare}
