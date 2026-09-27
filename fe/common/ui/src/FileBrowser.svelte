@@ -249,30 +249,15 @@
 <svelte:window onkeydown={windowKeydown} />
 
 <div class="flex flex-col h-full">
-  <!-- cwd + toolbar -->
-  <div class="flex items-center justify-between px-4 py-2 border-b border-white-300 dark:border-navy-600 shrink-0">
-    <p class="text-[11px] text-black-700 dark:text-black-600 truncate flex-1 min-w-0">{cwd}</p>
-    <div class="flex items-center gap-1 shrink-0 ml-2">
-      <button type="button" title="New file" onclick={onNewFile}
-        class="inline-flex h-7 w-7 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
-        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M9 2H4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V6L9 2z M9 2v4h4M8 8v4M6 10h4" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <button type="button" title="New folder" onclick={onNewDir}
-        class="inline-flex h-7 w-7 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
-        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M2 4a1 1 0 011-1h3l2 2h5a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z M8 8v3M6.5 9.5h3" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <button type="button" title="Refresh" onclick={onRefresh}
-        class="inline-flex h-7 w-7 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
-        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M2 8a6 6 0 0110.5-4M14 8a6 6 0 01-10.5 4M11 2v3h3M5 14v-3H2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
+  <!-- The working directory, when the caller has one to show. Just the path:
+       the actions used to sit here too, which left the Source panel — whose
+       repo name lives in its own header — with a bare strip of three icons
+       above the filter, and left the path itself truncating at half width. -->
+  {#if cwd}
+    <div class="flex items-center px-4 py-2 border-b border-white-300 dark:border-navy-600 shrink-0">
+      <p class="text-[11px] text-black-700 dark:text-black-600 truncate min-w-0">{cwd}</p>
     </div>
-  </div>
+  {/if}
 
   <!-- Search + count -->
   <div class="px-4 py-2 border-b border-white-300 dark:border-navy-600 shrink-0 space-y-2">
@@ -317,6 +302,24 @@
         </svg>
       </button>
     {/if}
+      <button type="button" title="New file" aria-label="New file" onclick={onNewFile}
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
+        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M9 2H4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V6L9 2z M9 2v4h4M8 8v4M6 10h4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" title="New folder" aria-label="New folder" onclick={onNewDir}
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
+        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M2 4a1 1 0 011-1h3l2 2h5a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z M8 8v3M6.5 9.5h3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" title="Refresh" aria-label="Refresh" onclick={onRefresh}
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors">
+        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M2 8a6 6 0 0110.5-4M14 8a6 6 0 01-10.5 4M11 2v3h3M5 14v-3H2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Scope + sort. Scope defaults to this folder only; sort defaults to
