@@ -61,6 +61,36 @@
   let ask = $state<Ask | null>(null);
   let resetMenu = $state(false);
 
+  // The last pair, per repository. Compare is a habit inside ONE repo
+  // ("my branch against master"), so re-picking both refs on every open is
+  // exactly the friction that makes people stop opening it. Keyed by repo
+  // rel, next to the panel's other localStorage keys.
+  const pairKey = (repo: string) => `wick.scm.compare.${repo}`;
+
+  function readPair(repo: string): { base: string; head: string } | null {
+    try {
+      const raw = localStorage.getItem(pairKey(repo));
+      if (!raw) return null;
+      const v = JSON.parse(raw) as { base?: string; head?: string };
+      return v.base && v.head ? { base: v.base, head: v.head } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writePair(repo: string, b: string, h: string) {
+    try {
+      localStorage.setItem(pairKey(repo), JSON.stringify({ base: b, head: h }));
+    } catch { /* private mode, full quota — not worth a toast */ }
+  }
+
+  // Focus the base picker as the overlay opens: choosing what to compare
+  // against is the first thing anyone does here, and it makes Tab start
+  // somewhere sensible instead of at the document.
+  function autofocus(node: HTMLElement, enabled: boolean) {
+    if (enabled) node.focus();
+  }
+
   // Ref list. Both endpoints are asked: /refs carries the shas and the
   // trunk/current flags the pickers show, /branches is what the rest of
   // the panel already trusts for "which branches exist". Neither lists
@@ -81,8 +111,14 @@
         .map((n) => ({ name: n, sha: "", remote: n.includes("/"), current: false, trunk: false }));
       refs = [...hr.refs, ...extra];
       trunk = hr.trunk;
-      if (!head) head = bl.current || get(branch)?.name || "";
-      if (!base) base = defaultBase(hr.trunk, head, refs);
+      // A remembered pair only wins while both of its refs still exist:
+      // a branch deleted since last time would otherwise greet every open
+      // with git's error instead of a compare.
+      const last = readPair(repo);
+      const known = (n: string) => refs.some((r) => r.name === n);
+      const resume = last && known(last.base) && known(last.head) ? last : null;
+      if (!head) head = resume?.head || bl.current || get(branch)?.name || "";
+      if (!base) base = resume?.base || defaultBase(hr.trunk, head, refs);
     } catch (e) {
       toastError("Compare", String(e));
     }
@@ -107,6 +143,14 @@
     result = null;
     selected = null;
     void loadRefs();
+  });
+
+  // Declared after the reset effect above, so a repo switch has already
+  // blanked the pair by the time this runs — otherwise the new repo would
+  // be handed the old repo's refs to remember.
+  $effect(() => {
+    const repo = $activeRepo;
+    if (base && head) writePair(repo, base, head);
   });
 
   const listKey = $derived(base && head ? `${$activeRepo}|${base}|${head}|${threeDot}` : "");
@@ -153,6 +197,42 @@
         toastError("Diff failed", String(e));
       });
   });
+
+  // Row elements, for scrolling the keyboard selection back into view.
+  let rowEls = $state<HTMLElement[]>([]);
+
+  // ↑/↓ walk the changed-file list. Bound to the window rather than to the
+  // column, so it works without clicking into the list first — on a compare
+  // with a few hundred files, reaching for the mouse per step is the
+  // difference between usable and not.
+  function move(delta: number) {
+    const files = result?.files ?? [];
+    if (files.length === 0) return;
+    const cur = selected;
+    const at = cur ? files.findIndex((f) => f.path === cur.path) : -1;
+    const next = Math.min(files.length - 1, Math.max(0, at + delta));
+    selected = files[next];
+    rowEls[next]?.scrollIntoView({ block: "nearest" });
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      // One layer per press, so Escape never skips a step: an open picker
+      // or menu closes first, and a confirm dialog owns the key entirely.
+      if (picker) picker = null;
+      else if (resetMenu) resetMenu = false;
+      else if (!ask) onClose();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (picker || resetMenu || ask) return;
+    const t = e.target as HTMLElement | null;
+    // Never steal the arrows from a text field, or from Monaco — it drives
+    // the diff from its own hidden textarea.
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    e.preventDefault();
+    move(e.key === "ArrowDown" ? 1 : -1);
+  }
 
   // git reports a binary file as "-" on both counts, which the server
   // turns into -1. Monaco would happily render the bytes; nobody wants
@@ -252,21 +332,14 @@
     "flex min-w-0 max-w-[16rem] items-center gap-1 rounded border border-white-300 dark:border-navy-600 px-2 py-1 text-[11px] text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors";
 </script>
 
-<!-- Escape closes, like DiffModal. A picker that is open swallows the first
-     press instead, so Escape never skips a step. -->
-<svelte:window
-  onkeydown={(e) => {
-    if (e.key !== "Escape") return;
-    if (picker) picker = null;
-    else if (resetMenu) resetMenu = false;
-    else if (!ask) onClose();
-  }}
-/>
+<!-- Escape closes and ↑/↓ walk the file list — see onKeydown. -->
+<svelte:window onkeydown={onKeydown} />
 
 {#snippet refPicker(side: "base" | "head", value: string)}
   <div class="relative min-w-0">
     <button
       type="button"
+      use:autofocus={side === "base"}
       onclick={() => { picker = picker === side ? null : side; filter = ""; }}
       title={value}
       class={pickBtn}
@@ -398,7 +471,14 @@
           <span class="text-amber-600 dark:text-amber-400">no common ancestor</span>
         {/if}
       {/if}
-      {#if listLoading}<span>Loading…</span>{/if}
+      {#if listLoading}
+        <span class="flex items-center gap-1">
+          <svg viewBox="0 0 16 16" class="h-2.5 w-2.5 animate-spin" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="8" cy="8" r="6" opacity="0.25"/><path d="M14 8a6 6 0 00-6-6" stroke-linecap="round"/>
+          </svg>
+          Comparing…
+        </span>
+      {/if}
     </div>
 
     <div class="flex min-h-0 flex-1 overflow-hidden">
@@ -407,13 +487,22 @@
       <aside class="flex w-[320px] shrink-0 flex-col overflow-y-auto border-r border-white-300 dark:border-navy-600">
         {#if !base || !head}
           <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">Pick two refs to compare.</p>
-        {:else if listLoading && !result}
-          <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">Loading…</p>
+        {:else if listLoading}
+          <!-- A skeleton rather than the previous pair's files: leaving the
+               old list up under new refs invites clicking a row that is
+               about to be replaced by a different one. -->
+          <div class="space-y-1.5 p-2" aria-hidden="true">
+            {#each [0, 1, 2, 3, 4, 5, 6, 7] as i (i)}
+              <div class="h-3.5 animate-pulse rounded bg-white-300 dark:bg-navy-600" style={`width:${92 - i * 7}%`}></div>
+            {/each}
+          </div>
         {:else if (result?.files.length ?? 0) === 0}
-          <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">No differences between these refs.</p>
+          <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">
+            No differences between <span class="font-mono">{base}</span> and <span class="font-mono">{head}</span>.
+          </p>
         {:else}
-          {#each result?.files ?? [] as f (f.path)}
-            <div class={"group flex items-center gap-1.5 px-2 py-1 " + (selected?.path === f.path ? "bg-white-300 dark:bg-navy-600" : "hover:bg-white-200 dark:hover:bg-navy-800")}>
+          {#each result?.files ?? [] as f, i (f.path)}
+            <div bind:this={rowEls[i]} class={"group flex items-center gap-1.5 px-2 py-1 " + (selected?.path === f.path ? "bg-white-300 dark:bg-navy-600" : "hover:bg-white-200 dark:hover:bg-navy-800")}>
               <button type="button" onclick={() => (selected = f)} class="flex min-w-0 flex-1 items-center gap-1.5 text-left">
                 <span class={"shrink-0 font-mono text-[10px] " + statusColor(f.status)}>{f.status}</span>
                 <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-black-800 dark:text-black-500" title={f.orig_path ? `${f.orig_path} → ${f.path}` : f.path}>{f.path}</span>
@@ -463,7 +552,14 @@
             {:else if sides}
               <MonacoView mode="diff" original={sides.original} modified={sides.modified} language={lang} readOnly={true} {sideBySide} />
             {:else}
-              <div class="flex h-full items-center justify-center text-xs text-black-600">Loading…</div>
+              <!-- Only this pane waits: the file list stays live, so the
+                   next file can be picked before this one has arrived. -->
+              <div class="flex h-full items-center justify-center gap-1.5 text-xs text-black-600">
+                <svg viewBox="0 0 16 16" class="h-3 w-3 animate-spin" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="8" cy="8" r="6" opacity="0.25"/><path d="M14 8a6 6 0 00-6-6" stroke-linecap="round"/>
+                </svg>
+                Loading diff…
+              </div>
             {/if}
           </div>
         {:else}
