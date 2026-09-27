@@ -1,9 +1,8 @@
 <script lang="ts">
-  import FileTreeNode from "./FileTreeNode.svelte";
-  import type { SessionFileEntry } from "../types/agents.js";
-  import { formatSize, formatRelTime } from "../fileMeta.js";
-
-  type TreeNode = { entry: SessionFileEntry; children: TreeNode[] };
+  import FileBrowserNode from "./FileBrowserNode.svelte";
+  import type { SessionFileEntry } from "./file-browser-types.js";
+  import type { FileTreeNode as TreeNode } from "./file-browser-tree.js";
+  import { formatSize, formatRelTime } from "./file-meta.js";
 
   type Props = {
     node: TreeNode;
@@ -20,12 +19,16 @@
     onDownload: (path: string) => void;
     onDelete: (path: string) => void;
     onNewHere: (dirPath: string) => void;
+    /** Re-root the tree at this folder. Only the Source panel has somewhere
+        to go — the session rail IS the cwd — so the button appears only
+        when a caller passes this. */
+    onOpenDir?: (path: string) => void;
   };
 
   // The three maps are view hints, not data the row needs to exist: a caller
   // that has no lazy loading and no delete in flight should not have to say
   // so three times.
-  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere }: Props = $props();
+  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere, onOpenDir }: Props = $props();
 
   const e = $derived(node.entry);
   const indent = $derived(depth * 14 + 8);
@@ -76,6 +79,11 @@
       <span class="shrink-0 text-[10px] text-black-700 dark:text-black-600 font-mono group-hover:hidden">{countLabel}</span>
     {/if}
     <div class="hidden group-hover:flex items-center gap-0.5 shrink-0">
+      {#if onOpenDir}
+        <button type="button" title="Open this folder as the root" onclick={() => onOpenDir(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
+          <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h7M6.5 3.5L9 6l-2.5 2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      {/if}
       <button type="button" title="New file here" onclick={() => onNewHere(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
         <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2v8M2 6h8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -86,7 +94,7 @@
   </div>
   {#if open && !deleting}
     {#each node.children as child (child.entry.path)}
-      <FileTreeNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} />
+      <FileBrowserNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onOpenDir} />
     {/each}
   {/if}
 {:else}

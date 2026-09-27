@@ -76,3 +76,20 @@ export type {
   ContextMeterView,
   ContextTone,
 } from "./context-meter.js";
+
+// File browser — the session Files rail and the Source panel's Files tab
+// are the same component pointed at different roots.
+export { default as FileBrowser } from "./FileBrowser.svelte";
+export { default as FileBrowserNode } from "./FileBrowserNode.svelte";
+export type { SessionFileEntry, FileContent } from "./file-browser-types.js";
+export type { FileTreeNode, SortKey } from "./file-browser-tree.js";
+export {
+  buildFileTree,
+  compareNodes,
+  filterFileTree,
+  sortTree,
+  ext,
+} from "./file-browser-tree.js";
+export { rankPathHits, scorePath, subsequence, withAncestorDirs } from "./file-search.js";
+export type { PathHit } from "./file-search.js";
+export { formatSize, formatRelTime } from "./file-meta.js";

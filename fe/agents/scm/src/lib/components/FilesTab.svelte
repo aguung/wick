@@ -4,6 +4,13 @@
   // that selection moves — the whole point of having it here rather than in
   // the session Files panel, which always shows the session cwd.
   //
+  // The list itself is the SHARED FileBrowser, the same component the
+  // session's Files rail renders: the + / delete / download row actions,
+  // the filter, the Subfolders search, the Name/Recent/Type chips, the
+  // per-folder counts and the file meta all come with it. What lives here
+  // is everything repo-shaped — which API to call, how a path maps onto the
+  // session cwd, and the Monaco half on the right.
+  //
   // Listings are lazy, one request per folder: a session can hold dozens of
   // clones, and preloading the tree is both slow and, past the server's cap,
   // silently incomplete.
@@ -14,7 +21,8 @@
   import { sessionID, activeRepo, loadStatus } from "$lib/stores/scm";
   import { langFor } from "$lib/git-actions";
   import { toastOk, toastError } from "@wick-fe/common-stores";
-  import { ConfirmDialog } from "@wick-fe/common-ui";
+  import { ConfirmDialog, FileBrowser, withAncestorDirs } from "@wick-fe/common-ui";
+  import type { SessionFileEntry } from "@wick-fe/common-ui";
   import MonacoView from "$lib/components/MonacoView.svelte";
   import {
     sessionPath, toRepoRel, joinRel, parentRel, ancestorRels, breadcrumbs,
@@ -32,8 +40,15 @@
   // from the API. "" is the repo root.
   let dirs = $state<Record<string, FileEntry[]>>({});
   let loadingDirs = $state<Record<string, boolean>>({});
+  let loadedDirs = $state<Record<string, boolean>>({});
   let truncatedDirs = $state<Record<string, boolean>>({});
   let expanded = $state<Record<string, boolean>>({});
+  let deletingPaths = $state<Record<string, boolean>>({});
+  // Entries a deep search turned up. Kept apart from the per-folder
+  // listings: they are results, not a folder anyone opened, and they go
+  // away with the next search rather than pretending to be loaded state.
+  let found = $state<FileEntry[]>([]);
+  let findTruncated = $state(false);
   // The folder the tree hangs from — moved by the breadcrumb and by the
   // "open as root" arrow on a folder row. Deep trees get unreadable in a
   // 300px dock, so scoping down is worth a click.
@@ -48,6 +63,8 @@
 
   let creating = $state<{ isDir: boolean } | null>(null);
   let newName = $state("");
+  // Which folder the pending create lands in, relative to the root.
+  let createIn = $state("");
   let deleteAsk = $state<{ path: string; isDir: boolean } | null>(null);
 
   const crumbs = $derived(breadcrumbs($activeRepo, root));
@@ -58,28 +75,57 @@
     openPath ? files.downloadURL($sessionID, sessionPath($activeRepo, openPath)) : "",
   );
 
-  // Flattened rows, so indentation and the filter are one pass instead of a
-  // recursive component. Only expanded folders contribute children, and a
-  // folder contributes nothing until its listing has arrived.
-  type Row = { entry: FileEntry; depth: number };
-  const rows = $derived.by(() => {
-    const out: Row[] = [];
-    const walk = (dir: string, depth: number) => {
-      for (const e of dirs[dir] ?? []) {
-        out.push({ entry: e, depth });
-        if (e.isDir && expanded[e.path]) walk(e.path, depth + 1);
-      }
+  // The browser builds its tree by path, so every row it is handed has to
+  // be relative to the folder on screen — otherwise a subtree rooted at
+  // src/lib has nothing to hang "src/lib/x.ts" off and the row vanishes.
+  const rootPrefix = $derived(root ? root + "/" : "");
+  function underRoot(path: string): string | null {
+    if (!root) return path;
+    return path.startsWith(rootPrefix) ? path.slice(rootPrefix.length) : null;
+  }
+  const fromRoot = (rel: string) => joinRel(root, rel);
+
+  // What the browser lists: every loaded folder inside the current root,
+  // plus whatever the last deep search found, all rebased on that root.
+  const browserFiles = $derived.by(() => {
+    const out: SessionFileEntry[] = [];
+    const seen = new Set<string>();
+    const add = (e: FileEntry) => {
+      const rel = underRoot(e.path);
+      if (rel === null || rel === "" || seen.has(rel)) return;
+      seen.add(rel);
+      out.push({ path: rel, name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime });
     };
-    walk(root, 0);
+    for (const [dir, entries] of Object.entries(dirs)) {
+      if (dir !== root && !isWithin(root, dir)) continue;
+      for (const e of entries) add(e);
+    }
+    for (const e of found) add(e);
+    // A hit whose folders nobody expanded would have no parent to attach
+    // to; give it the folders it needs rather than dropping the row.
+    return withAncestorDirs(out);
+  });
+
+  // The browser keys its open folders by the same rebased paths.
+  const openDirsRebased = $derived.by(() => {
+    const out: Record<string, boolean> = {};
+    for (const [p, v] of Object.entries(expanded)) {
+      const rel = underRoot(p);
+      if (rel) out[rel] = v;
+    }
     return out;
   });
-  const needle = $derived(filter.trim().toLowerCase());
-  // The filter narrows what is ALREADY loaded — it is a way to find a name
-  // in a big folder, not a tree-wide search (that would mean walking every
-  // clone in the session on each keystroke).
-  const visible = $derived(
-    needle ? rows.filter((r) => r.entry.name.toLowerCase().includes(needle)) : rows,
-  );
+  function rebaseFlags(src: Record<string, boolean>): Record<string, boolean> {
+    const out: Record<string, boolean> = {};
+    for (const [p, v] of Object.entries(src)) {
+      const rel = underRoot(p);
+      if (rel !== null) out[rel === "" ? "" : rel] = v;
+    }
+    return out;
+  }
+  const loadedRebased = $derived(rebaseFlags(loadedDirs));
+  const loadingRebased = $derived(rebaseFlags(loadingDirs));
+  const deletingRebased = $derived(rebaseFlags(deletingPaths));
 
   async function loadDir(dir: string, force = false): Promise<void> {
     if (!force && dirs[dir]) return;
@@ -100,6 +146,7 @@
         entries.push({ ...f, path: rel });
       }
       dirs = { ...dirs, [dir]: sortEntries(entries) };
+      loadedDirs = { ...loadedDirs, [dir]: true };
       truncatedDirs = { ...truncatedDirs, [dir]: r.truncated === true };
     } catch (e) {
       toastError("Files", String(e));
@@ -108,7 +155,8 @@
     }
   }
 
-  function toggleDir(path: string) {
+  function toggleDir(rel: string) {
+    const path = fromRoot(rel);
     const next = !expanded[path];
     expanded = { ...expanded, [path]: next };
     if (next) void loadDir(path);
@@ -117,7 +165,55 @@
   function setRoot(path: string) {
     root = path;
     filter = "";
+    found = [];
     void loadDir(path);
+  }
+
+  // Deep search runs on the server — the tree is loaded a level at a time,
+  // so a folder nobody has opened is simply not here to filter, and finding
+  // one is the main reason to search at all. Results outside the selected
+  // repo (the endpoint is session-wide) are dropped.
+  async function deepFind(q: string): Promise<void> {
+    const id = get(sessionID);
+    if (!id) return;
+    const repo = get(activeRepo);
+    try {
+      const r = await files.searchFiles(id, q);
+      if (get(activeRepo) !== repo) return;
+      const hits: FileEntry[] = [];
+      for (const f of r.files) {
+        const rel = toRepoRel(repo, f.path);
+        if (rel === null || underRoot(rel) === null) continue;
+        hits.push({ ...f, path: rel });
+      }
+      found = hits;
+      findTruncated = r.truncated;
+    } catch {
+      // A failed search leaves the tree as it was.
+    }
+  }
+
+  // Go to file: the same endpoint, scoped to this repo, ranked by the
+  // browser. Files only — the quick-open opens something.
+  async function quickFind(q: string): Promise<SessionFileEntry[]> {
+    const id = get(sessionID);
+    if (!id) return [];
+    const repo = get(activeRepo);
+    try {
+      const r = await files.searchFiles(id, q);
+      if (get(activeRepo) !== repo) return [];
+      const out: SessionFileEntry[] = [];
+      for (const f of r.files) {
+        const rel = toRepoRel(repo, f.path);
+        if (rel === null) continue;
+        const under = underRoot(rel);
+        if (under === null || under === "") continue;
+        out.push({ path: under, name: f.name, size: f.size, isDir: f.isDir, mtime: f.mtime });
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   // Leaving a dirty buffer behind silently is the one way this panel could
@@ -126,6 +222,11 @@
   function mayLeave(): boolean {
     if (buffer === null || !openPath) return true;
     return confirm(`Discard unsaved changes to ${baseName(openPath)}?`);
+  }
+
+  function openEntry(f: SessionFileEntry) {
+    if (f.isDir) return;
+    void openFile(fromRoot(f.path));
   }
 
   async function openFile(path: string) {
@@ -175,6 +276,14 @@
     }
   }
 
+  // New file / new folder. The browser's toolbar asks for one at the root;
+  // a folder row's + asks for one inside that folder.
+  function startCreate(isDir: boolean, dir = "") {
+    creating = { isDir };
+    newName = "";
+    createIn = dir;
+  }
+
   async function submitCreate() {
     const c = creating;
     if (!c) return;
@@ -182,7 +291,7 @@
     // is quicker than making each level by hand.
     const name = normalizeRel(newName);
     if (!name) return;
-    const path = joinRel(root, name);
+    const path = joinRel(joinRel(root, createIn), name);
     const repo = get(activeRepo);
     try {
       await files.createEntry(get(sessionID), sessionPath(repo, path), c.isDir);
@@ -212,6 +321,9 @@
     deleteAsk = null;
     if (!d) return;
     const repo = get(activeRepo);
+    // The row collapses in place while the request is out, so the list does
+    // not snap and lose the reader's position.
+    deletingPaths = { ...deletingPaths, [d.path]: true };
     try {
       await files.deleteEntry(get(sessionID), sessionPath(repo, d.path));
       toastOk("Deleted", d.path);
@@ -227,11 +339,15 @@
         if (!isWithin(d.path, k)) keep[k] = v;
       }
       dirs = keep;
+      found = found.filter((f) => !isWithin(d.path, f.path));
       if (isWithin(d.path, root)) root = parentRel(d.path);
       await loadDir(parentRel(d.path), true);
       void loadStatus();
     } catch (e) {
       toastError("Delete failed", String(e));
+    } finally {
+      const { [d.path]: _gone, ...rest } = deletingPaths;
+      deletingPaths = rest;
     }
   }
 
@@ -259,8 +375,12 @@
     untrack(() => {
       dirs = {};
       loadingDirs = {};
+      loadedDirs = {};
       truncatedDirs = {};
       expanded = {};
+      deletingPaths = {};
+      found = [];
+      findTruncated = false;
       root = "";
       filter = "";
       openPath = null;
@@ -268,6 +388,7 @@
       buffer = null;
       creating = null;
       newName = "";
+      createIn = "";
       void loadDir("", true);
     });
   });
@@ -306,47 +427,13 @@
     </div>
   {/if}
 
-  <!-- Filter + create + refresh -->
-  <div class="flex items-center gap-1 border-b border-white-300 dark:border-navy-600 px-2 py-1">
-    <input
-      type="text"
-      bind:value={filter}
-      placeholder="Filter…"
-      class="min-w-0 flex-1 rounded border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-1.5 py-0.5 text-[11px] text-black-900 dark:text-white-100 placeholder:text-black-600 focus:border-green-500 focus:outline-none"
-    />
-    <button
-      type="button"
-      title="New file"
-      onclick={() => { creating = { isDir: false }; newName = ""; }}
-      class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-    >
-      <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z" stroke-linejoin="round"/><path d="M9 2v4h4M8 8v4M6 10h4" stroke-linecap="round"/></svg>
-    </button>
-    <button
-      type="button"
-      title="New folder"
-      onclick={() => { creating = { isDir: true }; newName = ""; }}
-      class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-    >
-      <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5.5A1.5 1.5 0 013.5 4h2.2l1.2 1.5h5.6A1.5 1.5 0 0114 7v4.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-6z" stroke-linejoin="round"/><path d="M8 7.5v4M6 9.5h4" stroke-linecap="round"/></svg>
-    </button>
-    <button
-      type="button"
-      title="Refresh"
-      onclick={() => loadDir(root, true)}
-      class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800"
-    >
-      <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8a6 6 0 0110.5-4M14 8a6 6 0 01-10.5 4M11 2v3h3M5 14v-3H2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-  </div>
-
   {#if creating}
     <!-- svelte-ignore a11y_autofocus -->
     <form
       class="flex items-center gap-1 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-2 py-1"
       onsubmit={(e) => { e.preventDefault(); void submitCreate(); }}
     >
-      <span class="shrink-0 text-[10px] text-black-600">{creating.isDir ? "Folder" : "File"} in {crumbs.length > 1 ? crumbs[crumbs.length - 1].name + "/" : "repo root"}</span>
+      <span class="shrink-0 text-[10px] text-black-600">{creating.isDir ? "Folder" : "File"} in {createIn || (crumbs.length > 1 ? crumbs[crumbs.length - 1].name : "repo root")}</span>
       <input
         type="text"
         autofocus
@@ -360,70 +447,40 @@
     </form>
   {/if}
 
-  <!-- Rows -->
-  <div class="flex-1 overflow-y-auto py-0.5">
-    {#if loadingDirs[root] && !dirs[root]}
-      <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">Loading…</p>
-    {:else if visible.length === 0}
-      <p class="px-3 py-3 text-[11px] text-black-700 dark:text-black-600">
-        {needle ? "Nothing matches the filter." : "This folder is empty."}
-      </p>
-    {/if}
-    {#each visible as row (row.entry.path)}
-      {@const e = row.entry}
-      {@const isOpen = openPath === e.path}
-      <div
-        class={"group flex items-center gap-1 pr-1 transition-colors " + (isOpen ? "bg-white-300 dark:bg-navy-600" : "hover:bg-white-200 dark:hover:bg-navy-800")}
-        style={`padding-left:${(needle ? 0 : row.depth) * 10 + 4}px`}
-      >
-        <button
-          type="button"
-          onclick={() => (e.isDir ? toggleDir(e.path) : openFile(e.path))}
-          title={e.path}
-          class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left"
-        >
-          {#if e.isDir}
-            <svg viewBox="0 0 16 16" class={"h-3 w-3 shrink-0 text-black-600 transition-transform " + (expanded[e.path] ? "rotate-90" : "")} fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-black-900 dark:text-white-100">{e.name}</span>
-          {:else}
-            <span class="h-3 w-3 shrink-0"></span>
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-black-900 dark:text-white-100">{e.name}</span>
-          {/if}
-          {#if needle && parentRel(e.path)}
-            <span class="shrink-0 truncate font-mono text-[9px] text-black-600">{parentRel(e.path)}</span>
-          {/if}
-        </button>
-        {#if e.isDir}
-          <button
-            type="button"
-            title="Open this folder as the root"
-            onclick={() => setRoot(e.path)}
-            class="hidden h-5 w-5 shrink-0 items-center justify-center rounded text-black-600 hover:bg-white-300 dark:hover:bg-navy-600 group-hover:inline-flex"
-          >
-            <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h9M9 5l3 3-3 3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        {:else}
-          <a
-            href={files.downloadURL($sessionID, sessionPath($activeRepo, e.path))}
-            title="Download"
-            download
-            class="hidden h-5 w-5 shrink-0 items-center justify-center rounded text-black-600 hover:bg-white-300 dark:hover:bg-navy-600 group-hover:inline-flex"
-          >
-            <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v8M5 7l3 3 3-3M3 13h10" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </a>
-        {/if}
-        <button
-          type="button"
-          title="Delete"
-          onclick={() => (deleteAsk = { path: e.path, isDir: e.isDir })}
-          class="hidden h-5 w-5 shrink-0 items-center justify-center rounded text-black-600 hover:bg-white-300 hover:text-red-600 dark:hover:bg-navy-600 dark:hover:text-red-400 group-hover:inline-flex"
-        >
-          <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6.5 4V2.5h3V4M5 4l.5 9h5L11 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      </div>
-    {/each}
+  <!-- The shared browser. cwd is deliberately empty: the panel header
+       already names the repo, and the breadcrumb above says where inside it
+       we are — a third copy of the same string is noise. -->
+  <div class="flex min-h-0 flex-1 flex-col">
+    <FileBrowser
+      cwd=""
+      files={browserFiles}
+      search={filter}
+      openDirs={openDirsRebased}
+      loadedDirs={loadedRebased}
+      loadingDirs={loadingRebased}
+      deletingPaths={deletingRebased}
+      {findTruncated}
+      onFind={(q, isDeep) => { if (isDeep) void deepFind(q); }}
+      onSearch={(v) => { filter = v; if (!v) found = []; }}
+      onToggleDir={toggleDir}
+      onOpen={openEntry}
+      onRefresh={() => loadDir(root, true)}
+      onNewFile={() => startCreate(false)}
+      onNewDir={() => startCreate(true)}
+      onNewHere={(dir) => startCreate(false, dir)}
+      onDownload={(p) => window.open(files.downloadURL($sessionID, sessionPath($activeRepo, fromRoot(p))), "_blank")}
+      onDelete={(p) => {
+        const abs = fromRoot(p);
+        const entry = browserFiles.find((f) => f.path === p);
+        deleteAsk = { path: abs, isDir: entry?.isDir ?? false };
+      }}
+      onOpenDir={(p) => setRoot(fromRoot(p))}
+      onQuickFind={quickFind}
+      quickScope={$activeRepo && $activeRepo !== "." ? $activeRepo : "this repo"}
+      loading={!!loadingDirs[root] && !dirs[root]}
+    />
     {#if truncatedDirs[root]}
-      <p class="px-3 py-2 text-[10px] text-amber-600 dark:text-amber-400">This folder has more entries than the panel lists.</p>
+      <p class="shrink-0 px-3 py-2 text-[10px] text-amber-600 dark:text-amber-400">This folder has more entries than the panel lists.</p>
     {/if}
   </div>
 {/snippet}
@@ -497,7 +554,7 @@
   {/if}
 {:else}
   <div class="flex min-h-0 w-full flex-1 overflow-hidden">
-    <aside class="flex w-[260px] shrink-0 flex-col overflow-hidden border-r border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700">
+    <aside class="flex w-[300px] shrink-0 flex-col overflow-hidden border-r border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700">
       {@render tree()}
     </aside>
     <main class="flex min-w-0 flex-1 flex-col overflow-hidden bg-white-200 dark:bg-navy-800">

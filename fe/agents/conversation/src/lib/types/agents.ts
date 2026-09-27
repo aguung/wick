@@ -232,13 +232,9 @@ export type ApprovalsResponse = {
   always_approved: ApprovedItem[];
 };
 
-export type SessionFileEntry = {
-  path: string;
-  name: string;
-  size: number;
-  isDir: boolean;
-  mtime: number;
-};
+/* Both shapes now live with the shared file browser that consumes them —
+   re-exported here so the shell's many call sites keep their import. */
+export type { SessionFileEntry } from "@wick-fe/common-ui";
 
 /* Mirror of @wick-fe/common-ui's ComposerCommand (kept local to avoid a
    type-only import through the common-ui barrel). Structurally identical, so a
@@ -349,14 +345,7 @@ export type SubAgentEnvelope = {
   structured: boolean;
 };
 
-export type FileContent = {
-  path: string;
-  size: number;
-  binary: boolean;
-  content?: string;
-  tooBig?: boolean;
-  mtime?: number;
-};
+export type { FileContent } from "@wick-fe/common-ui";
 
 export type AgentEvent = {
   session_id?: string;
