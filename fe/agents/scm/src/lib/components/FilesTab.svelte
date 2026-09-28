@@ -468,6 +468,7 @@
       onNewFile={() => startCreate(false)}
       onNewDir={() => startCreate(true)}
       onNewHere={(dir) => startCreate(false, dir)}
+      onNewDirHere={(dir) => startCreate(true, dir)}
       onDownload={(p) => window.open(files.downloadURL($sessionID, sessionPath($activeRepo, fromRoot(p))), "_blank")}
       onDelete={(p) => {
         const abs = fromRoot(p);

@@ -3,6 +3,7 @@
   import type { SessionFileEntry } from "./file-browser-types.js";
   import type { FileTreeNode as TreeNode } from "./file-browser-tree.js";
   import { formatSize, formatRelTime } from "./file-meta.js";
+  import KebabMenu from "./KebabMenu.svelte";
 
   type Props = {
     node: TreeNode;
@@ -19,6 +20,9 @@
     onDownload: (path: string) => void;
     onDelete: (path: string) => void;
     onNewHere: (dirPath: string) => void;
+    /** Create a FOLDER inside this folder. Optional so a caller that only
+        offers files keeps the menu honest rather than showing a dead row. */
+    onNewDirHere?: (dirPath: string) => void;
     /** Re-root the tree at this folder. Only the Source panel has somewhere
         to go — the session rail IS the cwd — so the button appears only
         when a caller passes this. */
@@ -28,7 +32,7 @@
   // The three maps are view hints, not data the row needs to exist: a caller
   // that has no lazy loading and no delete in flight should not have to say
   // so three times.
-  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere, onOpenDir }: Props = $props();
+  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere, onNewDirHere, onOpenDir }: Props = $props();
 
   const e = $derived(node.entry);
   const indent = $derived(depth * 14 + 8);
@@ -38,6 +42,23 @@
   // the list snapping and losing the reader's position.
   const deleting = $derived(!!deletingPaths[e.path]);
   const rowAnim = "overflow-hidden transition-all duration-150 ease-out";
+
+  /* One ⋮ per row instead of a strip of icon buttons. Three reasons, in the
+     order they bit us: the icons only appeared on hover, so on a touch screen
+     they did not exist; they were absolutely positioned over a row whose whole
+     left side is the open/close button, so a click that missed an icon by a
+     pixel opened the folder instead; and every new action made the strip
+     wider, pushing the file name further into truncation. */
+  const folderItems = $derived([
+    { label: "New file here", onclick: () => onNewHere(e.path) },
+    ...(onNewDirHere ? [{ label: "New folder here", onclick: () => onNewDirHere(e.path) }] : []),
+    ...(onOpenDir ? [{ label: "Open as root", onclick: () => onOpenDir(e.path) }] : []),
+    { label: "Delete folder", onclick: () => onDelete(e.path), danger: true },
+  ]);
+  const fileItems = $derived([
+    { label: "Download", onclick: () => onDownload(e.path) },
+    { label: "Delete file", onclick: () => onDelete(e.path), danger: true },
+  ]);
   const rowGone = "max-h-0 !py-0 opacity-0 border-b-0 pointer-events-none";
   const loaded = $derived(!!loadedDirs[e.path]);
 
@@ -78,23 +99,13 @@
     {:else if open && countLabel}
       <span class="shrink-0 text-[10px] text-black-700 dark:text-black-600 font-mono transition-opacity group-hover:opacity-0">{countLabel}</span>
     {/if}
-    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-200 dark:bg-navy-800 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
-      {#if onOpenDir}
-        <button type="button" title="Open this folder as the root" onclick={() => onOpenDir(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
-          <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h7M6.5 3.5L9 6l-2.5 2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      {/if}
-      <button type="button" title="New file here" onclick={() => onNewHere(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
-        <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2v8M2 6h8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button type="button" title="Delete" onclick={() => onDelete(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-neg-600 dark:text-neg-400 hover:bg-neg-50 dark:hover:bg-neg-900/20">
-        <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h8M4 3V2h4v1M5 5v4M7 5v4M3 3l.5 7h5L9 3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
+    <div class="row-actions shrink-0">
+      <KebabMenu items={folderItems} size="sm" width={184} ariaLabel={`Actions for folder ${e.name}`} />
     </div>
   </div>
   {#if open && !deleting}
     {#each node.children as child (child.entry.path)}
-      <FileBrowserNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onOpenDir} />
+      <FileBrowserNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} />
     {/each}
   {/if}
 {:else}
@@ -104,17 +115,37 @@
         <path d="M3 2h6l3 3v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z M9 2v3h3" stroke-linejoin="round"/>
       </svg>
     </span>
-    <button type="button" onclick={() => onOpen(e)} class="min-w-0 flex-1 text-left pr-16">
+    <button type="button" onclick={() => onOpen(e)} class="min-w-0 flex-1 text-left pr-2">
       <div class="text-xs text-black-900 dark:text-white-100 truncate">{e.name}</div>
       <div class="text-[10px] text-black-700 dark:text-black-600 truncate font-mono">{formatSize(e.size)} · {formatRelTime(e.mtime)}</div>
     </button>
-    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-200 dark:bg-navy-800 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
-      <button type="button" title="Download" onclick={() => onDownload(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
-        <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2v6m0 0l-2-2m2 2l2-2M3 10h6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button type="button" title="Delete" onclick={() => onDelete(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-neg-600 dark:text-neg-400 hover:bg-neg-50 dark:hover:bg-neg-900/20">
-        <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h8M4 3V2h4v1M5 5v4M7 5v4M3 3l.5 7h5L9 3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
+    <div class="row-actions shrink-0">
+      <KebabMenu items={fileItems} size="sm" width={168} ariaLabel={`Actions for ${e.name}`} />
     </div>
   </div>
 {/if}
+
+<style>
+  /* The ⋮ is quiet until the row is pointed at: a column of dots down every
+     row reads as clutter in a narrow panel. It keeps its box either way, so
+     nothing reflows when it appears — the row shifting under the cursor was
+     the last thing we fixed here. */
+  .row-actions {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  .group:hover .row-actions,
+  .row-actions:focus-within,
+  /* An open menu outlives the hover: the pointer leaves the row to reach the
+     popup, and a trigger that vanishes mid-click looks broken. */
+  .row-actions:has(:global([aria-expanded="true"])) {
+    opacity: 1;
+  }
+  /* No pointer, no hover — on a touch screen a hover-only control does not
+     exist at all, so there it stays visible. */
+  @media (hover: none) {
+    .row-actions {
+      opacity: 1;
+    }
+  }
+</style>
