@@ -38,6 +38,8 @@
     onNewDirHere?: (dirPath: string) => void;
     /** Re-root the tree at a folder (Source panel only — see the node). */
     onOpenDir?: (path: string) => void;
+    /** Path flavours for a row's "Copy path" — see FileBrowserNode. */
+    copyVariants?: (e: SessionFileEntry) => { label: string; value: string }[];
     /** Go to file: the caller searches ITS OWN scope — the selected repo in
         the Source panel, the session cwd in the rail — and hands back
         candidates. Ranking, the list and the keys are here. Omit the prop
@@ -49,7 +51,7 @@
     loadError?: string;
   };
 
-  let { cwd, files, search, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onFind = () => {}, findTruncated = false, onSearch, onToggleDir, onOpen, onRefresh, onNewFile, onNewDir, onDownload = () => {}, onDelete = () => {}, onNewHere = () => {}, onNewDirHere, onOpenDir, onQuickFind, quickScope = "", loading = false, loadError = "" }: Props = $props();
+  let { cwd, files, search, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onFind = () => {}, findTruncated = false, onSearch, onToggleDir, onOpen, onRefresh, onNewFile, onNewDir, onDownload = () => {}, onDelete = () => {}, onNewHere = () => {}, onNewDirHere, onOpenDir, copyVariants, onQuickFind, quickScope = "", loading = false, loadError = "" }: Props = $props();
 
   const SORT_KEY = "wick.files.sort";
   const DEEP_KEY = "wick.files.deep";
@@ -390,7 +392,7 @@
       </div>
     {:else}
       {#each visible as node (node.entry.path)}
-        <FileBrowserNode {node} depth={0} forceOpen={!!q && deep} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} />
+        <FileBrowserNode {node} depth={0} forceOpen={!!q && deep} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} {copyVariants} />
       {/each}
     {/if}
   </div>

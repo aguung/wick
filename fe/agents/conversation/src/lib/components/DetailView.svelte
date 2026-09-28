@@ -208,6 +208,14 @@
 
   /* ── context panel state ──────────────────────────────────────── */
   let cwdVal = $state("");
+  /* What a row's "Copy path" offers. The rail lists the session cwd, so the
+     absolute form is the cwd plus the listed path — and it is first because
+     that is the one you paste into a terminal or hand to another agent. */
+  const fileCopyVariants = (e: { path: string; name: string }) => [
+    ...(cwdVal ? [{ label: "Full path", value: `${cwdVal}/${e.path}` }] : []),
+    { label: "Session path", value: e.path },
+    { label: "Name", value: e.name },
+  ];
   let filesVal = $state<SessionFileEntry[]>([]);
   let filesLoading = $state(false);
   let filesLoadError = $state("");
@@ -2713,6 +2721,7 @@
       {:else if railTab === "files"}
         <FileBrowser
           cwd={cwdVal}
+          copyVariants={fileCopyVariants}
           files={filesVal}
           search={fileSearch}
           {openDirs}
@@ -2903,6 +2912,7 @@
           {:else if railTab === "files"}
             <FileBrowser
               cwd={cwdVal}
+              copyVariants={fileCopyVariants}
               files={filesVal}
               search={fileSearch}
               {openDirs}

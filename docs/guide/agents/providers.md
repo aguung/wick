@@ -121,6 +121,23 @@ The one-time code is shown in the live terminal, not lifted into its own row lik
 
 The instance's `Env` is passed into the login spawn, so an instance carrying `CODEX_HOME=/home/you/.codex_work` writes its credentials into **that** home. This is how one host holds several codex accounts at once: one instance per home, each logged in separately, each reporting its own account and usage.
 
+#### Creating the home
+
+wick reads a per-instance home but does not create one. [`scripts/new-provider-home.sh`](https://github.com/yogasw/wick/blob/master/scripts/new-provider-home.sh) does, for `claude` and `codex` alike — run it with no arguments and press enter through the defaults, or `./scripts/new-provider-home.sh -y codex work`.
+
+It symlinks what should be shared and copies what must not be, and the split differs per provider for one reason worth knowing before overriding it:
+
+| | `claude` | `codex` |
+|---|---|---|
+| env var | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| symlinked | `skills`, `plugins`, `projects`, `sessions`, `session-env` | `skills`, `plugins`, `rules` |
+| copied | `settings.json` | `config.toml` |
+| never shared | `.credentials.json` | `auth.json`, **`sessions`** |
+
+`sessions` is shared for claude and not for codex because of where each one's usage numbers come from. claude's are fetched over HTTP against the credential, so a shared history costs nothing. codex has no usage endpoint — wick reads the rate-limit windows out of `$CODEX_HOME/sessions/**/rollout-*.jsonl`, and the context ledger and `/compact` read the same files. Share that directory and every instance reports whichever account happened to run last.
+
+`gemini` is refused by the script: `geminiConfigDir()` takes no env override, so two gemini instances share `~/.gemini` whatever you do to the filesystem.
+
 ### Session TTL
 
 | | |
