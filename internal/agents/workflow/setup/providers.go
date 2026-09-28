@@ -11,6 +11,7 @@ import (
 	agentprovider "github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/skillsync"
 	"github.com/yogasw/wick/internal/agents/workflow/provider"
+	"github.com/yogasw/wick/internal/pkg/envscrub"
 	"github.com/yogasw/wick/pkg/safeexec"
 )
 
@@ -90,7 +91,9 @@ func (p *cliProvider) StructuredCall(ctx context.Context, req provider.Structure
 		args = append(p.ins.ExtraArgs, args...)
 	}
 	start := time.Now()
-	out, err := safeexec.CommandContext(cctx, bin, args...).Output()
+	cmd := safeexec.CommandContext(cctx, bin, args...)
+	cmd.Env = envscrub.ScrubOSEnv()
+	out, err := cmd.Output()
 	usage := provider.Usage{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
 		return provider.StructuredResult{Raw: string(out), OK: false, Error: err.Error(), Usage: usage}, nil
@@ -136,7 +139,9 @@ func (p *cliProvider) AgentCall(ctx context.Context, req provider.AgentRequest) 
 	args := append([]string(nil), p.ins.ExtraArgs...)
 	args = append(args, "--print", req.Prompt)
 	start := time.Now()
-	out, err := safeexec.CommandContext(ctx, bin, args...).Output()
+	cmd := safeexec.CommandContext(ctx, bin, args...)
+	cmd.Env = envscrub.ScrubOSEnv()
+	out, err := cmd.Output()
 	usage := provider.Usage{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
 		return provider.AgentResult{Text: string(out), Usage: usage}, fmt.Errorf("%s: %w", p.ins.Name, err)
