@@ -296,9 +296,12 @@
         aria-label="Go to file"
         class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-black-700 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors"
       >
+        <!-- A page with a magnifier. It sat next to "new file" wearing a page
+             with a PLUS, and at 14px the two were the same button twice. -->
         <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M3 2h6l3 3v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z M9 2v3h3" stroke-linejoin="round"/>
-          <path d="M5.5 9.5h5M8 7v5" stroke-linecap="round"/>
+          <path d="M12 7.5V5L9 2H3a1 1 0 00-1 1v11a1 1 0 001 1h3.5M9 2v3h3" stroke-linejoin="round" stroke-linecap="round"/>
+          <circle cx="10.5" cy="10.5" r="2.5"/>
+          <path d="M12.4 12.4L14.5 14.5" stroke-linecap="round"/>
         </svg>
       </button>
     {/if}

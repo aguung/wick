@@ -78,7 +78,7 @@
     {:else if open && countLabel}
       <span class="shrink-0 text-[10px] text-black-700 dark:text-black-600 font-mono transition-opacity group-hover:opacity-0">{countLabel}</span>
     {/if}
-    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-100 dark:bg-navy-900 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
+    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-200 dark:bg-navy-800 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
       {#if onOpenDir}
         <button type="button" title="Open this folder as the root" onclick={() => onOpenDir(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
           <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h7M6.5 3.5L9 6l-2.5 2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -108,7 +108,7 @@
       <div class="text-xs text-black-900 dark:text-white-100 truncate">{e.name}</div>
       <div class="text-[10px] text-black-700 dark:text-black-600 truncate font-mono">{formatSize(e.size)} · {formatRelTime(e.mtime)}</div>
     </button>
-    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-100 dark:bg-navy-900 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
+    <div class="flex items-center gap-0.5 absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-white-200 dark:bg-navy-800 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto">
       <button type="button" title="Download" onclick={() => onDownload(e.path)} class="inline-flex h-6 w-6 items-center justify-center rounded text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600">
         <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2v6m0 0l-2-2m2 2l2-2M3 10h6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
