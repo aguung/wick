@@ -2732,7 +2732,7 @@
           onDownload={(p) => { window.open(downloadURL(base, sessionId, p), "_blank"); }}
           onDelete={removeEntry}
           onNewHere={(dir) => createEntry(false, dir)}
-              onNewDirHere={(dir) => createEntry(true, dir)}
+          onNewDirHere={(dir) => createEntry(true, dir)}
           onQuickFind={quickFindFiles}
         />
       {:else if railTab === "todos"}
