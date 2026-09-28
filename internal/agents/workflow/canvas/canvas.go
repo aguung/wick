@@ -373,11 +373,48 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 }
 
 // SetTriggers replaces the trigger list.
+//
+// Triggers that arrive without an ID get one minted here. An ID is not
+// cosmetic: the canvas keys its trigger cards, positions, run status and
+// trigger→entry_node edges by it, so a list of id-less triggers collapses
+// into duplicate keys and the editor refuses to render the graph at all.
+// Callers that build triggers by hand (MCP `workflow_set_triggers`) would
+// otherwise leave the workflow runnable but uneditable.
 func (c *Canvas) SetTriggers(id string, triggers []workflow.Trigger) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		w.Triggers = triggers
+		w.Triggers = withTriggerIDs(triggers)
 		return nil
 	})
+}
+
+// withTriggerIDs fills in a stable, unique ID for every trigger that lacks
+// one, leaving explicitly-set IDs untouched. Shape matches the UI's own
+// scaffold: trigger-<type>, then trigger-<type>-2, -3, ... on collision.
+func withTriggerIDs(triggers []workflow.Trigger) []workflow.Trigger {
+	seen := map[string]bool{}
+	for _, t := range triggers {
+		if t.ID != "" {
+			seen[t.ID] = true
+		}
+	}
+	out := make([]workflow.Trigger, len(triggers))
+	copy(out, triggers)
+	for i := range out {
+		if out[i].ID != "" {
+			continue
+		}
+		typ := string(out[i].Type)
+		if typ == "" {
+			typ = "manual"
+		}
+		candidate := "trigger-" + typ
+		for n := 2; seen[candidate]; n++ {
+			candidate = fmt.Sprintf("trigger-%s-%d", typ, n)
+		}
+		seen[candidate] = true
+		out[i].ID = candidate
+	}
+	return out
 }
 
 // Toggle flips enabled.

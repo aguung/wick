@@ -456,6 +456,39 @@ func TestSetTriggers_ReplacesTriggers(t *testing.T) {
 	}
 }
 
+// Triggers sent without an ID (the MCP path builds them by hand) must come
+// back with unique ones — the canvas keys cards, positions and trigger edges
+// by ID, and duplicates make the editor refuse to render the graph.
+func TestSetTriggers_MintsUniqueIDs(t *testing.T) {
+	svc := newStub("wf")
+	c := newCanvas(svc)
+
+	got, err := c.SetTriggers("wf", []workflow.Trigger{
+		{Type: workflow.TriggerCron, Schedule: "55 6 * * 1-5", EntryNode: "start"},
+		{Type: workflow.TriggerCron, Schedule: "55 14 * * 1-5", EntryNode: "start"},
+		{Type: workflow.TriggerCron, Schedule: "55 22 * * 1-5", EntryNode: "start"},
+		{ID: "trigger-cron-2", Type: workflow.TriggerManual, EntryNode: "start"},
+	})
+	if err != nil {
+		t.Fatalf("SetTriggers error: %v", err)
+	}
+	seen := map[string]bool{}
+	for i, tr := range got.Triggers {
+		if tr.ID == "" {
+			t.Fatalf("trigger %d still has an empty ID", i)
+		}
+		if seen[tr.ID] {
+			t.Fatalf("duplicate trigger ID %q", tr.ID)
+		}
+		seen[tr.ID] = true
+	}
+	// An explicitly-set ID is never rewritten, even when a minted one
+	// would have wanted the same name.
+	if got.Triggers[3].ID != "trigger-cron-2" {
+		t.Errorf("explicit ID overwritten: got %q", got.Triggers[3].ID)
+	}
+}
+
 func TestSetTriggers_PersistsInService(t *testing.T) {
 	svc := newStub("wf")
 	c := newCanvas(svc)

@@ -1425,7 +1425,12 @@
            `workflow._canvas.positions` map but keyed by trigger.id; the
            hydrate pass in `loadWorkflow` doesn't copy these onto the
            trigger object, so look them up inline. -->
-      {#each $draftWorkflow.triggers ?? [] as trig (trig.id ?? trig.type)}
+      <!-- Key on the index as a fallback: legacy workflows (and triggers
+           written straight over MCP before ids were minted server-side)
+           can carry an empty id, and keying several of those by type alone
+           throws each_key_duplicate — which kills the whole canvas render,
+           not just the trigger cards. -->
+      {#each $draftWorkflow.triggers ?? [] as trig, trigIdx (trig.id || `${trig.type ?? "trigger"}-${trigIdx}`)}
         {@const pos = ($draftWorkflow as any)._canvas?.positions?.[trig.id ?? ""] ?? { x: 60, y: 60 }}
         {@const trigStatus = trig.id ? $triggerRunStatus[trig.id] : undefined}
         {@const trigIssue = triggerIssue(trig.id)}
