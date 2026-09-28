@@ -126,16 +126,26 @@ templ ThemePicker(current Theme, lightPref, darkPref string) {
 // navbar, manager, profile layouts) to avoid a duplicate control.
 templ UserMenu(user *entity.User, showTheme bool) {
 	if user != nil {
+		{{ imp := ImpersonationFromContext(ctx) }}
 		<div class="relative">
 			<details class="group" data-menu>
 				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-lg p-1 hover:bg-white-200 dark:hover:bg-navy-800 transition-colors focus:outline-none focus:ring-2 focus:ring-green-400">
-					if user.Avatar != "" {
-						<img src={ user.Avatar } alt={ user.Name } referrerpolicy="no-referrer" class="h-8 w-8 rounded-full object-cover border border-white-300 dark:border-navy-600"/>
-					} else {
-						<div class="flex h-8 w-8 items-center justify-center rounded-full bg-green-200 text-xs font-semibold text-green-700 select-none">
-							{ string([]rune(user.Name)[0:1]) }
-						</div>
-					}
+					<!-- The avatar carries the "you are someone else" signal once
+					     the banner is collapsed: a caution dot on the corner. It
+					     has to live on chrome that is always on screen, because
+					     the state it warns about outlives any dismissable bar. -->
+					<span class="relative inline-flex" title={ impersonationHint(imp) }>
+						if user.Avatar != "" {
+							<img src={ user.Avatar } alt={ user.Name } referrerpolicy="no-referrer" class="h-8 w-8 rounded-full object-cover border border-white-300 dark:border-navy-600"/>
+						} else {
+							<div class="flex h-8 w-8 items-center justify-center rounded-full bg-green-200 text-xs font-semibold text-green-700 select-none">
+								{ string([]rune(user.Name)[0:1]) }
+							</div>
+						}
+						if imp.Active {
+							<span class="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-cau-400"></span>
+						}
+					</span>
 					<!-- chevron -->
 					<svg class="h-3.5 w-3.5 text-black-700 dark:text-black-600 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/>
@@ -148,6 +158,29 @@ templ UserMenu(user *entity.User, showTheme bool) {
 						<p class="truncate text-sm font-medium text-black-900 dark:text-white-100">{ user.Name }</p>
 						<p class="truncate text-xs text-black-700 dark:text-black-600">{ user.Email }</p>
 					</div>
+					<!-- Viewing-as block. The top bar can be collapsed, and it
+					     used to leave the only way back on a floating tab at the
+					     screen edge — which the page chrome hides, so the exit
+					     looked like it had vanished. The account menu is where a
+					     person already goes to ask "who am I", so the answer and
+					     the way back belong here, not on a floating element. -->
+					if imp.Active {
+						<div class="border-b border-cau-400 bg-cau-100 px-4 py-3 text-cau-400">
+							<p class="truncate text-xs font-medium">Viewing as { imp.ActingAs }</p>
+							<p class="mt-1 text-xs leading-snug opacity-80">Actions you take are recorded as this user.</p>
+							<form action="/admin/impersonate/stop" method="POST" class="mt-2">
+								<button
+									type="submit"
+									class="flex w-full items-center justify-center gap-2 rounded-lg border border-cau-400 bg-white-100 px-3 py-2 text-xs font-medium text-cau-400 transition-colors hover:bg-white-200 dark:bg-navy-700"
+								>
+									<svg class="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"/>
+									</svg>
+									Back to my account
+								</button>
+							</form>
+						</div>
+					}
 					<!-- Menu items -->
 					<div class="py-1">
 						<a
