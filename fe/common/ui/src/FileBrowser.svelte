@@ -34,6 +34,8 @@
     onDownload?: (path: string) => void;
     onDelete?: (path: string) => void;
     onNewHere?: (dirPath: string) => void;
+    /** Create a folder inside a folder row, from its ⋮ menu. */
+    onNewDirHere?: (dirPath: string) => void;
     /** Re-root the tree at a folder (Source panel only — see the node). */
     onOpenDir?: (path: string) => void;
     /** Go to file: the caller searches ITS OWN scope — the selected repo in
@@ -47,7 +49,7 @@
     loadError?: string;
   };
 
-  let { cwd, files, search, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onFind = () => {}, findTruncated = false, onSearch, onToggleDir, onOpen, onRefresh, onNewFile, onNewDir, onDownload = () => {}, onDelete = () => {}, onNewHere = () => {}, onOpenDir, onQuickFind, quickScope = "", loading = false, loadError = "" }: Props = $props();
+  let { cwd, files, search, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onFind = () => {}, findTruncated = false, onSearch, onToggleDir, onOpen, onRefresh, onNewFile, onNewDir, onDownload = () => {}, onDelete = () => {}, onNewHere = () => {}, onNewDirHere, onOpenDir, onQuickFind, quickScope = "", loading = false, loadError = "" }: Props = $props();
 
   const SORT_KEY = "wick.files.sort";
   const DEEP_KEY = "wick.files.deep";
@@ -388,7 +390,7 @@
       </div>
     {:else}
       {#each visible as node (node.entry.path)}
-        <FileBrowserNode {node} depth={0} forceOpen={!!q && deep} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onOpenDir} />
+        <FileBrowserNode {node} depth={0} forceOpen={!!q && deep} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} />
       {/each}
     {/if}
   </div>
