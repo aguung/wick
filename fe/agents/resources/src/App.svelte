@@ -382,6 +382,20 @@
                       >
                         wick
                       </span>
+                      <!-- Whose spawn this is. Only meaningful on a row
+                           wick started, so it sits inside that branch:
+                           a stranger process has no wick caller to name.
+                           Absent when nobody human asked for it — a
+                           schedule fire, a cron job — and silence there
+                           is the honest answer, not a guess at an owner. -->
+                      {#if a.user}
+                        <span
+                          class="rounded border border-white-300 px-1 py-px text-[10px] text-black-700 dark:border-navy-500 dark:text-black-600"
+                          title="Runs as {a.user} — the identity this spawn's MCP credential was minted for."
+                        >
+                          {a.user}
+                        </span>
+                      {/if}
                     {:else}
                       <span
                         class="rounded border border-black-400/40 px-1 py-px text-[10px] text-black-700 dark:border-navy-500 dark:text-black-600"

@@ -4,6 +4,12 @@
 export interface AgentRow {
   name: string;
   pid: number;
+  // The wick account this agent runs AS — the identity its MCP credential
+  // was minted for, which on a shared session is not the session owner.
+  // Same map the explorer's rows read, so the two views cannot name
+  // different people for one pid. Absent when the spawn had no human
+  // behind it (a schedule fire, a cron job) or predates ownership.
+  user?: string;
   tree_bytes: number;
   largest_name?: string;
   largest_bytes?: number;
@@ -67,6 +73,9 @@ export interface TopProcessRow {
   // >1 when the row is a group of same-named processes. The summary
   // tables always group; the explorer's member rows do not.
   count?: number;
+  // The wick account this process was spawned FOR, not the OS user (which
+  // is one account for everything here and answers nothing).
+  user?: string;
 }
 
 export interface TopProcesses {
@@ -137,6 +146,11 @@ export interface MachineSample {
 export interface ProcessGroupRow {
   name: string;
   count: number;
+  // Distinct wick accounts whose spawns make up this group. Absent for
+  // anything wick did not start — on a real machine, most of the list.
+  // A list because one executable name is routinely several people:
+  // "claude x 3" is three spawns that may belong to three humans.
+  users?: string[];
   rss_bytes: number;
   cpu_pct: number;
   io_read_bps: number;

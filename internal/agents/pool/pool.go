@@ -2025,6 +2025,7 @@ func (p *Pool) ActiveSnapshot() []ActiveEntry {
 			ProviderType: e.provType,
 			ProviderName: e.provName,
 			CWD:          e.cwd,
+			CallerUserID: e.callerUserID,
 		}
 		if e.state != nil {
 			entry.Lifecycle = e.state.Lifecycle().String()
@@ -2052,11 +2053,19 @@ func (p *Pool) IdleTimeout() time.Duration { return p.cfg.IdleTimeout }
 // pool can read them; older callers that only check SessionID + AgentName
 // keep working.
 type ActiveEntry struct {
-	SessionID      string
-	AgentName      string
-	ProviderType   string // resolved provider type (claude / codex / gemini)
-	ProviderName   string // instance name within that type
-	CWD            string // resolved workspace path, used by RouteByCWD
+	SessionID    string
+	AgentName    string
+	ProviderType string // resolved provider type (claude / codex / gemini)
+	ProviderName string // instance name within that type
+	CWD          string // resolved workspace path, used by RouteByCWD
+	// CallerUserID is the wick user this subprocess actually runs AS — the
+	// identity its MCP credential was minted for, baked into the argv and
+	// fixed for the life of the process. Not the session owner: on a shared
+	// session the two differ, and the spawn's reach follows this one.
+	//
+	// Empty for a spawn with no human behind it (a schedule fire, a cron
+	// job, a session predating ownership tracking).
+	CallerUserID   string
 	PID            int
 	Queued         int  // messages waiting after the current turn (RespawnQueue)
 	Respawns       bool // one process per turn (codex): a dead PID between turns is normal, not a zombie
