@@ -324,7 +324,11 @@
                    all theirs. Everything wick did not start reads "—":
                    attributing a system daemon to a person would be worse
                    than saying nothing. -->
-              <td class="max-w-0 truncate px-5 py-2 text-xs text-black-700 dark:text-black-600" title={(g.users ?? []).join(", ")}>
+              <td
+                data-testid="process-user"
+                class="max-w-0 truncate px-5 py-2 text-xs text-black-700 dark:text-black-600"
+                title={(g.users ?? []).join(", ")}
+              >
                 {#if (g.users ?? []).length === 0}
                   <span class="text-black-600 dark:text-black-700">—</span>
                 {:else}
