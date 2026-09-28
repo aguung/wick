@@ -344,23 +344,42 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 	// crossing). Multiple triggers on the same entry are spread
 	// symmetrically around that X.
 	if layoutAll {
-		byEntry := make(map[string][]workflow.Trigger)
-		for _, t := range w.Triggers {
-			if t.ID != "" {
-				byEntry[t.EntryNode] = append(byEntry[t.EntryNode], t)
-			}
-		}
-		for entryID, trigs := range byEntry {
-			sort.Slice(trigs, func(i, j int) bool { return trigs[i].ID < trigs[j].ID })
-			entryX := layoutXOrigin
-			if pos, ok := out[entryID]; ok {
-				if x, ok := pos["x"].(int); ok {
-					entryX = x
+		// Lay out EVERY trigger, including any that still lack an id
+		// (workflows written before SetTriggers started minting them).
+		// Skipping those left their cards stacked at the canvas origin
+		// with no edge to their entry node.
+		//
+		// One shared row, evenly spaced. Spreading each entry node's
+		// triggers around its own X independently looked tidier but let
+		// the groups overlap: four triggers on an entry at x=420 span
+		// 30..810, which swallows a second entry's single trigger at
+		// x=160 and stacks the cards on top of each other. Ordering the
+		// row by entry X keeps each trigger near its target without ever
+		// colliding.
+		trigs := withTriggerIDs(w.Triggers)
+		if len(trigs) > 0 {
+			entryX := func(t workflow.Trigger) int {
+				if pos, ok := out[t.EntryNode]; ok {
+					if x, ok := pos["x"].(int); ok {
+						return x
+					}
 				}
+				return layoutXOrigin
 			}
-			// Spread: centred on entryX, gap = layoutXGap between triggers.
+			sort.SliceStable(trigs, func(i, j int) bool {
+				xi, xj := entryX(trigs[i]), entryX(trigs[j])
+				if xi != xj {
+					return xi < xj
+				}
+				return trigs[i].ID < trigs[j].ID
+			})
+			sum := 0
+			for _, t := range trigs {
+				sum += entryX(t)
+			}
+			centre := sum / len(trigs)
 			totalW := (len(trigs) - 1) * layoutXGap
-			startX := entryX - totalW/2
+			startX := centre - totalW/2
 			for i, t := range trigs {
 				out[t.ID] = map[string]any{
 					"x": startX + i*layoutXGap,

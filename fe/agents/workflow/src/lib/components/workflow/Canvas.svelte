@@ -1132,9 +1132,13 @@
     const wf = $draftWorkflow;
     if (!wf?.graph?.nodes) return null;
     const positions = ((wf as any)._canvas?.positions ?? {}) as Record<string, { x?: number; y?: number }>;
-    const from = positions[triggerID];
+    // Same fallback the trigger CARD uses below. A trigger with no stored
+    // position still renders at (60,60), so returning null here drew the
+    // card with no edge until the user dragged it — which is what wrote
+    // the position that made the line appear.
+    const from = positions[triggerID] ?? { x: 60, y: 60 };
     const to = wf.graph.nodes.find((n) => n.id === entryNodeID);
-    if (!from || !to) return null;
+    if (!to) return null;
     return {
       ax: (from.x ?? 0) + NODE_W / 2,
       ay: cardBottomY(triggerID, from.y ?? 0, 90),
