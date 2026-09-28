@@ -160,9 +160,12 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	// skillsync copies skills here but the sandbox hides them without this.
 	// A home-dir lookup failure is not fatal: wick's own dir may still resolve
 	// via $WICK_DATA_DIR, and skillAddDirArgs skips whichever dir it cannot place.
+	// The dir is resolved against THIS spawn's CODEX_HOME (opt.ExtraEnv carries
+	// the instance's Env), so an instance pointed at its own codex home trusts
+	// that home's skills instead of wick's.
 	{
 		home, _ := homeDir()
-		args = append(args, skillAddDirArgs(home, dirExists)...)
+		args = append(args, skillAddDirArgs(home, codexHomeFromEnv(opt.ExtraEnv), dirExists)...)
 	}
 	// When gate is active for this instance, do NOT set
 	// --ask-for-approval to a bypass value — codex's approval flag

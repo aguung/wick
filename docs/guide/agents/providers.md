@@ -102,6 +102,25 @@ The collapsed row only offers **Reconnect** when the account isn't currently con
 
 The binary is resolved the same way as any other spawn (see [Binary resolution chain](#binary-resolution-chain)); Reconnect fails immediately with an error if none is found instead of trying to spawn one.
 
+#### Per-type login flow
+
+The two wired types reach the same place by different routes, because their CLIs do:
+
+| | `claude` | `codex` |
+|---|---|---|
+| argv | instance ExtraArgs + `/login` | `login --device-auth` — ExtraArgs dropped |
+| What you get | an OAuth link | a link (`auth.openai.com/codex/device`) **plus a one-time code**, valid 15 minutes |
+| What you do | open the link, paste the returned code into the modal's **authorization code** field | open the link, type the code shown in the terminal into the page |
+| Browser suppression | needed — `LoginEnv` spoofs `$BROWSER` + SSH markers so the CLI prints the link instead of opening a tab on the wick host | not needed — device auth never opens a browser or binds a callback |
+
+Why codex uses device auth: its default login binds a callback on `localhost:1455` and waits for the browser to hit it. On a wick host nobody is sitting at that browser, so the flow never completes. The device-code flow polls OpenAI instead, which survives the user being somewhere else entirely.
+
+Why codex drops ExtraArgs: `/login` is a prompt to the same claude REPL those flags configure, but `codex login` is a **subcommand** with its own flag set (`-c`, `--enable`/`--disable`, `--with-api-key`, `--device-auth`). Passing it a REPL flag like `--model` makes the arg parser reject the whole argv, and the spawn would die before printing anything to act on.
+
+The one-time code is shown in the live terminal, not lifted into its own row like the link — the modal's terminal is fully rendered underneath, so it is readable there.
+
+The instance's `Env` is passed into the login spawn, so an instance carrying `CODEX_HOME=/home/you/.codex_work` writes its credentials into **that** home. This is how one host holds several codex accounts at once: one instance per home, each logged in separately, each reporting its own account and usage.
+
 ### Session TTL
 
 | | |
@@ -117,9 +136,9 @@ The binary is resolved the same way as any other spawn (see [Binary resolution c
 
 | Provider | Account status | Reconnect (TTY login) |
 |---|---|---|
-| `claude` | ✓ | ✓ |
-| `codex` | ✓ | not yet — "Reconnect via terminal is not available for this provider type yet" |
-| `gemini` | ✓ | not yet — same as codex |
+| `claude` | ✓ | ✓ — OAuth link, paste the code back |
+| `codex` | ✓ | ✓ — device code (`codex login --device-auth`) |
+| `gemini` | ✓ | not yet — "Reconnect via terminal is not available for this provider type yet" |
 | `wick` | — | No Connection panel at all — `wick` authenticates per-model with API keys, not a CLI login. |
 
 Backing endpoints:
@@ -389,7 +408,7 @@ Quick cheatsheet for what each provider supports — useful when picking a defau
 | Tool gate hook | ✓ via PreToolUse hook | — | — |
 | MCP servers | ✓ | ✓ via TOML config | ✓ |
 | Account status (Connection panel) | ✓ | ✓ | ✓ |
-| Reconnect via login TTY | ✓ | not yet | not yet |
+| Reconnect via login TTY | ✓ | ✓ (device code) | not yet |
 
 ## API reference
 
@@ -523,4 +542,4 @@ The skills that ship inside the wick binary get the same catalog treatment for `
 - [AI Router](./airouter) — routing provider spawns through an embedded AI router (9router / OmniRoute).
 - [Command Gate](../command-gate) — gate sidecar lives next to the main binary, separate from providers.
 - [Skills Manager](./skills-manager) — shared skill directories, sync, and the file browser UI.
-- [Web Terminal](../webtty) — general-purpose shell terminal, still the way to run `codex login` / `gemini` login until they get their own Reconnect flow.
+- [Web Terminal](../webtty) — general-purpose shell terminal, still the way to run `gemini` login until it gets its own Reconnect flow.
