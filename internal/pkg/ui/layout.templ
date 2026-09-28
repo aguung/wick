@@ -148,14 +148,15 @@ templ impersonationBanner(info ImpersonationInfo) {
 					</button>
 				</form>
 				<!-- Hiding it is not dismissing it. The state this warns about
-				     outlives the page, so the warning cannot simply be closed:
-				     it collapses to a tab on the edge of the screen that is
-				     still plainly "you are someone else", and one click brings
-				     the row back. -->
+				     outlives the page, so the warning cannot simply be closed —
+				     but the thing it must not take with it is the way OUT. That
+				     now lives in the account menu (a caution dot on the avatar,
+				     "Viewing as …" + "Back to my account" inside), which is
+				     chrome that is always on screen and can't be collapsed. -->
 				<button
 					type="button"
 					data-chrome-banner-hide
-					title="Collapse this bar — it stays reachable on the left edge"
+					title="Collapse this bar — 'Back to my account' stays in your account menu"
 					aria-label="Collapse the viewing-as bar"
 					class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-cau-400/40 text-cau-400 transition-colors hover:bg-white-200 dark:hover:bg-navy-700"
 				>
@@ -165,26 +166,6 @@ templ impersonationBanner(info ImpersonationInfo) {
 				</button>
 			</div>
 		</div>
-		<!-- The collapsed form: a tab on the left edge, vertically centred, out
-		     of the way of both the sidebar's nav (top-anchored) and the
-		     conversation rail (right edge). Icon-only until hovered, because
-		     it is a reminder, not a control that needs reading. -->
-		<button
-			type="button"
-			data-chrome-banner-show
-			style="display:none"
-			title={ "Viewing as " + info.ActingAs + " — click to show the bar" }
-			aria-label={ "Viewing as " + info.ActingAs + " — show the bar" }
-			class="group fixed left-0 top-1/2 z-50 flex -translate-y-1/2 items-center gap-1.5 rounded-r-lg border border-l-0 border-cau-400 bg-cau-100 py-2 pl-1.5 pr-2 text-xs font-medium text-cau-400 shadow-md transition-all hover:pr-3"
-		>
-			<svg viewBox="0 0 16 16" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-				<path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z" stroke-linejoin="round"></path>
-				<circle cx="8" cy="8" r="1.8"></circle>
-			</svg>
-			<span class="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all group-hover:max-w-[14rem] group-hover:opacity-100">
-				Viewing as { info.ActingAs }
-			</span>
-		</button>
 		<!-- The banner sits ABOVE every page in normal flow, so a page sized to
 		     the whole viewport (the agents shell is 100svh) ends up one banner
 		     too tall and loses its bottom edge off-screen — the conversation
@@ -198,7 +179,6 @@ templ impersonationBanner(info ImpersonationInfo) {
 				var el = document.querySelector('[data-chrome-banner]');
 				if (!el) return;
 				var hide = document.querySelector('[data-chrome-banner-hide]');
-				var show = document.querySelector('[data-chrome-banner-show]');
 				var KEY = 'wick.impersonation-banner.collapsed';
 				var publish = function (collapsed) {
 					// Collapsed contributes no height: a full-height shell
@@ -222,7 +202,6 @@ templ impersonationBanner(info ImpersonationInfo) {
 				var apply = function (collapsed) {
 					collapsedNow = collapsed;
 					el.style.display = collapsed ? 'none' : '';
-					if (show) show.style.display = collapsed ? 'flex' : 'none';
 					publish(collapsed);
 				};
 				var stored = false;
@@ -231,10 +210,6 @@ templ impersonationBanner(info ImpersonationInfo) {
 				if (hide) hide.addEventListener('click', function () {
 					try { window.localStorage.setItem(KEY, '1'); } catch (e) {}
 					apply(true);
-				});
-				if (show) show.addEventListener('click', function () {
-					try { window.localStorage.removeItem(KEY); } catch (e) {}
-					apply(false);
 				});
 				// Re-measure on resize/wrap, but never let the observer
 				// republish a height for a bar the user collapsed.

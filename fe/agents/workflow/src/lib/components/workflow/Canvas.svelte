@@ -1132,9 +1132,13 @@
     const wf = $draftWorkflow;
     if (!wf?.graph?.nodes) return null;
     const positions = ((wf as any)._canvas?.positions ?? {}) as Record<string, { x?: number; y?: number }>;
-    const from = positions[triggerID];
+    // Same fallback the trigger CARD uses below. A trigger with no stored
+    // position still renders at (60,60), so returning null here drew the
+    // card with no edge until the user dragged it — which is what wrote
+    // the position that made the line appear.
+    const from = positions[triggerID] ?? { x: 60, y: 60 };
     const to = wf.graph.nodes.find((n) => n.id === entryNodeID);
-    if (!from || !to) return null;
+    if (!to) return null;
     return {
       ax: (from.x ?? 0) + NODE_W / 2,
       ay: cardBottomY(triggerID, from.y ?? 0, 90),
@@ -1206,6 +1210,7 @@
   class:cursor-grab={spaceHeld && !panDrag}
   class:cursor-grabbing={panDrag || touchPan}
   class:wf-canvas-locked={locked && !spaceHeld && !panDrag}
+  class:wf-connecting={!!connecting}
   style="touch-action: {$searchOpen ? 'auto' : 'none'};"
   ondragover={(e) => e.preventDefault()}
   ondrop={ondrop}
@@ -1270,7 +1275,11 @@
                 onmouseleave={() => hoveredEdge = null}
                 oncontextmenu={(e) => openCtxMenu(e, { kind: "trigger-edge", triggerID: trig.id! })}
               />
-              <circle cx={mid.x} cy={mid.y} r="4" fill="#facc15" />
+              <circle
+                cx={mid.x} cy={mid.y} r="4" fill="#facc15"
+                opacity={activeEdge === trigEdgeKey ? 1 : 0}
+                style="pointer-events: none; transition: opacity 0.12s"
+              />
             {/if}
           {/if}
         {/each}
@@ -1296,7 +1305,11 @@
               onmouseleave={() => hoveredEdge = null}
               oncontextmenu={(ev) => openCtxMenu(ev, { kind: "edge", from: e.from, to: e.to, caseKey: e.case })}
             />
-            <circle cx={mid.x} cy={mid.y} r="4" fill="#facc15" />
+            <circle
+              cx={mid.x} cy={mid.y} r="4" fill="#facc15"
+              opacity={activeEdge === edgeKey ? 1 : 0}
+              style="pointer-events: none; transition: opacity 0.12s"
+            />
             {#if e.case}
               <text class="text-[10px] fill-slate-500">
                 <textPath href={`#edge-${e.from}-${e.to}-${e.case}`}>{e.case}</textPath>
@@ -1311,7 +1324,7 @@
         {@const status = $runStatusByNode[node.id]}
         {@const issue = nodeIssue(node)}
         <div
-          class="absolute"
+          class="absolute group"
           style="left: {node._canvas?.x ?? 0}px; top: {node._canvas?.y ?? 0}px;"
           onpointerdown={(e) => onnodepointerdown(e, node.id)}
           ondblclick={() => detailNodeID.set(node.id)}
@@ -1425,12 +1438,17 @@
            `workflow._canvas.positions` map but keyed by trigger.id; the
            hydrate pass in `loadWorkflow` doesn't copy these onto the
            trigger object, so look them up inline. -->
-      {#each $draftWorkflow.triggers ?? [] as trig (trig.id ?? trig.type)}
+      <!-- Key on the index as a fallback: legacy workflows (and triggers
+           written straight over MCP before ids were minted server-side)
+           can carry an empty id, and keying several of those by type alone
+           throws each_key_duplicate — which kills the whole canvas render,
+           not just the trigger cards. -->
+      {#each $draftWorkflow.triggers ?? [] as trig, trigIdx (trig.id || `${trig.type ?? "trigger"}-${trigIdx}`)}
         {@const pos = ($draftWorkflow as any)._canvas?.positions?.[trig.id ?? ""] ?? { x: 60, y: 60 }}
         {@const trigStatus = trig.id ? $triggerRunStatus[trig.id] : undefined}
         {@const trigIssue = triggerIssue(trig.id)}
         <div
-          class="absolute"
+          class="absolute group"
           style="left: {pos.x}px; top: {pos.y}px;"
           onpointerdown={(e) => ontriggerpointerdown(e, trig.id ?? "")}
           ondblclick={() => trig.id && detailTriggerID.set(trig.id)}
@@ -1775,6 +1793,17 @@
     .wf-port {
       opacity: 0.45;
     }
+    /* Same reasoning for the painted nubs in BaseNode: no hover means
+       no group-hover, so pin them visible instead of leaving the card
+       looking like it has nowhere to connect from. */
+    :global(.wf-port-nub) {
+      opacity: 1 !important;
+    }
+  }
+  /* While an edge is being dragged, reveal every nub so the operator can
+     see which cards are connectable without hunting for them. */
+  .wf-connecting :global(.wf-port-nub) {
+    opacity: 1;
   }
   :global(.dark) .wf-canvas-bg {
     background-color: #131c2f;

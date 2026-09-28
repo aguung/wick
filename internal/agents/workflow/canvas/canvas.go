@@ -344,23 +344,42 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 	// crossing). Multiple triggers on the same entry are spread
 	// symmetrically around that X.
 	if layoutAll {
-		byEntry := make(map[string][]workflow.Trigger)
-		for _, t := range w.Triggers {
-			if t.ID != "" {
-				byEntry[t.EntryNode] = append(byEntry[t.EntryNode], t)
-			}
-		}
-		for entryID, trigs := range byEntry {
-			sort.Slice(trigs, func(i, j int) bool { return trigs[i].ID < trigs[j].ID })
-			entryX := layoutXOrigin
-			if pos, ok := out[entryID]; ok {
-				if x, ok := pos["x"].(int); ok {
-					entryX = x
+		// Lay out EVERY trigger, including any that still lack an id
+		// (workflows written before SetTriggers started minting them).
+		// Skipping those left their cards stacked at the canvas origin
+		// with no edge to their entry node.
+		//
+		// One shared row, evenly spaced. Spreading each entry node's
+		// triggers around its own X independently looked tidier but let
+		// the groups overlap: four triggers on an entry at x=420 span
+		// 30..810, which swallows a second entry's single trigger at
+		// x=160 and stacks the cards on top of each other. Ordering the
+		// row by entry X keeps each trigger near its target without ever
+		// colliding.
+		trigs := withTriggerIDs(w.Triggers)
+		if len(trigs) > 0 {
+			entryX := func(t workflow.Trigger) int {
+				if pos, ok := out[t.EntryNode]; ok {
+					if x, ok := pos["x"].(int); ok {
+						return x
+					}
 				}
+				return layoutXOrigin
 			}
-			// Spread: centred on entryX, gap = layoutXGap between triggers.
+			sort.SliceStable(trigs, func(i, j int) bool {
+				xi, xj := entryX(trigs[i]), entryX(trigs[j])
+				if xi != xj {
+					return xi < xj
+				}
+				return trigs[i].ID < trigs[j].ID
+			})
+			sum := 0
+			for _, t := range trigs {
+				sum += entryX(t)
+			}
+			centre := sum / len(trigs)
 			totalW := (len(trigs) - 1) * layoutXGap
-			startX := entryX - totalW/2
+			startX := centre - totalW/2
 			for i, t := range trigs {
 				out[t.ID] = map[string]any{
 					"x": startX + i*layoutXGap,
@@ -373,11 +392,48 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 }
 
 // SetTriggers replaces the trigger list.
+//
+// Triggers that arrive without an ID get one minted here. An ID is not
+// cosmetic: the canvas keys its trigger cards, positions, run status and
+// trigger→entry_node edges by it, so a list of id-less triggers collapses
+// into duplicate keys and the editor refuses to render the graph at all.
+// Callers that build triggers by hand (MCP `workflow_set_triggers`) would
+// otherwise leave the workflow runnable but uneditable.
 func (c *Canvas) SetTriggers(id string, triggers []workflow.Trigger) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		w.Triggers = triggers
+		w.Triggers = withTriggerIDs(triggers)
 		return nil
 	})
+}
+
+// withTriggerIDs fills in a stable, unique ID for every trigger that lacks
+// one, leaving explicitly-set IDs untouched. Shape matches the UI's own
+// scaffold: trigger-<type>, then trigger-<type>-2, -3, ... on collision.
+func withTriggerIDs(triggers []workflow.Trigger) []workflow.Trigger {
+	seen := map[string]bool{}
+	for _, t := range triggers {
+		if t.ID != "" {
+			seen[t.ID] = true
+		}
+	}
+	out := make([]workflow.Trigger, len(triggers))
+	copy(out, triggers)
+	for i := range out {
+		if out[i].ID != "" {
+			continue
+		}
+		typ := string(out[i].Type)
+		if typ == "" {
+			typ = "manual"
+		}
+		candidate := "trigger-" + typ
+		for n := 2; seen[candidate]; n++ {
+			candidate = fmt.Sprintf("trigger-%s-%d", typ, n)
+		}
+		seen[candidate] = true
+		out[i].ID = candidate
+	}
+	return out
 }
 
 // Toggle flips enabled.
