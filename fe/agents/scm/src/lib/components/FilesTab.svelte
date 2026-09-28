@@ -85,6 +85,26 @@
   }
   const fromRoot = (rel: string) => joinRel(root, rel);
 
+  // Filled from the first listing (see loadDir).
+  let sessionCwd = $state("");
+
+  /* Three flavours here rather than the rail's two, because a path inside the
+     Source panel is relative to THREE different things and all of them get
+     pasted somewhere: the repo (a PR comment, a build command), the session
+     (an agent prompt, the rail's own search) and the host (a terminal). Rows
+     are ordered widest-to-narrowest so the one you want most often is first.
+     A row whose base is unknown is dropped, never shown wrong. */
+  const fileCopyVariants = (e: { path: string; name: string }) => {
+    const repoRel = fromRoot(e.path);
+    const sessRel = sessionPath($activeRepo, repoRel);
+    return [
+      ...(sessionCwd ? [{ label: "Full path", value: `${sessionCwd}/${sessRel}` }] : []),
+      { label: "Session path", value: sessRel },
+      { label: "Repo path", value: repoRel },
+      { label: "Name", value: e.name },
+    ];
+  };
+
   // What the browser lists: every loaded folder inside the current root,
   // plus whatever the last deep search found, all rebased on that root.
   const browserFiles = $derived.by(() => {
@@ -135,6 +155,9 @@
     loadingDirs = { ...loadingDirs, [dir]: true };
     try {
       const r = await files.listDir(id, sessionPath(repo, dir));
+      // The absolute session cwd rides along on every listing; keep the last
+      // one so "Copy path" can offer a full path without its own request.
+      if (r.cwd) sessionCwd = r.cwd;
       // A listing that lands after the user switched repos describes a tree
       // that no longer exists; toRepoRel rejects its paths rather than
       // hanging one repo's files under another.
@@ -453,6 +476,7 @@
   <div class="flex min-h-0 flex-1 flex-col">
     <FileBrowser
       cwd=""
+      copyVariants={fileCopyVariants}
       files={browserFiles}
       search={filter}
       openDirs={openDirsRebased}

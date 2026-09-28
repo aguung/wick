@@ -4,6 +4,7 @@
   import type { FileTreeNode as TreeNode } from "./file-browser-tree.js";
   import { formatSize, formatRelTime } from "./file-meta.js";
   import KebabMenu from "./KebabMenu.svelte";
+  import { copyText } from "./clipboard.js";
 
   type Props = {
     node: TreeNode;
@@ -27,12 +28,17 @@
         to go — the session rail IS the cwd — so the button appears only
         when a caller passes this. */
     onOpenDir?: (path: string) => void;
+    /** The path flavours the row's "Copy path" offers. Only the caller knows
+        what its paths are relative to — the session cwd in the rail, a repo
+        inside it in the Source panel — so it names them; the row only knows
+        how to show and copy. Omitted: just the path as listed, plus the name. */
+    copyVariants?: (e: SessionFileEntry) => { label: string; value: string }[];
   };
 
   // The three maps are view hints, not data the row needs to exist: a caller
   // that has no lazy loading and no delete in flight should not have to say
   // so three times.
-  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere, onNewDirHere, onOpenDir }: Props = $props();
+  let { node, depth, forceOpen, openDirs, loadedDirs = {}, loadingDirs = {}, deletingPaths = {}, onToggleDir, onOpen, onDownload, onDelete, onNewHere, onNewDirHere, onOpenDir, copyVariants }: Props = $props();
 
   const e = $derived(node.entry);
   const indent = $derived(depth * 14 + 8);
@@ -42,6 +48,26 @@
   // the list snapping and losing the reader's position.
   const deleting = $derived(!!deletingPaths[e.path]);
   const rowAnim = "overflow-hidden transition-all duration-150 ease-out";
+
+  /* Keep the TAIL: a path is identified by where it ends, and the head of an
+     absolute one is the same boilerplate on every row. */
+  const elide = (v: string, max = 38) => (v.length <= max ? v : "\u2026" + v.slice(-(max - 1)));
+
+  /* One row per flavour, each showing the value it would copy. That preview is
+     why there is no separate "inspect" affordance: the answer to "which one do
+     I want" is already on screen, and clicking is then just taking it.
+     keepOpen, because picking a second flavour after seeing the first is the
+     common case — the menu closes on Escape or an outside click. */
+  const copyItems = $derived(
+    (copyVariants?.(e) ?? [{ label: "Path", value: e.path }, { label: "Name", value: e.name }]).map((v) => ({
+      label: v.label,
+      detail: elide(v.value),
+      keepOpen: true,
+      doneLabel: "Copied",
+      onclick: () => void copyText(v.value),
+    })),
+  );
+  const copyRow = $derived({ label: "Copy path", submenu: copyItems });
 
   /* One ⋮ per row instead of a strip of icon buttons. Three reasons, in the
      order they bit us: the icons only appeared on hover, so on a touch screen
@@ -53,10 +79,12 @@
     { label: "New file here", onclick: () => onNewHere(e.path) },
     ...(onNewDirHere ? [{ label: "New folder here", onclick: () => onNewDirHere(e.path) }] : []),
     ...(onOpenDir ? [{ label: "Open as root", onclick: () => onOpenDir(e.path) }] : []),
+    copyRow,
     { label: "Delete folder", onclick: () => onDelete(e.path), danger: true },
   ]);
   const fileItems = $derived([
     { label: "Download", onclick: () => onDownload(e.path) },
+    copyRow,
     { label: "Delete file", onclick: () => onDelete(e.path), danger: true },
   ]);
   const rowGone = "max-h-0 !py-0 opacity-0 border-b-0 pointer-events-none";
@@ -100,12 +128,12 @@
       <span class="shrink-0 text-[10px] text-black-700 dark:text-black-600 font-mono transition-opacity group-hover:opacity-0">{countLabel}</span>
     {/if}
     <div class="row-actions shrink-0">
-      <KebabMenu items={folderItems} size="sm" width={184} ariaLabel={`Actions for folder ${e.name}`} />
+      <KebabMenu items={folderItems} size="sm" width={232} ariaLabel={`Actions for folder ${e.name}`} />
     </div>
   </div>
   {#if open && !deleting}
     {#each node.children as child (child.entry.path)}
-      <FileBrowserNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} />
+      <FileBrowserNode node={child} depth={depth + 1} {forceOpen} {openDirs} {loadedDirs} {loadingDirs} {deletingPaths} {onToggleDir} {onOpen} {onDownload} {onDelete} {onNewHere} {onNewDirHere} {onOpenDir} {copyVariants} />
     {/each}
   {/if}
 {:else}
@@ -120,7 +148,7 @@
       <div class="text-[10px] text-black-700 dark:text-black-600 truncate font-mono">{formatSize(e.size)} · {formatRelTime(e.mtime)}</div>
     </button>
     <div class="row-actions shrink-0">
-      <KebabMenu items={fileItems} size="sm" width={168} ariaLabel={`Actions for ${e.name}`} />
+      <KebabMenu items={fileItems} size="sm" width={232} ariaLabel={`Actions for ${e.name}`} />
     </div>
   </div>
 {/if}
