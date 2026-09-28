@@ -100,16 +100,20 @@
   <!-- Ports — top-center for input, bottom-center for output. Matches
        the legacy editor.css top→bottom flow layout (14px white solid
        circle with slate border). Drag-to-connect listener lives on the
-       parent Canvas.svelte; here we just paint the visual handle. -->
+       parent Canvas.svelte; here we just paint the visual handle.
+       Hover-reveal: a graph of a dozen cards showed two dozen nubs at
+       rest, which reads as noise. The card wrapper in Canvas.svelte
+       carries `group`, so the nubs fade in when that card is hovered —
+       and `.wf-connecting` (also in Canvas) pins them up mid-drag. -->
   {#if inputs > 0}
     <span
-      class="absolute left-1/2 -translate-x-1/2 -top-[7px] h-[14px] w-[14px] rounded-full bg-white-100 border-2 border-white-400 dark:border-navy-500 shadow"
+      class="wf-port-nub absolute left-1/2 -translate-x-1/2 -top-[7px] h-[14px] w-[14px] rounded-full bg-white-100 border-2 border-white-400 dark:border-navy-500 shadow opacity-0 group-hover:opacity-100 transition-opacity"
       data-port="in"
     ></span>
   {/if}
   {#if outputs > 0}
     <span
-      class="absolute left-1/2 -translate-x-1/2 -bottom-[7px] h-[14px] w-[14px] rounded-full bg-white-100 border-2 border-slate-400 dark:border-navy-500 shadow"
+      class="wf-port-nub absolute left-1/2 -translate-x-1/2 -bottom-[7px] h-[14px] w-[14px] rounded-full bg-white-100 border-2 border-slate-400 dark:border-navy-500 shadow opacity-0 group-hover:opacity-100 transition-opacity"
       data-port="out"
     ></span>
   {/if}

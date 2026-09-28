@@ -1210,6 +1210,7 @@
   class:cursor-grab={spaceHeld && !panDrag}
   class:cursor-grabbing={panDrag || touchPan}
   class:wf-canvas-locked={locked && !spaceHeld && !panDrag}
+  class:wf-connecting={!!connecting}
   style="touch-action: {$searchOpen ? 'auto' : 'none'};"
   ondragover={(e) => e.preventDefault()}
   ondrop={ondrop}
@@ -1274,7 +1275,11 @@
                 onmouseleave={() => hoveredEdge = null}
                 oncontextmenu={(e) => openCtxMenu(e, { kind: "trigger-edge", triggerID: trig.id! })}
               />
-              <circle cx={mid.x} cy={mid.y} r="4" fill="#facc15" />
+              <circle
+                cx={mid.x} cy={mid.y} r="4" fill="#facc15"
+                opacity={activeEdge === trigEdgeKey ? 1 : 0}
+                style="pointer-events: none; transition: opacity 0.12s"
+              />
             {/if}
           {/if}
         {/each}
@@ -1300,7 +1305,11 @@
               onmouseleave={() => hoveredEdge = null}
               oncontextmenu={(ev) => openCtxMenu(ev, { kind: "edge", from: e.from, to: e.to, caseKey: e.case })}
             />
-            <circle cx={mid.x} cy={mid.y} r="4" fill="#facc15" />
+            <circle
+              cx={mid.x} cy={mid.y} r="4" fill="#facc15"
+              opacity={activeEdge === edgeKey ? 1 : 0}
+              style="pointer-events: none; transition: opacity 0.12s"
+            />
             {#if e.case}
               <text class="text-[10px] fill-slate-500">
                 <textPath href={`#edge-${e.from}-${e.to}-${e.case}`}>{e.case}</textPath>
@@ -1315,7 +1324,7 @@
         {@const status = $runStatusByNode[node.id]}
         {@const issue = nodeIssue(node)}
         <div
-          class="absolute"
+          class="absolute group"
           style="left: {node._canvas?.x ?? 0}px; top: {node._canvas?.y ?? 0}px;"
           onpointerdown={(e) => onnodepointerdown(e, node.id)}
           ondblclick={() => detailNodeID.set(node.id)}
@@ -1439,7 +1448,7 @@
         {@const trigStatus = trig.id ? $triggerRunStatus[trig.id] : undefined}
         {@const trigIssue = triggerIssue(trig.id)}
         <div
-          class="absolute"
+          class="absolute group"
           style="left: {pos.x}px; top: {pos.y}px;"
           onpointerdown={(e) => ontriggerpointerdown(e, trig.id ?? "")}
           ondblclick={() => trig.id && detailTriggerID.set(trig.id)}
@@ -1784,6 +1793,17 @@
     .wf-port {
       opacity: 0.45;
     }
+    /* Same reasoning for the painted nubs in BaseNode: no hover means
+       no group-hover, so pin them visible instead of leaving the card
+       looking like it has nowhere to connect from. */
+    :global(.wf-port-nub) {
+      opacity: 1 !important;
+    }
+  }
+  /* While an edge is being dragged, reveal every nub so the operator can
+     see which cards are connectable without hunting for them. */
+  .wf-connecting :global(.wf-port-nub) {
+    opacity: 1;
   }
   :global(.dark) .wf-canvas-bg {
     background-color: #131c2f;
