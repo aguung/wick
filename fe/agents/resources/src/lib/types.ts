@@ -4,6 +4,12 @@
 export interface AgentRow {
   name: string;
   pid: number;
+  // The wick account this agent runs AS — the identity its MCP credential
+  // was minted for, which on a shared session is not the session owner.
+  // Same map the explorer's rows read, so the two views cannot name
+  // different people for one pid. Absent when the spawn had no human
+  // behind it (a schedule fire, a cron job) or predates ownership.
+  user?: string;
   tree_bytes: number;
   largest_name?: string;
   largest_bytes?: number;
