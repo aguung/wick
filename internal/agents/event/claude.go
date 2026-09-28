@@ -224,18 +224,31 @@ type claudeMessage struct {
 	Usage *claudeUsage `json:"usage,omitempty"`
 }
 
-// UnmarshalJSON tolerates .content being a plain STRING instead of an
-// array of blocks.
+// UnmarshalJSON tolerates two string-shaped frames that would otherwise
+// fail the whole line: .message itself being a plain STRING, and
+// .message.content being a plain STRING instead of an array of blocks.
 //
-// Claude sends the string form for the summary it injects after a
-// compaction ("This session is being continued from…") and for the
-// <local-command-stdout> echo of a local slash command. Without this,
+// Claude sends the content string form for the summary it injects after
+// a compaction ("This session is being continued from…") and for the
+// <local-command-stdout> echo of a local slash command. It sends the
+// whole .message as a string on some error/notice frames. Without this,
 // json.Unmarshal fails on those lines, and a parse failure is turned
 // into an Error event upstream — so a routine compaction would end the
 // turn and post a "cannot unmarshal string" line into the user's
-// conversation. Neither frame is something wick surfaces; they just
-// have to decode without exploding.
+// conversation. None of these frames is something wick surfaces; they
+// just have to decode without exploding.
 func (m *claudeMessage) UnmarshalJSON(b []byte) error {
+	// .message as a bare string — keep the text, drop nothing else.
+	if t := bytes.TrimSpace(b); len(t) > 0 && t[0] == '"' {
+		var text string
+		if err := json.Unmarshal(t, &text); err != nil {
+			return err
+		}
+		if text != "" {
+			m.Content = []claudeContentBlock{{Type: "text", Text: text}}
+		}
+		return nil
+	}
 	var probe struct {
 		Content json.RawMessage `json:"content"`
 		Usage   *claudeUsage    `json:"usage"`
