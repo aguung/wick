@@ -581,6 +581,12 @@ func apiProvidersList(c *tool.Ctx) {
 
 	if globalSpawnLog != nil {
 		_ = globalSpawnLog.Prune(provider.MaxSpawnLogs)
+		// A spawn whose wick died with it never got an exit written, so it
+		// reads as running and the Stop button has nothing to signal. Close
+		// those out here too, not only at boot: the row a person is staring
+		// at should stop lying on the next refresh rather than on the next
+		// restart.
+		_, _ = globalSpawnLog.ReconcileOrphans(nil)
 	}
 
 	caps := providerCapacities()

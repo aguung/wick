@@ -2186,9 +2186,39 @@ func killAgent(c *tool.Ctx) {
 	// every sub-agent it spawned: nothing is waiting on their results
 	// any more, but the processes keep running and spending tokens.
 	cascadeInterruptChildren(c, id)
+	// Ask the pool first, but only it knows the agents IT started. A binary
+	// swap leaves the previous wick running the turns it had in flight while
+	// the new one serves this request, and KillBy over an empty map returns
+	// success — the button reported "killed" while the process carried on.
+	// So decide before killing whether this pool has anything at all, and
+	// fall back to the pids the spawn log recorded when it does not.
+	owned := poolHasSession(id)
+	// Remember what the pool claims is running BEFORE the stop, so we can
+	// check afterwards that it really went away. An adopted entry has no
+	// exec handle behind it and Stop cannot signal through one it never
+	// held.
+	pids := sessionPIDs(id)
 	if err := globalPool.KillBy(id, agentName, "user", stoppedByNote(c)); err != nil {
 		log.Ctx(c.Context()).Error().Msgf("kill agent %s/%s: %s", id, agentName, err.Error())
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !owned {
+		if killed := killOrphanSpawns(id); len(killed) > 0 {
+			log.Ctx(c.Context()).Info().
+				Ints("pids", killed).
+				Str("session", id).
+				Msg("kill agent: ended orphaned spawns this pool did not own")
+			c.JSON(http.StatusOK, map[string]any{"status": "killed", "orphans": killed})
+			return
+		}
+	}
+	if survivors := enforceStop(pids); len(survivors) > 0 {
+		log.Ctx(c.Context()).Warn().
+			Ints("pids", survivors).
+			Str("session", id).
+			Msg("kill agent: agent.Stop left the process running — signalled it directly")
+		c.JSON(http.StatusOK, map[string]any{"status": "killed", "forced": survivors})
 		return
 	}
 	c.JSON(http.StatusOK, map[string]string{"status": "killed"})

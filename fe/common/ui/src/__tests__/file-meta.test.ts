@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { formatSize, formatRelTime } from "../fileMeta.js";
+import { formatSize, formatRelTime } from "../file-meta.js";
 
 describe("formatSize", () => {
   test("bytes", () => { expect(formatSize(512)).toBe("512 B"); });

@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
-import FileTreeNode from "../FileTreeNode.svelte";
-import type { SessionFileEntry } from "../../types/agents.js";
+import FileBrowserNode from "../FileBrowserNode.svelte";
+import type { SessionFileEntry } from "../file-browser-types.js";
 
 function fileNode(over: Partial<SessionFileEntry> = {}) {
   return { entry: { path: "src/a.ts", name: "a.ts", isDir: false, size: 2048, mtime: Date.now(), ...over }, children: [] };
@@ -18,22 +18,22 @@ const base = {
   onNewHere: vi.fn(),
 };
 
-describe("FileTreeNode - file row metadata", () => {
+describe("FileBrowserNode - file row metadata", () => {
   test("shows size · time subline", () => {
-    render(FileTreeNode, { props: { node: fileNode(), ...base } });
+    render(FileBrowserNode, { props: { node: fileNode(), ...base } });
     expect(screen.getByText(/2\.0 KB/)).toBeDefined();
   });
 
   test("download button calls onDownload with path", async () => {
     const onDownload = vi.fn();
-    render(FileTreeNode, { props: { node: fileNode(), ...base, onDownload } });
+    render(FileBrowserNode, { props: { node: fileNode(), ...base, onDownload } });
     await fireEvent.click(screen.getByTitle("Download"));
     expect(onDownload).toHaveBeenCalledWith("src/a.ts");
   });
 
   test("delete button calls onDelete with path", async () => {
     const onDelete = vi.fn();
-    render(FileTreeNode, { props: { node: fileNode(), ...base, onDelete } });
+    render(FileBrowserNode, { props: { node: fileNode(), ...base, onDelete } });
     await fireEvent.click(screen.getByTitle("Delete"));
     expect(onDelete).toHaveBeenCalledWith("src/a.ts");
   });

@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
-import FilesPanel from "../FilesPanel.svelte";
-import type { SessionFileEntry } from "../../types/agents.js";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import FileBrowser from "../FileBrowser.svelte";
+import type { SessionFileEntry } from "../file-browser-types.js";
 
 const DIR: SessionFileEntry = {
   path: "src",
@@ -27,9 +27,9 @@ const FILE_B: SessionFileEntry = {
   mtime: Date.now() - 120000,
 };
 
-describe("FilesPanel", () => {
+describe("FileBrowser", () => {
   test("renders cwd", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/home/agent/project",
         files: [],
@@ -47,7 +47,7 @@ describe("FilesPanel", () => {
   });
 
   test("renders file names from flat list", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [FILE_B],
@@ -65,7 +65,7 @@ describe("FilesPanel", () => {
   });
 
   test("renders directory names", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [DIR, FILE_A],
@@ -83,7 +83,7 @@ describe("FilesPanel", () => {
   });
 
   test("shows empty state when files is empty", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -101,7 +101,7 @@ describe("FilesPanel", () => {
   });
 
   test("shows no-matches state when search yields no results", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [FILE_B],
@@ -120,7 +120,7 @@ describe("FilesPanel", () => {
 
   test("search input calls onSearch with new value", async () => {
     const onSearch = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [FILE_B],
@@ -136,12 +136,15 @@ describe("FilesPanel", () => {
     });
     const input = screen.getByPlaceholderText(/filter/i);
     await fireEvent.input(input, { target: { value: "main" } });
-    expect(onSearch).toHaveBeenCalledWith("main");
+    // Debounced: the box shows the keystroke at once, the caller hears
+    // about it a beat later.
+    expect(onSearch).not.toHaveBeenCalled();
+    await waitFor(() => expect(onSearch).toHaveBeenCalledWith("main"));
   });
 
   test("clicking a dir row calls onToggleDir with path", async () => {
     const onToggleDir = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [DIR, FILE_A],
@@ -161,7 +164,7 @@ describe("FilesPanel", () => {
 
   test("clicking a file row calls onOpen with the entry", async () => {
     const onOpen = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [FILE_B],
@@ -182,7 +185,7 @@ describe("FilesPanel", () => {
 
   test("refresh button calls onRefresh", async () => {
     const onRefresh = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -202,7 +205,7 @@ describe("FilesPanel", () => {
 
   test("new-file button calls onNewFile", async () => {
     const onNewFile = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -222,7 +225,7 @@ describe("FilesPanel", () => {
 
   test("new-dir button calls onNewDir", async () => {
     const onNewDir = vi.fn();
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -241,7 +244,7 @@ describe("FilesPanel", () => {
   });
 
   test("children of a closed dir are not rendered", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [DIR, FILE_A],
@@ -259,7 +262,7 @@ describe("FilesPanel", () => {
   });
 
   test("shows loading placeholder when loading=true", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -278,7 +281,7 @@ describe("FilesPanel", () => {
   });
 
   test("shows error message when loadError is set", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [],
@@ -297,7 +300,7 @@ describe("FilesPanel", () => {
   });
 
   test("children of an open dir are rendered", () => {
-    render(FilesPanel, {
+    render(FileBrowser, {
       props: {
         cwd: "/project",
         files: [DIR, FILE_A],

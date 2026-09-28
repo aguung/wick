@@ -80,7 +80,7 @@
   import ConversationThread from "./ConversationThread.svelte";
   import { bareSlashCommand } from "../slashCommand.js";
   import JsonTree from "./JsonTree.svelte";
-  import FilesPanel from "./FilesPanel.svelte";
+  import { FileBrowser } from "@wick-fe/common-ui";
   import FileViewerModal from "./FileViewerModal.svelte";
   import SwitchModal from "./SwitchModal.svelte";
   import OverridePopover from "./OverridePopover.svelte";
@@ -891,6 +891,9 @@
     if (findTimer !== null) clearTimeout(findTimer);
     const term = q.trim();
     if (term === "") { findTruncated = false; return; }
+    // The browser debounces the term before it ever gets here, so this
+    // timer only exists to drop a call that a newer term has already
+    // replaced in the same tick.
     findTimer = setTimeout(() => {
       run(searchTree(base, sessionId, term).pipe(Effect.provide(WickClientLayer)))
         .then((res) => {
@@ -906,7 +909,16 @@
           openDirs = next;
         })
         .catch(() => { /* a failed search leaves the tree as it was */ });
-    }, 250);
+    }, 0);
+  }
+
+  // Go to file, for the Files rail: the whole session tree, ranked by the
+  // browser. A failure is an empty list — a quick-open that pops a toast
+  // while someone is typing is worse than one that finds nothing.
+  function quickFindFiles(q: string): Promise<SessionFileEntry[]> {
+    return run(searchTree(base, sessionId, q).pipe(Effect.provide(WickClientLayer)))
+      .then((res) => res.files)
+      .catch(() => []);
   }
 
   // Populate the composer's `/` menu from the backend registry (built-in
@@ -2699,7 +2711,7 @@
           onChanged={loadTicket}
         />
       {:else if railTab === "files"}
-        <FilesPanel
+        <FileBrowser
           cwd={cwdVal}
           files={filesVal}
           search={fileSearch}
@@ -2720,6 +2732,7 @@
           onDownload={(p) => { window.open(downloadURL(base, sessionId, p), "_blank"); }}
           onDelete={removeEntry}
           onNewHere={(dir) => createEntry(false, dir)}
+          onQuickFind={quickFindFiles}
         />
       {:else if railTab === "todos"}
         <TodoPanel
@@ -2887,7 +2900,7 @@
               onChanged={loadTicket}
             />
           {:else if railTab === "files"}
-            <FilesPanel
+            <FileBrowser
               cwd={cwdVal}
               files={filesVal}
               search={fileSearch}
@@ -2908,6 +2921,7 @@
               onDownload={(p) => { window.open(downloadURL(base, sessionId, p), "_blank"); }}
               onDelete={removeEntry}
               onNewHere={(dir) => createEntry(false, dir)}
+              onQuickFind={quickFindFiles}
             />
           {:else if railTab === "todos"}
             <TodoPanel
