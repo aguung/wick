@@ -7,9 +7,9 @@
 //
 // Per-type specifics live in their own file (claude.go, codex.go,
 // gemini.go): the login argv and the credential-file account probe.
-// Only claude's TTY login is wired up today; codex and gemini keep the
-// account probe (used for connect-status display) and grow login
-// support in their own files later.
+// claude and codex have TTY login wired up; gemini keeps only the
+// account probe (used for connect-status display) and grows login
+// support in its own file later.
 package logintty
 
 import (
@@ -26,8 +26,11 @@ func LoginCommand(t provider.Type, extraArgs []string) ([]string, bool) {
 	switch t {
 	case provider.TypeClaude:
 		return claudeLoginCommand(extraArgs), true
+	case provider.TypeCodex:
+		// extraArgs are deliberately dropped — see codexLoginCommand.
+		return codexLoginCommand(), true
 	default:
-		// codex / gemini: TTY login lands in codex.go / gemini.go later.
+		// gemini: TTY login lands in gemini.go later.
 		return nil, false
 	}
 }

@@ -50,6 +50,9 @@ var (
 		"invalid code",
 		"oauth error",
 		"unable to authenticate",
+		// codex's device-code flow: the poll to OpenAI came back
+		// non-2xx (expired code, denied grant, backend error).
+		"device auth failed",
 	}
 )
 
