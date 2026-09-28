@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/yogasw/wick/internal/pkg/envscrub"
 	"github.com/yogasw/wick/pkg/safeexec"
 )
 
@@ -268,9 +269,10 @@ func (m *Manager) start() error {
 	cmd := safeexec.Command(exe, cmdArgs...)
 	cmd.Stdout = m.logs
 	cmd.Stderr = m.logs
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	// Always set cmd.Env, even with no extraEnv: leaving it nil makes
+	// os/exec hand the child the parent's environment verbatim, which is
+	// the inheritance this scrub exists to stop.
+	cmd.Env = append(envscrub.ScrubOSEnv(), extraEnv...)
 
 	m.log.Info().Str("exe", exe).Str("bin", bin).Int("port", port).Msg("airouter: spawning")
 	if err := cmd.Start(); err != nil {

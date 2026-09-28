@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/yogasw/wick/internal/agents/provider"
+	"github.com/yogasw/wick/internal/pkg/envscrub"
 )
 
 // TTL policy for login sessions: start at DefaultTTL, each extend adds
@@ -140,7 +140,7 @@ func (m *Manager) Start(ins provider.Instance, bin string) (*Session, error) {
 		return existing, nil
 	}
 
-	env := append(append(os.Environ(), ins.Env...), LoginEnv(ins.Type)...)
+	env := append(append(envscrub.ScrubOSEnv(), ins.Env...), LoginEnv(ins.Type)...)
 	run, err := m.spawn(bin, args, env, defaultCols, defaultRows)
 	if err != nil {
 		return nil, fmt.Errorf("spawn login tty: %w", err)
