@@ -99,7 +99,7 @@
     {:else if open && countLabel}
       <span class="shrink-0 text-[10px] text-black-700 dark:text-black-600 font-mono transition-opacity group-hover:opacity-0">{countLabel}</span>
     {/if}
-    <div class="shrink-0 opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <div class="row-actions shrink-0">
       <KebabMenu items={folderItems} size="sm" width={184} ariaLabel={`Actions for folder ${e.name}`} />
     </div>
   </div>
@@ -119,8 +119,33 @@
       <div class="text-xs text-black-900 dark:text-white-100 truncate">{e.name}</div>
       <div class="text-[10px] text-black-700 dark:text-black-600 truncate font-mono">{formatSize(e.size)} · {formatRelTime(e.mtime)}</div>
     </button>
-    <div class="shrink-0 opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <div class="row-actions shrink-0">
       <KebabMenu items={fileItems} size="sm" width={168} ariaLabel={`Actions for ${e.name}`} />
     </div>
   </div>
 {/if}
+
+<style>
+  /* The ⋮ is quiet until the row is pointed at: a column of dots down every
+     row reads as clutter in a narrow panel. It keeps its box either way, so
+     nothing reflows when it appears — the row shifting under the cursor was
+     the last thing we fixed here. */
+  .row-actions {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  .group:hover .row-actions,
+  .row-actions:focus-within,
+  /* An open menu outlives the hover: the pointer leaves the row to reach the
+     popup, and a trigger that vanishes mid-click looks broken. */
+  .row-actions:has(:global([aria-expanded="true"])) {
+    opacity: 1;
+  }
+  /* No pointer, no hover — on a touch screen a hover-only control does not
+     exist at all, so there it stays visible. */
+  @media (hover: none) {
+    .row-actions {
+      opacity: 1;
+    }
+  }
+</style>
