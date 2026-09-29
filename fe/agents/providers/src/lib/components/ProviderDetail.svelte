@@ -21,6 +21,7 @@
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
   import { UsageReport } from "@wick-fe/common-ui";
   import ReconnectPanel from "$lib/components/ReconnectPanel.svelte";
+  import ManagedBinaryPanel from "$lib/components/ManagedBinaryPanel.svelte";
 
 
   type Props = {
@@ -784,6 +785,9 @@
     </div>
 
     <!-- Connection: account status + usage + reconnect via login TTY -->
+    {#if type === "omp" || type === "opencode"}
+      <ManagedBinaryPanel {base} {type} />
+    {/if}
     <ReconnectPanel {base} {type} {name} />
 
     <!-- Everything below edits the instance. A non-admin still SEES it —

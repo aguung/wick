@@ -47,6 +47,7 @@ interface WireProviderStatus {
   instance: WireProviderInstance;
   path: string;
   path_found: boolean;
+  source?: string;
   version: string;
   version_err?: string;
   probing: boolean;
@@ -188,6 +189,7 @@ interface WireProviderDetailResponse {
   instance: WireProviderInstance;
   path: string;
   path_found: boolean;
+  source?: string;
   version: string;
   version_err?: string;
   probing: boolean;
@@ -377,6 +379,7 @@ function mapProviderStatus(w: WireProviderStatus): ProviderStatusDTO {
     Instance: mapInstance(w.instance),
     Path: w.path ?? "",
     PathFound: w.path_found ?? false,
+    Source: w.source ?? "",
     Version: w.version ?? "",
     VersionErr: w.version_err ?? "",
     Probing: w.probing ?? false,
@@ -590,6 +593,7 @@ export function normalizeProviderDetail(r: WireProviderDetailResponse): Provider
     Instance: mapInstance(r.instance),
     Path: r.path ?? "",
     PathFound: r.path_found ?? false,
+    Source: r.source ?? "",
     Version: r.version ?? "",
     VersionErr: r.version_err ?? "",
     Probing: r.probing ?? false,

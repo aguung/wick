@@ -3,6 +3,8 @@
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import AIRouterConfig from "$lib/components/AIRouterConfig.svelte";
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
+  import ManagedBinaryPanel from "$lib/components/ManagedBinaryPanel.svelte";
+  import { apiManagedList } from "$lib/managedbin.js";
   import { UsageReport } from "@wick-fe/common-ui";
   import {
     apiGetProviders,
@@ -30,6 +32,7 @@
     ACCOUNT_ISOLATED,
     typeOption,
     suggestName,
+    sourceLabel,
     accountStorePreview,
     validOMPProfile,
   } from "$lib/accounts.js";
@@ -54,6 +57,15 @@
   // its own endpoint after the list paints: the account read is local but
   // the usage probe is a remote call, and the cards must not wait on it.
   let connections = $state<Record<string, ProviderConnection>>({});
+  // Types whose binary wick can install/update itself (omp, opencode).
+  let managedTypes = $state<string[]>([]);
+  async function loadManagedTypes(): Promise<void> {
+    try {
+      managedTypes = (await apiManagedList(base)).types.filter((t) => t.enabled).map((t) => t.type);
+    } catch {
+      managedTypes = [];
+    }
+  }
   let confirmDelete = $state<ProviderStatusDTO | null>(null);
   let busy = $state<Record<string, boolean>>({});
   let mcpOpen = $state(false);
@@ -71,6 +83,8 @@
   let formAirouterRawConfig = $state("");
   // omp/opencode account store: shown read-only, editable only after the
   // operator explicitly asks to override it.
+  // omp/opencode: "managed" (default) or "manual" binary path.
+  let formBinarySource = $state("managed");
   let formStoreOverride = $state(false);
   let formStoreValue = $state("");
   const formIsolated = $derived(ACCOUNT_ISOLATED.has(formType));
@@ -148,6 +162,7 @@
       data = await apiGetProviders();
       void loadWick();
       void loadConnections();
+      void loadManagedTypes();
     } catch (e) {
       if (!silent) {
         error = e instanceof Error ? e.message : "Failed to load providers";
@@ -396,6 +411,7 @@
     formAirouterRawConfig = "";
     formStoreOverride = false;
     formStoreValue = "";
+    formBinarySource = "managed";
     addOpen = true;
   }
 
@@ -412,7 +428,7 @@
       await apiCreateProvider({
         type: formType,
         name: formName.trim(),
-        binary: formBinary.trim(),
+        binary: formIsolated && formBinarySource === "managed" ? "" : formBinary.trim(),
         extra_args: formExtraArgs.trim(),
         env: formEnv,
         use_airouter: formUseAirouter && airouterSupported,
@@ -615,6 +631,17 @@
     {/if}
     {/if}
 
+    {#if managedTypes.length > 0}
+      <section data-testid="managed-binaries-section" class="space-y-3">
+        <h2 class="text-sm font-semibold text-black-900 dark:text-white-100">Binaries managed by wick</h2>
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {#each managedTypes as mt (mt)}
+            <ManagedBinaryPanel {base} type={mt} />
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     {#if data.Providers.length === 0}
       <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 px-6 py-12 text-center text-sm text-black-700 dark:text-black-600">
         No providers detected. Run Rescan all to discover installed AI providers.
@@ -728,7 +755,14 @@
               <div class="flex gap-2">
                 <dt class="w-20 text-black-700 dark:text-black-600">resolved</dt>
                 {#if p.Path}
-                  <dd class="font-mono text-black-900 dark:text-white-100 break-all">{p.Path}</dd>
+                  <dd class="font-mono text-black-900 dark:text-white-100 break-all">
+                    {p.Path}
+                    {#if sourceLabel(p.Source)}
+                      <span data-testid="card-binary-source" class="ml-1 rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 font-sans text-[11px] font-medium text-black-800 dark:text-black-600">{sourceLabel(p.Source)}</span>
+                    {/if}
+                  </dd>
+                {:else if ACCOUNT_ISOLATED.has(p.Instance.Type)}
+                  <dd data-testid="card-binary-missing" class="text-neg-400">binary not installed — install it under "Binaries managed by wick" or set a path</dd>
                 {:else}
                   <dd class="text-black-600 dark:text-black-700">—</dd>
                 {/if}
@@ -1113,10 +1147,29 @@
             <p class="mt-1 text-[11px] text-black-700 dark:text-black-600">Letters, digits and '_' only. Spaces auto-convert to '_'.</p>
           {/if}
         </div>
-        <div>
-          <label for="add-provider-binary" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Binary path (optional)</label>
-          <input id="add-provider-binary" type="text" bind:value={formBinary} placeholder="leave empty to use PATH lookup" class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm font-mono text-black-900 dark:text-white-100" />
-        </div>
+        {#if formIsolated && managedTypes.includes(formType)}
+          <div class="space-y-2" data-testid="add-binary-source">
+            <label for="add-binary-source" class="block text-xs font-medium text-black-800 dark:text-black-600">Binary</label>
+            <Select
+              id="add-binary-source"
+              value={formBinarySource}
+              options={[
+                { label: "Managed by wick", value: "managed", description: "wick downloads, verifies and updates it from GitHub" },
+                { label: "Manual path", value: "manual", description: "Advanced: point at a binary you installed yourself" },
+              ]}
+              onChange={(v) => { formBinarySource = v; }}
+            />
+            {#if formBinarySource === "managed"}
+              <ManagedBinaryPanel {base} type={formType} compact />
+            {/if}
+          </div>
+        {/if}
+        {#if !formIsolated || !managedTypes.includes(formType) || formBinarySource === "manual"}
+          <div>
+            <label for="add-provider-binary" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Binary path (optional)</label>
+            <input id="add-provider-binary" type="text" bind:value={formBinary} placeholder="leave empty to use PATH lookup" class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm font-mono text-black-900 dark:text-white-100" />
+          </div>
+        {/if}
         <div>
           <label for="add-provider-args" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Extra args (space separated)</label>
           <input id="add-provider-args" type="text" bind:value={formExtraArgs} class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm font-mono text-black-900 dark:text-white-100" />

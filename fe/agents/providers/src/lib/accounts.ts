@@ -64,3 +64,20 @@ export function accountStorePreview(type: string, name: string): string {
   if (type === "opencode") return `<wick data>/providers/opencode/${name || "opencode"}`;
   return "";
 }
+
+/* sourceLabel names where an instance's binary comes from, for the card. */
+export function sourceLabel(source: string | undefined): string {
+  switch (source) {
+    case "managed":
+      return "managed by wick";
+    case "registry":
+      return "manual path";
+    case "path":
+      return "PATH";
+    case "scan":
+      return "found on disk";
+    case "miss":
+      return "not installed";
+  }
+  return "";
+}
