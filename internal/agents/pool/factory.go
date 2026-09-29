@@ -717,8 +717,17 @@ func resolveProviderBinary(providerType, providerName string) (bin, source strin
 	if t == "" {
 		t = provider.TypeClaude
 	}
-	if ins, err := provider.Find(t, providerName); err == nil && ins.Binary != "" {
+	ins, err := provider.Find(t, providerName)
+	if err == nil && ins.Binary != "" {
 		return ins.Binary, "registry"
+	}
+	// Wick-managed current version (omp/opencode): resolved per spawn, so a
+	// switch takes effect on the next turn while a running process keeps the
+	// file it started from.
+	if err == nil {
+		if p, src := provider.ResolveBinarySource(ins); src == provider.BinSourceManaged {
+			return p, src
+		}
 	}
 	if p, err := safeexec.LookPath(string(t)); err == nil {
 		return p, "path"

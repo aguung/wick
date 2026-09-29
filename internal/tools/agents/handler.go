@@ -408,6 +408,13 @@ func Register(r tool.Router) {
 
 	// JSON API — providers SPA endpoints (mirrors templ providers handlers).
 	r.GET("/api/providers", apiProvidersList)
+	r.GET("/api/managed-binaries", apiManagedBinariesList)
+	r.GET("/api/managed-binaries/{type}/releases", apiManagedBinaryReleases)
+	r.POST("/api/managed-binaries/{type}/check", apiManagedBinaryCheck)
+	r.POST("/api/managed-binaries/{type}/install", apiManagedBinaryInstall)
+	r.POST("/api/managed-binaries/{type}/activate", apiManagedBinaryActivate)
+	r.POST("/api/managed-binaries/{type}/remove", apiManagedBinaryRemove)
+	r.POST("/api/managed-binaries/{type}/verify", apiManagedBinaryVerify)
 	r.GET("/api/providers/storage", apiProvidersStorage)
 	// Token ledger: fleet-wide report, and one provider's slice of it.
 	r.GET("/api/providers/usage", apiUsageReport)

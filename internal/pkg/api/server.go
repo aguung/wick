@@ -38,6 +38,7 @@ import (
 	agentpool "github.com/yogasw/wick/internal/agents/pool"
 	agentproject "github.com/yogasw/wick/internal/agents/project"
 	"github.com/yogasw/wick/internal/agents/provider"
+	"github.com/yogasw/wick/internal/agents/provider/managedbin"
 	"github.com/yogasw/wick/internal/agents/provider/oomscore"
 	wickprovider "github.com/yogasw/wick/internal/agents/provider/wick"
 	"github.com/yogasw/wick/internal/agents/providersync"
@@ -725,6 +726,18 @@ func NewServer() *Server {
 			IOWeight:    atoi("agents_io_weight"),
 		}
 	}
+	// Managed provider binaries: the sandboxed `--version` of a fresh
+	// download runs inside the same memory scope an agent spawn would get,
+	// and a reload waits for an in-flight install instead of cutting it.
+	managedbin.Default.Wrap = func(bin string, args []string) (string, []string, func()) {
+		g := agentsFactory.MemGuardLoader()
+		if g == nil {
+			return bin, args, func() {}
+		}
+		wb, wa, unit := g.Wrap(bin, args, "managed-verify", int(time.Now().UnixNano()%1_000_000))
+		return wb, wa, func() { g.ReleaseScope(unit) }
+	}
+	upgrade.Register("provider binary installs", managedbin.Default.InflightCount)
 	agentsFactory.ToolMemoryLoader = func() int {
 		v, _ := strconv.Atoi(configsSvc.GetOwned("agents", "tool_memory_max_mb"))
 		return v

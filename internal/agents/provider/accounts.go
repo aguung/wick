@@ -201,7 +201,9 @@ func AccountEnv(ins Instance) []string {
 			out = append(out, "XDG_DATA_HOME="+d)
 		}
 	}
-	if b := strings.TrimSpace(ins.Binary); b != "" {
+	// The binary the probes must exec: the same one spawn resolves
+	// (override → managed current → PATH).
+	if b, err := ResolveBin(ins); err == nil && b != "" {
 		out = append(out, AccountBinEnvKey+"="+b)
 	}
 	return out

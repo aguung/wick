@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/yogasw/wick/internal/agents/provider/managedbin"
 	"github.com/yogasw/wick/internal/userconfig"
 	"github.com/yogasw/wick/pkg/safeexec"
 )
@@ -282,6 +283,9 @@ func ResolveBin(ins Instance) (string, error) {
 	if ins.Binary != "" {
 		return safeexec.ResolveBin(ins.Binary)
 	}
+	if p, ok := managedPath(ins); ok {
+		return p, nil
+	}
 	name := string(ins.Type)
 	if p, err := safeexec.LookPath(name); err == nil {
 		return p, nil
@@ -307,6 +311,12 @@ type Status struct {
 	PathFound  bool
 	Version    string // first line of `<bin> --version`
 	VersionErr string // error message when version probe failed
+	// SemVer is Version read through the type's version contract
+	// ("omp/18.4.3" → "18.4.3"); "" when the output did not parse.
+	SemVer string
+	// Source is where Path came from: BinSourceOverride / Managed / Path /
+	// Scan / Miss.
+	Source string
 
 	Hooks map[string]HookCapability
 
@@ -721,19 +731,31 @@ func Delete(t Type, name string) error {
 // path is non-empty even for a missing override so the UI can show
 // what wick would have run.
 func ResolveBinary(ins Instance) (path string, found bool) {
+	p, src := ResolveBinarySource(ins)
+	return p, src != BinSourceMiss && !(src == BinSourceOverride && !overrideFound(ins))
+}
+
+// ResolveBinarySource is ResolveBinary plus where the path came from
+// (BinSource*): override → managed current → PATH → known locations.
+func ResolveBinarySource(ins Instance) (path, source string) {
 	if ins.Binary != "" {
-		if _, err := safeexec.LookPath(ins.Binary); err == nil {
-			return ins.Binary, true
-		}
-		return ins.Binary, false
+		return ins.Binary, BinSourceOverride
+	}
+	if p, ok := managedPath(ins); ok {
+		return p, BinSourceManaged
 	}
 	if p, err := safeexec.LookPath(string(ins.Type)); err == nil {
-		return p, true
+		return p, BinSourcePath
 	}
 	if p, ok := scanKnownLocations(ins.Type); ok {
-		return p, true
+		return p, BinSourceScan
 	}
-	return "", false
+	return "", BinSourceMiss
+}
+
+func overrideFound(ins Instance) bool {
+	_, err := safeexec.LookPath(ins.Binary)
+	return err == nil
 }
 
 // Probe resolves the binary path and runs `--version` for one
@@ -752,30 +774,17 @@ func Probe(ctx context.Context, ins Instance) Status {
 		st.Version = "built-in"
 		return st
 	}
-	source := ""
-	if ins.Binary != "" {
-		st.Path = ins.Binary
-		source = "registry"
-		if _, err := safeexec.LookPath(ins.Binary); err == nil {
-			st.PathFound = true
-		}
-	} else {
-		path, err := safeexec.LookPath(string(ins.Type))
-		if err == nil {
-			st.Path = path
-			st.PathFound = true
-			source = "path"
-		} else if p, ok := scanKnownLocations(ins.Type); ok {
-			// PATH miss is normal when CLI is installed via npm/curl
-			// installer that drops binary outside PATH (e.g. claude in
-			// ~/.local/bin on Windows). Fall back to per-OS install
-			// locations so users don't need to edit PATH manually.
-			st.Path = p
-			st.PathFound = true
-			source = "scan"
-		} else {
-			source = "miss"
-		}
+	// Override → managed current → PATH → per-OS install locations (a
+	// PATH miss is normal for npm/curl installers that drop the binary
+	// outside PATH). Same order spawn uses.
+	path, source := ResolveBinarySource(ins)
+	st.Path, st.Source = path, source
+	switch source {
+	case BinSourceOverride:
+		st.PathFound = overrideFound(ins)
+	case BinSourceMiss:
+	default:
+		st.PathFound = true
 	}
 	log.Debug().
 		Str("type", string(ins.Type)).
@@ -790,7 +799,15 @@ func Probe(ctx context.Context, ins Instance) Status {
 	if ins.Disabled {
 		return st
 	}
-	cmd := safeexec.CommandContext(ctx, st.Path, "--version")
+	// The type's version contract (registered by its package) says which
+	// argv to run and how to read it — the same one the managed installer
+	// verifies downloads with.
+	args := []string{"--version"}
+	contract, hasContract := managedbin.ContractFor(string(ins.Type))
+	if hasContract && len(contract.Args) > 0 {
+		args = contract.Args
+	}
+	cmd := safeexec.CommandContext(ctx, st.Path, args...)
 	hideConsole(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -804,6 +821,11 @@ func Probe(ctx context.Context, ins Instance) Status {
 		return st
 	}
 	st.Version = firstLine(strings.TrimSpace(string(out)))
+	if hasContract && contract.Parse != nil {
+		if v, ok := contract.Parse(string(out)); ok {
+			st.SemVer = v
+		}
+	}
 	log.Debug().
 		Str("type", string(ins.Type)).
 		Str("name", ins.Name).

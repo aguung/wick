@@ -129,6 +129,10 @@ type ProvidersConfig struct {
 	OMP      []ProviderInstance `json:"omp,omitempty"`
 	Opencode []ProviderInstance `json:"opencode,omitempty"`
 
+	// ManagedBinaries configures the CLI binaries wick downloads and
+	// keeps itself (<data dir>/providers/bin). nil = defaults.
+	ManagedBinaries *ManagedBinariesConfig `json:"managed_binaries,omitempty"`
+
 	// Wick is the built-in in-process provider. Single-instance by
 	// design: the list never holds more than the one "wick" entry —
 	// multiplicity lives in that instance's WickModels, not in extra
@@ -693,4 +697,57 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// ManagedBinariesConfig is providers.managed_binaries:
+//
+//	{"keep_versions": 2, "omp": {"enabled": true}, "opencode": {"enabled": false}}
+//
+// Per-type keys sit next to keep_versions, so a new managed type needs no
+// schema change. A type with no entry uses its default (enabled).
+type ManagedBinariesConfig struct {
+	// KeepVersions is how many non-current versions retention keeps.
+	// 0 = default (2); use a negative value for "keep none".
+	KeepVersions int
+	// Types holds the per-type settings, keyed by provider type.
+	Types map[string]ManagedBinaryType
+}
+
+// ManagedBinaryType is providers.managed_binaries.<type>.
+type ManagedBinaryType struct {
+	// Enabled nil = default (true for types wick can manage).
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+func (c ManagedBinariesConfig) MarshalJSON() ([]byte, error) {
+	m := map[string]any{}
+	if c.KeepVersions != 0 {
+		m["keep_versions"] = c.KeepVersions
+	}
+	for k, v := range c.Types {
+		m[k] = v
+	}
+	return json.Marshal(m)
+}
+
+func (c *ManagedBinariesConfig) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	c.Types = map[string]ManagedBinaryType{}
+	for k, v := range raw {
+		if k == "keep_versions" {
+			if err := json.Unmarshal(v, &c.KeepVersions); err != nil {
+				return err
+			}
+			continue
+		}
+		var t ManagedBinaryType
+		if err := json.Unmarshal(v, &t); err != nil {
+			return err
+		}
+		c.Types[k] = t
+	}
+	return nil
 }
