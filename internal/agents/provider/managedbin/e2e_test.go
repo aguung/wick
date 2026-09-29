@@ -37,13 +37,13 @@ func TestE2EManagedBinaries(t *testing.T) {
 
 	for _, typ := range []string{"omp", "opencode"} {
 		t.Run(typ, func(t *testing.T) {
-			latest, err := m.CheckLatest(ctx, typ, true)
-			if err != nil {
-				t.Fatal(err)
+			snap, err := m.RefreshLatest(ctx, typ)
+			if err != nil || snap.Latest == nil {
+				t.Fatalf("refresh latest: %v", err)
 			}
-			rels, err := m.Releases(ctx, typ)
-			if err != nil {
-				t.Fatal(err)
+			latest, rels := *snap.Latest, snap.Releases
+			if st, _ := m.Status(typ); st.Latest == nil || st.Latest.Tag != latest.Tag || len(st.Releases) == 0 {
+				t.Fatalf("status does not serve the cached snapshot: %+v", st)
 			}
 			prev := ""
 			for _, r := range rels {
@@ -55,12 +55,7 @@ func TestE2EManagedBinaries(t *testing.T) {
 			if prev == "" {
 				t.Fatal("no previous release to roll back to")
 			}
-			for _, tag := range []string{prev, latest.Tag} {
-				start := time.Now()
-				j, err := m.Install(ctx, typ, tag)
-				if err != nil {
-					t.Fatalf("install %s: %v", tag, err)
-				}
+			logInstalled := func(tag string, j *managedbin.JobInfo, start time.Time) managedbin.Status {
 				st, _ := m.Status(typ)
 				var vi managedbin.InstalledView
 				for _, iv := range st.Installed {
@@ -68,20 +63,45 @@ func TestE2EManagedBinaries(t *testing.T) {
 						vi = iv
 					}
 				}
-				t.Logf("%s %s: asset=%s asset_sha256=%s bin_sha256=%s --version=%q (%s)",
-					typ, tag, vi.Asset, vi.AssetSHA256, vi.SHA256, vi.VersionOutput, time.Since(start).Round(time.Second))
-				if st.Current != j.Version || !managedbin.MatchesTag(tag, j.Version) {
-					t.Fatalf("current=%s job=%+v", st.Current, j)
-				}
+				t.Logf("%s %s: asset=%s asset_sha256=%s bin_sha256=%s --version=%q (%s) current=%s",
+					typ, tag, vi.Asset, vi.AssetSHA256, vi.SHA256, vi.VersionOutput, time.Since(start).Round(time.Second), st.Current)
+				return st
 			}
+			// First install through the download-only path: nothing is
+			// current yet, so it activates.
+			start := time.Now()
+			j, err := m.Download(ctx, typ, prev)
+			if err != nil {
+				t.Fatalf("download %s: %v", prev, err)
+			}
+			if st := logInstalled(prev, j, start); st.Current != j.Version || !managedbin.MatchesTag(prev, j.Version) {
+				t.Fatalf("first download did not activate: current=%s job=%+v", st.Current, j)
+			}
+			// Download-only of the newest: stored + verified, current stays.
+			start = time.Now()
+			j, err = m.Download(ctx, typ, latest.Tag)
+			if err != nil {
+				t.Fatalf("download %s: %v", latest.Tag, err)
+			}
+			if st := logInstalled(latest.Tag, j, start); st.Current != managedbin.TagVersion(prev) {
+				t.Fatalf("download-only moved current to %s", st.Current)
+			}
+			// Activate = instant switch, sha256 re-checked.
+			if err := m.Activate(typ, latest.Version); err != nil {
+				t.Fatal(err)
+			}
+			if _, v, _ := m.CurrentPath(typ); v != latest.Version {
+				t.Fatalf("activate: current=%s", v)
+			}
+			t.Logf("%s download-only %s kept %s active; activate switched to %s", typ, latest.Tag, prev, latest.Version)
 			// same version again: no download
-			j, err := m.Install(ctx, typ, latest.Tag)
+			j, err = m.Install(ctx, typ, latest.Tag)
 			if err != nil || !strings.Contains(j.Message, "already installed") {
 				t.Fatalf("no-op update: %v %+v", err, j)
 			}
 			t.Logf("%s update to %s again: %s", typ, latest.Tag, j.Message)
 			// rollback: instant, sha256 re-checked, no download
-			start := time.Now()
+			start = time.Now()
 			if err := m.Activate(typ, managedbin.TagVersion(prev)); err != nil {
 				t.Fatal(err)
 			}

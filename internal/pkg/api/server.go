@@ -3296,6 +3296,11 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	if s.verCache != nil {
 		go s.verCache.Run(ctx, 6*time.Hour)
 	}
+	// Same idea for wick-managed provider binaries (omp, opencode): the
+	// newest-release + release-list snapshot refreshes in the background
+	// (jittered boot, then hourly), so the Providers page reads it with no
+	// GitHub call. Warm from latest-cache.json across reloads.
+	go managedbin.Default.RunLatest(ctx)
 
 	// Admin-defined startup script (e.g. ngrok / cloudflared tunnel).
 	// Lifetime is tied to the server ctx — tray stop or process exit

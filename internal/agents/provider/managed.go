@@ -21,6 +21,7 @@ import (
 func init() {
 	managedbin.Default.Root = ManagedBinRoot
 	managedbin.Default.KeepVersions = managedKeepVersions
+	managedbin.Default.Enabled = func(t string) bool { return ManagedEnabled(Type(t)) }
 }
 
 // ManagedBinRoot is <wick data dir>/providers/bin, "" when the data dir

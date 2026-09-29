@@ -16,8 +16,9 @@ import (
 // status, releases, and the admin actions (install/update, activate =
 // rollback, remove, re-verify). Every write is admin-only through the same
 // guard as the rest of provider configuration. Nothing here downloads on
-// its own: install starts only from a POST, and the list at most refreshes
-// the cached "newest release" once an hour, in the background.
+// its own: a download starts only from a POST. Every read serves the
+// background release cache (managedbin latestcache.go) — no handler here
+// calls GitHub except the rate-limited "Check for update" POST.
 
 // ManagedBinaryDTO is one managed type's status.
 type ManagedBinaryDTO struct {
@@ -44,14 +45,6 @@ func managedDTO(t provider.Type) (ManagedBinaryDTO, error) {
 			}
 			dto.SessionsOnOld[iv.Version] = iv.InUse
 		}
-	}
-	// Stale newest-release answer: refresh off the request path.
-	if !st.Job.Running() && (st.LatestCheckedAt.IsZero() || time.Since(st.LatestCheckedAt) > managedbin.LatestTTL) {
-		go func(typ string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			_, _ = managedbin.Default.CheckLatest(ctx, typ, false)
-		}(string(t))
 	}
 	return dto, nil
 }
@@ -81,7 +74,8 @@ func apiManagedBinariesList(c *tool.Ctx) {
 	c.JSON(http.StatusOK, map[string]any{"types": out, "is_admin": callerIsAdmin(c)})
 }
 
-// apiManagedBinaryReleases: GET …/{type}/releases — for "pick a version".
+// apiManagedBinaryReleases: GET …/{type}/releases — the cached release
+// list (also embedded in the status as `releases`). No network.
 func apiManagedBinaryReleases(c *tool.Ctx) {
 	if notReady(c) || !requireProviderAdmin(c) {
 		return
@@ -90,17 +84,17 @@ func apiManagedBinaryReleases(c *tool.Ctx) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
-	defer cancel()
-	rs, err := managedbin.Default.Releases(ctx, string(t))
+	rs, err := managedbin.Default.Releases(string(t))
+	resp := map[string]any{"releases": rs}
 	if err != nil {
-		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
+		resp["error"] = err.Error()
 	}
-	c.JSON(http.StatusOK, map[string]any{"releases": rs})
+	c.JSON(http.StatusOK, resp)
 }
 
-// apiManagedBinaryCheck: POST …/{type}/check — refresh "newest release" now.
+// apiManagedBinaryCheck: POST …/{type}/check — force a release-cache
+// refresh now, at most once per minute per type (429 + retry_after_s
+// inside the gap).
 func apiManagedBinaryCheck(c *tool.Ctx) {
 	if notReady(c) || !requireProviderAdmin(c) {
 		return
@@ -111,7 +105,11 @@ func apiManagedBinaryCheck(c *tool.Ctx) {
 	}
 	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
 	defer cancel()
-	_, _ = managedbin.Default.CheckLatest(ctx, string(t), true)
+	_, wait, err := managedbin.Default.ForceRefreshLatest(ctx, string(t))
+	if errors.Is(err, managedbin.ErrRefreshTooSoon) {
+		c.JSON(http.StatusTooManyRequests, map[string]any{"error": err.Error(), "retry_after_s": int(wait.Seconds()) + 1})
+		return
+	}
 	dto, err := managedDTO(t)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -120,9 +118,16 @@ func apiManagedBinaryCheck(c *tool.Ctx) {
 	c.JSON(http.StatusOK, dto)
 }
 
-// apiManagedBinaryInstall: POST …/{type}/install[?tag=v1.2.3] — starts the
-// background job and returns at once; the UI polls the list for progress.
-func apiManagedBinaryInstall(c *tool.Ctx) {
+// apiManagedBinaryInstall: POST …/{type}/install[?tag=v1.2.3] — download
+// AND activate. apiManagedBinaryDownload: POST …/{type}/download[?tag=] —
+// download, verify and store only (`current` moves only on a first
+// install). Both start the background job and return at once; the UI
+// polls the list for progress. 409 already_running carries the job in
+// flight so the UI can follow it instead of erroring.
+func apiManagedBinaryInstall(c *tool.Ctx)  { startManagedJob(c, true) }
+func apiManagedBinaryDownload(c *tool.Ctx) { startManagedJob(c, false) }
+
+func startManagedJob(c *tool.Ctx, activate bool) {
 	if notReady(c) || !requireProviderAdmin(c) {
 		return
 	}
@@ -135,9 +140,9 @@ func apiManagedBinaryInstall(c *tool.Ctx) {
 		return
 	}
 	tag := strings.TrimSpace(c.Query("tag"))
-	j, err := managedbin.Default.StartInstall(string(t), tag)
+	j, err := managedbin.Default.StartInstall(string(t), tag, activate)
 	if errors.Is(err, managedbin.ErrJobRunning) {
-		c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+		c.JSON(http.StatusConflict, map[string]any{"error": err.Error(), "code": "already_running", "job": j})
 		return
 	}
 	if err != nil {

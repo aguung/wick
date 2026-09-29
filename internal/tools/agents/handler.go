@@ -412,6 +412,7 @@ func Register(r tool.Router) {
 	r.GET("/api/managed-binaries/{type}/releases", apiManagedBinaryReleases)
 	r.POST("/api/managed-binaries/{type}/check", apiManagedBinaryCheck)
 	r.POST("/api/managed-binaries/{type}/install", apiManagedBinaryInstall)
+	r.POST("/api/managed-binaries/{type}/download", apiManagedBinaryDownload)
 	r.POST("/api/managed-binaries/{type}/activate", apiManagedBinaryActivate)
 	r.POST("/api/managed-binaries/{type}/remove", apiManagedBinaryRemove)
 	r.POST("/api/managed-binaries/{type}/verify", apiManagedBinaryVerify)

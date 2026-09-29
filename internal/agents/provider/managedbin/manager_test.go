@@ -43,6 +43,9 @@ func init() { Register("fake", fakeSource{}) }
 type fakeGitHub struct {
 	srv       *httptest.Server
 	downloads atomic.Int32
+	api       atomic.Int32      // every /repos/… request
+	latestTag string            // served by /releases/latest
+	block     chan struct{}     // non-nil: /releases/latest waits on it
 	scripts   map[string]string // tag -> script body
 	digests   map[string]string // tag -> override digest ("" = correct)
 }
@@ -74,11 +77,33 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		}
 		_ = json.NewEncoder(w).Encode(rel(tag))
 	})
+	mux.HandleFunc("/repos/acme/fakecli/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		if f.block != nil {
+			<-f.block
+		}
+		if f.latestTag == "" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(rel(f.latestTag))
+	})
+	mux.HandleFunc("/repos/acme/fakecli/releases", func(w http.ResponseWriter, r *http.Request) {
+		var out []map[string]any
+		for tag := range f.scripts {
+			out = append(out, rel(tag))
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	})
 	mux.HandleFunc("/dl/", func(w http.ResponseWriter, r *http.Request) {
 		f.downloads.Add(1)
 		_, _ = w.Write([]byte(f.scripts[strings.TrimPrefix(r.URL.Path, "/dl/")]))
 	})
-	f.srv = httptest.NewTLSServer(mux)
+	f.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			f.api.Add(1)
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(f.srv.Close)
 	return f
 }

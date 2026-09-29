@@ -30,23 +30,23 @@ type Manager struct {
 	Host func() Host
 	// InUse counts running processes per version under a versions dir.
 	InUse func(versionsDir string) map[string]int
+	// Enabled gates the background release check per type. nil = all.
+	Enabled func(typ string) bool
 
 	client *client
 
 	mu      sync.Mutex
 	jobs    map[string]*JobInfo
-	latest  map[string]latestEntry
 	typeMus map[string]*sync.Mutex
-}
 
-type latestEntry struct {
-	at  time.Time
-	rel Release
-	err error
+	// Release cache (latestcache.go), guarded by mu; cacheMu serialises
+	// writes of the cache file.
+	cacheMu     sync.Mutex
+	cacheLoaded bool
+	snaps       map[string]LatestSnapshot
+	inflight    map[string]chan struct{}
+	forcedAt    map[string]time.Time
 }
-
-// LatestTTL is how long a "newest release" answer is cached.
-const LatestTTL = time.Hour
 
 // New returns a Manager with production defaults (Root must be set).
 func New() *Manager {
@@ -56,8 +56,10 @@ func New() *Manager {
 		InUse:        scanInUse,
 		client:       newClient(),
 		jobs:         map[string]*JobInfo{},
-		latest:       map[string]latestEntry{},
 		typeMus:      map[string]*sync.Mutex{},
+		snaps:        map[string]LatestSnapshot{},
+		inflight:     map[string]chan struct{}{},
+		forcedAt:     map[string]time.Time{},
 	}
 }
 
@@ -121,6 +123,7 @@ type Status struct {
 	CurrentPath     string          `json:"current_path"`
 	Installed       []InstalledView `json:"installed"`
 	Latest          *Release        `json:"latest,omitempty"`
+	Releases        []Release       `json:"releases,omitempty"`
 	LatestCheckedAt time.Time       `json:"latest_checked_at,omitempty"`
 	LatestErr       string          `json:"latest_err,omitempty"`
 	UpdateAvailable bool            `json:"update_available"`
@@ -128,8 +131,8 @@ type Status struct {
 	LastJob         *JobInfo        `json:"last_job,omitempty"`
 }
 
-// Status reports typ without touching the network (the latest-release
-// answer is whatever is cached).
+// Status reports typ without touching the network: the release facts are
+// whatever the background cache last learned.
 func (m *Manager) Status(typ string) (Status, error) {
 	src, ok := Lookup(typ)
 	if !ok {
@@ -154,18 +157,15 @@ func (m *Manager) Status(typ string) (Status, error) {
 	sort.Slice(out.Installed, func(i, j int) bool {
 		return out.Installed[i].InstalledAt.After(out.Installed[j].InstalledAt)
 	})
-	m.mu.Lock()
-	if e, ok := m.latest[typ]; ok {
-		out.LatestCheckedAt = e.at
-		if e.err != nil {
-			out.LatestErr = e.err.Error()
-		} else {
-			r := e.rel
-			r.Assets = nil
+	if s, ok := m.LatestSnapshot(typ); ok {
+		out.LatestCheckedAt, out.LatestErr, out.Releases = s.FetchedAt, s.Err, s.Releases
+		if s.Latest != nil {
+			r := *s.Latest
 			out.Latest = &r
 			out.UpdateAvailable = cur != "" && r.Version != "" && r.Version != cur
 		}
 	}
+	m.mu.Lock()
 	if j := m.jobs[typ]; j != nil {
 		c := *j
 		out.Job = &c
@@ -174,37 +174,14 @@ func (m *Manager) Status(typ string) (Status, error) {
 	return out, nil
 }
 
-// CheckLatest refreshes the cached newest release (at most once per
-// LatestTTL unless force). Never downloads anything.
-func (m *Manager) CheckLatest(ctx context.Context, typ string, force bool) (Release, error) {
-	src, ok := Lookup(typ)
-	if !ok {
-		return Release{}, fmt.Errorf("%s is not a managed binary type", typ)
-	}
-	m.mu.Lock()
-	e, cached := m.latest[typ]
-	m.mu.Unlock()
-	if cached && !force && time.Since(e.at) < LatestTTL {
-		return e.rel, e.err
-	}
-	rel, err := m.client.latest(ctx, src.Repo())
-	m.mu.Lock()
-	m.latest[typ] = latestEntry{at: time.Now(), rel: rel, err: err}
-	m.mu.Unlock()
-	return rel, err
-}
-
-// Releases lists recent releases (for "pick a specific version").
-func (m *Manager) Releases(ctx context.Context, typ string) ([]Release, error) {
-	src, ok := Lookup(typ)
-	if !ok {
+// Releases lists recent releases from the cache (for "pick a specific
+// version"). No network; the background loop fills it.
+func (m *Manager) Releases(typ string) ([]Release, error) {
+	if _, ok := Lookup(typ); !ok {
 		return nil, fmt.Errorf("%s is not a managed binary type", typ)
 	}
-	rs, err := m.client.list(ctx, src.Repo(), 20)
-	for i := range rs {
-		rs[i].Assets = nil
-	}
-	return rs, err
+	s, _ := m.LatestSnapshot(typ)
+	return s.Releases, snapErr(s)
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────
@@ -215,24 +192,29 @@ const (
 	PhaseDownload = "download"
 	PhaseVerify   = "verify"
 	PhaseProbe    = "probe"
+	PhaseSave     = "save"
 	PhaseSwitch   = "switching"
 	PhaseDone     = "done"
 	PhaseError    = "error"
 )
 
-// JobInfo is the progress of one install/update, polled by the UI.
+// JobInfo is the progress of one download, polled by the UI. Activate
+// says whether the job also switches `current` when it succeeds.
 type JobInfo struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Tag        string    `json:"tag,omitempty"`
-	Version    string    `json:"version,omitempty"`
-	Phase      string    `json:"phase"`
-	Done       int64     `json:"done"`
-	Total      int64     `json:"total"`
-	Message    string    `json:"message,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Tag      string `json:"tag,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Activate bool   `json:"activate"`
+	Phase    string `json:"phase"`
+	Done     int64  `json:"done"`
+	Total    int64  `json:"total"`
+	// BytesPerSec is the average download speed so far.
+	BytesPerSec int64     `json:"bytes_per_sec,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
 }
 
 // Running reports whether the job is still in flight.
@@ -255,9 +237,13 @@ func (m *Manager) InflightCount() int {
 // ErrJobRunning is returned when typ already has an install in flight.
 var ErrJobRunning = errors.New("an install is already running for this type")
 
-// StartInstall launches a background install of tag ("" = latest) and
-// returns immediately. The HTTP handler never blocks on the download.
-func (m *Manager) StartInstall(typ, tag string) (*JobInfo, error) {
+// StartInstall launches a background job for tag ("" = latest) and
+// returns immediately; the HTTP handler never blocks on the download.
+// activate=false is download-only: the version is fetched, verified and
+// stored but `current` stays — except on a first install, where there is
+// nothing to switch away from. On ErrJobRunning the returned job is the
+// one already in flight.
+func (m *Manager) StartInstall(typ, tag string, activate bool) (*JobInfo, error) {
 	if _, ok := Lookup(typ); !ok {
 		return nil, fmt.Errorf("%s is not a managed binary type", typ)
 	}
@@ -266,10 +252,11 @@ func (m *Manager) StartInstall(typ, tag string) (*JobInfo, error) {
 	}
 	m.mu.Lock()
 	if j := m.jobs[typ]; j.Running() {
+		c := *j
 		m.mu.Unlock()
-		return nil, ErrJobRunning
+		return &c, ErrJobRunning
 	}
-	j := &JobInfo{ID: fmt.Sprintf("%s-%d", typ, time.Now().UnixNano()), Type: typ, Tag: tag, Phase: PhaseResolve, StartedAt: time.Now()}
+	j := &JobInfo{ID: fmt.Sprintf("%s-%d", typ, time.Now().UnixNano()), Type: typ, Tag: tag, Activate: activate, Phase: PhaseResolve, StartedAt: time.Now()}
 	m.jobs[typ] = j
 	m.mu.Unlock()
 	go func() {
@@ -282,9 +269,19 @@ func (m *Manager) StartInstall(typ, tag string) (*JobInfo, error) {
 	return &c, nil
 }
 
-// Install runs an install synchronously (tests, CLI). Same flow as the job.
+// Install downloads and activates synchronously (tests, CLI). Same flow
+// as the job.
 func (m *Manager) Install(ctx context.Context, typ, tag string) (*JobInfo, error) {
-	j := &JobInfo{Type: typ, Tag: tag, Phase: PhaseResolve, StartedAt: time.Now()}
+	return m.run(ctx, typ, tag, true)
+}
+
+// Download is the synchronous download-only job (tests, CLI).
+func (m *Manager) Download(ctx context.Context, typ, tag string) (*JobInfo, error) {
+	return m.run(ctx, typ, tag, false)
+}
+
+func (m *Manager) run(ctx context.Context, typ, tag string, activate bool) (*JobInfo, error) {
+	j := &JobInfo{Type: typ, Tag: tag, Activate: activate, Phase: PhaseResolve, StartedAt: time.Now()}
 	err := m.install(ctx, typ, tag, j)
 	m.finish(typ, j, err)
 	return j, err
@@ -329,7 +326,8 @@ func (m *Manager) finish(typ string, j *JobInfo, err error) {
 //     never executed
 //  3. only then `--version` in a sandbox
 //  4. parsed version == tag, else delete; current untouched
-//  5. rename to versions/<ver>, then move current
+//  5. rename to versions/<ver>, then — only when the job activates, or
+//     nothing is current yet — move current
 func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) error {
 	src, _ := Lookup(typ)
 	l := m.typeLock(typ)
@@ -352,9 +350,15 @@ func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) erro
 	}
 	m.setJob(j, func(j *JobInfo) { j.Tag, j.Version = rel.Tag, ver })
 
+	_, _, hasCurrent := m.CurrentPath(typ)
+	activate := j.Activate || !hasCurrent
 	st := m.loadState(typ)
 	if _, have := st.Versions[ver]; have {
 		// Already on disk: no download. Re-activating still re-verifies.
+		if !activate {
+			m.setJob(j, func(j *JobInfo) { j.Message = "already downloaded" })
+			return nil
+		}
 		if m.readCurrent(typ) == ver {
 			if _, _, ok := m.CurrentPath(typ); ok {
 				m.setJob(j, func(j *JobInfo) { j.Message = "already installed and active" })
@@ -389,11 +393,15 @@ func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) erro
 	cleanup := func() { _ = os.RemoveAll(partial) }
 	m.setJob(j, func(j *JobInfo) { j.Phase, j.Total = PhaseDownload, asset.Size })
 	dl := filepath.Join(partial, "download")
+	dlStart := time.Now()
 	got, err := m.client.download(ctx, asset.URL, dl, MaxDownloadBytes, func(done, total int64) {
 		m.setJob(j, func(j *JobInfo) {
 			j.Done = done
 			if total > 0 {
 				j.Total = total
+			}
+			if el := time.Since(dlStart).Seconds(); el > 0.2 {
+				j.BytesPerSec = int64(float64(done) / el)
 			}
 		})
 	})
@@ -440,8 +448,8 @@ func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) erro
 		return fmt.Errorf("%s --version reported %q, expected %s — deleted", src.Binary(), parsed, rel.Tag)
 	}
 
-	// 5. publish, then switch
-	m.setJob(j, func(j *JobInfo) { j.Phase = PhaseSwitch })
+	// 5. publish, then (maybe) switch
+	m.setJob(j, func(j *JobInfo) { j.Phase = PhaseSave })
 	final := filepath.Join(m.versionsDir(typ), ver)
 	_ = os.RemoveAll(final)
 	if err := os.Rename(partial, final); err != nil {
@@ -456,6 +464,12 @@ func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) erro
 	if err := m.saveState(typ, st); err != nil {
 		return err
 	}
+	if !activate {
+		m.setJob(j, func(j *JobInfo) { j.Message = "downloaded " + out })
+		m.pruneLocked(typ)
+		return nil
+	}
+	m.setJob(j, func(j *JobInfo) { j.Phase = PhaseSwitch })
 	if err := writeAtomic(m.currentPath(typ), []byte(ver+"\n")); err != nil {
 		return err
 	}
