@@ -750,7 +750,7 @@ func NewServer() *Server {
 		sampler := &memreport.Sampler{
 			History:  hist,
 			Interval: time.Duration(cfgInt("resource_sample_interval_sec", 15)) * time.Second,
-			Names:    []string{"claude", "codex", "gemini"},
+			Names:    []string{"claude", "codex", "gemini", "omp", "opencode"},
 			TotalAvail: func() (uint64, uint64) {
 				total, _ := sysmem.Total()
 				avail, _ := sysmem.Available()
