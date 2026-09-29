@@ -123,6 +123,11 @@ export function createThreadStore(): ThreadStore {
     return current;
   }
 
+  /* Length of live.text when the last thinking fragment was folded in. Text
+     that streams after it closes the thinking block, the same way the store
+     closes one when it flushes a text segment (store.go flushTextSegmentLocked). */
+  let thinkingTextMark = 0;
+
   function finalize() {
     const current = get(live);
     if (current && (current.text || current.blocks.length > 0)) {
@@ -220,9 +225,22 @@ export function createThreadStore(): ThreadStore {
         break;
       }
 
+      // Claude streams thinking as thinking_delta fragments ("Mas", "ih bocor:",
+      // " da", …), one event each. The store folds consecutive fragments into a
+      // single thinking event (store.go, case event.Thinking), and that folded
+      // form is what a reload renders — so fold them here too, or a live turn
+      // shows one bubble per fragment and only looks right after a reload.
       case "thinking": {
         const lt = ensureLive();
-        lt.blocks = [...lt.blocks, { kind: "thinking", text: ev.data ?? "" }];
+        const chunk = ev.data ?? "";
+        const last = lt.blocks[lt.blocks.length - 1];
+        const textSince = lt.text.slice(thinkingTextMark);
+        if (last && last.kind === "thinking" && textSince.trim() === "") {
+          lt.blocks = [...lt.blocks.slice(0, -1), { kind: "thinking", text: last.text + chunk }];
+        } else {
+          lt.blocks = [...lt.blocks, { kind: "thinking", text: chunk }];
+        }
+        thinkingTextMark = lt.text.length;
         live.set(lt);
         markWorking();
         break;
