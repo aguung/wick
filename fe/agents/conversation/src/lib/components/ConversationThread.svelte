@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TraceNote from "./TraceNote.svelte";
   import { onMount } from "svelte";
   import type { ConversationTurn, LiveTurn, TypingState, TurnEvent, TurnEventPayload } from "../types/agents.js";
   import { renderLive } from "../richRender.js";
@@ -248,14 +249,8 @@
               {#each liveNonTodoBlocks as block, bi (bi)}
                 {#if block.kind === "tool"}
                   <ToolCard block={block as Extract<ThreadBlock, { kind: "tool" }>} onCancel={onCancelRun} {onStopTurn} onDismiss={onDismissTool} {onOpenSubAgent} />
-                {:else if block.kind === "thinking"}
-                  <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 overflow-hidden text-xs px-3 py-2 italic text-black-600 dark:text-black-700">
-                    {(block as Extract<ThreadBlock, { kind: "thinking" }>).text}
-                  </div>
-                {:else if block.kind === "text"}
-                  <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 overflow-hidden text-xs px-3 py-2 text-black-800 dark:text-black-500 whitespace-pre-wrap break-words">
-                    {(block as Extract<ThreadBlock, { kind: "text" }>).text}
-                  </div>
+                {:else if block.kind === "thinking" || block.kind === "text"}
+                  <TraceNote kind={block.kind} text={(block as Extract<ThreadBlock, { kind: "thinking" | "text" }>).text} />
                 {/if}
               {/each}
             </div>

@@ -383,7 +383,29 @@ describe("ThreadMessage - show trace toggle", () => {
     });
   });
 
-  test("after expand, text (narration) event renders between tool cards, upright not italic", async () => {
+  test("trace notes drop edge newlines, and a whitespace-only note renders nothing", async () => {
+    const traceEvents: TurnEvent[] = [
+      { type: "text", text: "\n\nMenarik — clone lokal sudah ada.\n\n" },
+      { type: "tool_use", tool_use_id: "tu-w1", tool_name: "bash", tool_input: '{"cmd":"ls"}' },
+      { type: "tool_result", tool_use_id: "tu-w1", text: "ok", is_error: false },
+      { type: "thinking", text: "\n\n" },
+      { type: "tool_use", tool_use_id: "tu-w2", tool_name: "bash", tool_input: '{"cmd":"pwd"}' },
+      { type: "tool_result", tool_use_id: "tu-w2", text: "ok", is_error: false },
+    ];
+    const loadTrace = vi.fn().mockResolvedValue(traceEvents);
+    const turn = makeTurn({ role: "assistant", has_trace: true });
+
+    const { container } = render(ThreadMessage, { props: { turn, loadTrace } });
+    await fireEvent.click(screen.getByText(/show trace/i).closest("button")!);
+
+    await vi.waitFor(() => {
+      expect(container.querySelector("[data-text-block]")).not.toBeNull();
+    });
+    expect(container.querySelector("[data-text-block]")!.textContent).toBe("Menarik — clone lokal sudah ada.");
+    expect(container.querySelectorAll("[data-thinking-block]")).toHaveLength(0);
+  });
+
+  test("after expand, text (narration) event renders between tool cards, same look as thinking", async () => {
     const traceEvents: TurnEvent[] = [
       { type: "text", text: "checking the config first" },
       { type: "tool_use", tool_use_id: "tu-n1", tool_name: "bash", tool_input: '{"cmd":"ls"}' },
@@ -402,7 +424,9 @@ describe("ThreadMessage - show trace toggle", () => {
     });
     const textBlock = container.querySelector("[data-text-block]")!;
     expect(textBlock).not.toBeNull();
-    expect(textBlock.className).not.toContain("italic");
+    // Narration and thinking are one kind of note to a reader — the provider
+    // decides which one a sentence arrives as — so they share one look.
+    expect(textBlock.className).toContain("italic");
     // Narration precedes the tool card in the DOM — order is preserved.
     const traceRoot = container.querySelector("[data-trace-blocks]")!;
     const children = Array.from(traceRoot.children);
