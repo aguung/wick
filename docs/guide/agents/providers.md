@@ -262,9 +262,80 @@ Both the UI probe and the spawn site walk the same chain. First hit wins:
 | Step | What it checks | Source |
 |---|---|---|
 | 1. **registry** | `Instance.Binary` set in the UI form. Used as-is, no PATH lookup. | [provider.go:62](https://github.com/yogasw/wick/blob/master/internal/agents/provider/provider.go#L62) (`Bin()`) |
+| 1b. **managed** | omp/opencode only: the wick-managed `current` version (see [Managed binaries](#managed-binaries)). Skipped when the type is disabled or nothing is installed. | [managed.go](https://github.com/yogasw/wick/blob/master/internal/agents/provider/managed.go) |
 | 2. **path** | `exec.LookPath(<type>)` against `%PATH%` + `PATHEXT` (Windows). | |
 | 3. **scan** | Known install locations the installer drops but doesn't always wire into PATH. | [scan_unix.go](https://github.com/yogasw/wick/blob/master/internal/agents/provider/scan_unix.go), [scan_windows.go](https://github.com/yogasw/wick/blob/master/internal/agents/provider/scan_windows.go) |
 | 4. **miss** | All three failed. Probe reports `PathFound=false`; spawn falls back to bare type name and fails at `Start()`. | |
+
+## Managed binaries
+
+For `omp` and `opencode`, wick can download, verify and keep the CLI itself — no `curl | sh`, nothing written to PATH, nothing touched that was installed by hand. It lives in [`internal/agents/provider/managedbin`](https://github.com/yogasw/wick/blob/master/internal/agents/provider/managedbin).
+
+```
+<wick data dir>/providers/bin/<type>/
+  versions/<ver>/<binary>   one folder per installed version
+  current                   active version (text file, written atomically)
+  state.json                sha256 + asset + host + install time per version, last job
+```
+
+An instance without a Binary path runs `current`; a Binary path always wins (manual mode). Spawn resolves the path per turn, so a switch applies to the **next** turn while a running process keeps the file it started from.
+
+### Install / update
+
+**Providers → Binaries managed by wick → Download from GitHub / Update to vX / Pick a version → Install.** Nothing downloads unless an admin clicks; the page only flags "update available" (the newest-release answer is cached for an hour, **Check for update** refreshes it). The job runs in the background (the UI polls: download %, verify, running `--version`, switching) and a `reload` waits for it.
+
+The order is fixed:
+
+1. Download to `versions/<ver>.partial` — https to `github.com` / `api.github.com` / `*.githubusercontent.com` only (every redirect is checked), 600 MB cap, URL built from the repo, never from input.
+2. sha256 must equal the asset `digest` in the GitHub API; omp is also checked against the release's `SHA256SUMS.txt`. A mismatch deletes the file — it is **never executed**.
+3. Only then `<bin> --version` runs: 15 s timeout, empty env (no `DATABASE_URL`, tokens or real `HOME`; `HOME`/`TMPDIR`/`XDG_*` point at a scratch dir), cwd = scratch dir, inside the agent memory scope when the memory guard is on.
+4. The parsed version must equal the tag (`v18.4.3` ↔ `omp/18.4.3`, `v1.18.33` ↔ `1.18.33`), else delete.
+5. Rename to `versions/<ver>`, then move `current`.
+
+Installing a version that is already on disk does not download: it re-verifies the sha256 and switches (or is a no-op when it is already active).
+
+### Rollback, removal, retention
+
+- **Use this version** makes an installed version current instantly. The file's sha256 is recomputed and must match `state.json`; a binary changed after install is refused.
+- **Remove** is disabled for the active version and for any version a running process still uses. wick counts those from `/proc/<pid>/exe`, and the card says "2 sessions still on v18.4.2".
+- Retention keeps `current` + `keep_versions` older versions (default 2); older ones go once no process uses them.
+- **Re-check --version** makes wick run the active binary itself and shows the line it read.
+
+Host detection mirrors the official installers and is shown on the card, e.g. `linux-x64 · glibc · AVX2`: `x64`/`arm64`, musl when `/etc/alpine-release` exists or `ldd --version` says musl, AVX2 from `/proc/cpuinfo` (opencode picks the `-baseline` build without it). A host with no matching asset gets a clear error, not a guess. opencode's `opencode-desktop-*` assets are never used.
+
+Config (`providers` in the user config):
+
+```json
+"managed_binaries": { "keep_versions": 2, "omp": { "enabled": true }, "opencode": { "enabled": false } }
+```
+
+A type with no entry is enabled. Disabling a type makes its instances fall back to PATH.
+
+### Adding a provider to the registry
+
+One file in that provider's package plus a register call — the install/update/rollback flow, API and UI stay untouched:
+
+```go
+// internal/agents/provider/<type>/release.go
+func init() { managedbin.Register("<type>", releaseSource{}) }
+
+type releaseSource struct{}
+
+func (releaseSource) Binary() string { return "<binary file name>" }
+func (releaseSource) Repo() string   { return "<owner>/<repo>" }                      // GitHub releases
+func (releaseSource) PickAsset(h managedbin.Host, as []managedbin.Asset) (managedbin.Asset, error) { … } // by h.OS/h.Arch/h.Musl/h.AVX2
+func (releaseSource) Unpack(downloaded, dest string) error { … }                      // rename, or extract the member
+func (releaseSource) CrossCheck(ctx context.Context, f managedbin.Fetcher, rel managedbin.Release, a managedbin.Asset, sum string) error { return nil } // extra checksum file, if any
+func (releaseSource) Contract() managedbin.VersionContract {                         // also used by the status probe
+	return managedbin.VersionContract{Args: []string{"--version"}, Parse: managedbin.FirstSemver}
+}
+```
+
+The release's assets must carry a GitHub `digest` (all assets uploaded since mid-2025 do); wick refuses to install without one. Types that are only probed, not managed (claude/codex/gemini), register just a `VersionContract` via `managedbin.RegisterContract`, so the status probe reads every type's version the same way.
+
+Endpoints (`/tools/agents/api/managed-binaries…`): `GET` list, `GET {type}/releases`, `POST {type}/check`, `POST {type}/install[?tag=]`, `POST {type}/activate?version=`, `POST {type}/remove?version=`, `POST {type}/verify`. Every POST is admin-only.
+
+Integration test: `WICK_E2E_PROVIDER_BIN=1 go test ./internal/agents/provider/managedbin -run E2E -v` downloads the real previous + latest omp and opencode into a temp dir (or `WICK_E2E_PROVIDER_BIN_DIR`), verifies, runs `--version`, then checks a same-version update is a no-op and that rollback needs no download.
 
 ### Why scan exists
 
