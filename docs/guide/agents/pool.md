@@ -180,11 +180,11 @@ Both run **one process per turn** (send mode `queue`, like codex): a message sen
 
 | | `omp` | `opencode` |
 |---|---|---|
-| argv | `--profile <p> -p --mode json --no-title --yolo --cwd <ws> [--append-system-prompt <soul.md>] [--model m] [--resume <sid>]` | `run --format json --thinking --auto [--model m] [--session <sid>]` |
+| argv | `--profile <p> -p --mode json --no-title --auto-approve --cwd <ws> [--append-system-prompt <soul.md>] [--model m] [--resume <sid>]` | `run --format json --thinking --auto [--model m] [--session <sid>]` |
 | Account | the instance's omp profile | `XDG_DATA_HOME=<instance data dir>` |
 | wick system prompt | `<session>/.omp/soul.md` via `--append-system-prompt` | `<session>/.opencode-wick/soul.md` as an extra `instructions` entry — the project's `AGENTS.md` still loads |
 | wick MCP | a static `wick` entry in `~/.omp/profiles/<p>/agent/mcp.json` with `${WICK_MCP_URL}` / `${WICK_MCP_TOKEN}` placeholders; the values come from the spawn env, so the token is never written to disk | `OPENCODE_CONFIG_CONTENT` (`mcp.wick`, type `remote`, `{env:…}` placeholders) |
-| Permissions | `--yolo` | `--auto` + `"permission": "allow"` |
+| Permissions | `--auto-approve` | `--auto` + `"permission": "allow"` |
 | Sharing | — | `"share": "disabled"` is forced, so a user/project config with `share: auto` (or `OPENCODE_AUTO_SHARE`) can never publish a wick session |
 | Resume id | `id` of the first `{"type":"session"}` line | `sessionID` on every line |
 | Skills | `~/.agents/skills` (omp's native user root) + wick's shipped catalog in the system prompt | `~/.claude/skills` / `~/.agents/skills` natively + the catalog |

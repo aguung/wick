@@ -2,7 +2,7 @@
 //
 // One process per turn (SendRespawnQueue), like codex exec:
 //
-//	omp --profile <p> -p --mode json --cwd <ws> --no-title --yolo
+//	omp --profile <p> -p --mode json --cwd <ws> --no-title --auto-approve
 //	    [--append-system-prompt <file>] [--model <m>] [--resume <sid>]
 //	    <prompt on stdin>
 //

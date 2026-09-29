@@ -15,7 +15,7 @@ func TestBuildArgsProfileFirstAndResume(t *testing.T) {
 	ins := provider.Instance{Type: provider.TypeOMP, Name: "work", OMPConfig: &provider.OMPConfig{Profile: "wick-old-name"}}
 	opt := provider.SpawnOptions{Workspace: "/w", ResumeID: "sid-1", ModelID: "openai-codex/gpt-5.2", Instance: &ins}
 	got := buildArgs(ins, opt, "/s/.omp/soul.md", nil)
-	want := []string{"--profile", "wick-old-name", "-p", "--mode", "json", "--no-title", "--yolo",
+	want := []string{"--profile", "wick-old-name", "-p", "--mode", "json", "--no-title", "--auto-approve",
 		"--cwd", "/w", "--append-system-prompt", "/s/.omp/soul.md",
 		"--model", "openai-codex/gpt-5.2", "--resume", "sid-1"}
 	if !slices.Equal(got, want) {

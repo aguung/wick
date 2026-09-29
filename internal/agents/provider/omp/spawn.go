@@ -33,7 +33,7 @@ var homeDir = os.UserHomeDir
 // --profile leads: omp resolves the profile before any other flag.
 func buildArgs(ins provider.Instance, opt provider.SpawnOptions, soulPath string, extra []string) []string {
 	args := provider.OMPProfileArgs(ins)
-	args = append(args, "-p", "--mode", "json", "--no-title", "--yolo")
+	args = append(args, "-p", "--mode", "json", "--no-title", "--auto-approve")
 	if opt.Workspace != "" {
 		args = append(args, "--cwd", opt.Workspace)
 	}
