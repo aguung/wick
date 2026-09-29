@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -109,32 +110,166 @@ func TestForeignMCPNames(t *testing.T) {
 }
 
 func TestResolveModel(t *testing.T) {
+	ctx := context.Background()
 	data := t.TempDir()
 	ins := provider.Instance{Type: provider.TypeOpencode, Name: "oc", OpencodeConfig: &provider.OpencodeConfig{DataDir: data}}
-	// no model, no login → refuse, mention login
-	if _, _, err := resolveModel(ins, provider.SpawnOptions{}, nil); !errors.Is(err, ErrNoModel) || !strings.Contains(err.Error(), "log in first") {
+	var live []provider.ModelSeed
+	var liveErr error
+	orig := listModels
+	listModels = func(context.Context, provider.Instance) ([]provider.ModelSeed, error) { return live, liveErr }
+	t.Cleanup(func() { listModels = orig })
+	login := func(body string) {
+		os.MkdirAll(filepath.Join(data, "opencode"), 0o700)
+		os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(body), 0o600)
+	}
+	// no model, no login → refuse, mention login; free Zen models don't count
+	live = []provider.ModelSeed{{ID: "opencode/big-pickle"}}
+	if _, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); !errors.Is(err, ErrNoModel) || !strings.Contains(err.Error(), "log in first") {
 		t.Fatalf("got %v", err)
 	}
-	// logged in but still no model → refuse (would fall back to hosted)
-	os.MkdirAll(filepath.Join(data, "opencode"), 0o700)
-	os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(`{"openai":{"type":"oauth"}}`), 0o600)
-	if _, _, err := resolveModel(ins, provider.SpawnOptions{}, nil); !errors.Is(err, ErrNoModel) || !strings.Contains(err.Error(), "pick a model") {
+	// logged in to openai → first openai model from the live list
+	login(`{"openai":{"type":"oauth"}}`)
+	live = []provider.ModelSeed{{ID: "opencode/big-pickle"}, {ID: "anthropic/claude-x"}, {ID: "openai/gpt-5.5"}, {ID: "openai/o5"}}
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
+		t.Fatalf("login fallback: %q %v", m, err)
+	}
+	// logged in but the live list has nothing for that provider → refuse
+	live = []provider.ModelSeed{{ID: "opencode/big-pickle"}}
+	if _, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); !errors.Is(err, ErrNoModel) || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("got %v", err)
 	}
+	liveErr = errors.New("boom")
+	if _, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); !errors.Is(err, ErrNoModel) {
+		t.Fatalf("list failure: %v", err)
+	}
+	liveErr = nil
+	// curated Models list → its first entry is the instance default
+	ins.ModelSelect = true
+	ins.Models = []provider.ModelEntry{{ID: " "}, {ID: "openai/o5"}, {ID: "openai/gpt-5.5"}}
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/o5" {
+		t.Fatalf("models default: %q %v", m, err)
+	}
+	// opencode_model beats the curated list
 	ins.OpencodeConfig.Model = "openai/gpt-5.5"
-	if m, _, err := resolveModel(ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
 		t.Fatalf("instance model: %q %v", m, err)
 	}
 	// session pin wins over the instance default
-	if m, _, _ := resolveModel(ins, provider.SpawnOptions{ModelID: "openai/o5"}, nil); m != "openai/o5" {
+	if m, _, _ := resolveModel(ctx, ins, provider.SpawnOptions{ModelID: "openai/o5"}, nil); m != "openai/o5" {
 		t.Fatalf("pin: %q", m)
 	}
-	// hosted opencode/… refused unless allowed
-	if _, _, err := resolveModel(ins, provider.SpawnOptions{}, []string{"--model", "opencode/big-pickle"}); err == nil || !strings.Contains(err.Error(), "opencode_allow_hosted") {
-		t.Fatalf("hosted allowed by default: %v", err)
+	// hosted opencode/… and opencode-go/… refused unless allowed
+	for _, h := range []string{"opencode/big-pickle", "opencode-go/kimi"} {
+		if _, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, []string{"--model", h}); err == nil || !strings.Contains(err.Error(), "opencode_allow_hosted") {
+			t.Fatalf("%s allowed by default: %v", h, err)
+		}
+	}
+	if _, _, err := resolveModel(ctx, ins, provider.SpawnOptions{ModelID: "opencode/big-pickle"}, nil); err == nil {
+		t.Fatal("hosted pin allowed by default")
 	}
 	ins.OpencodeConfig.AllowHosted = true
-	if m, inArgs, err := resolveModel(ins, provider.SpawnOptions{}, []string{"--model=opencode/big-pickle"}); err != nil || m != "opencode/big-pickle" || !inArgs {
+	if m, inArgs, err := resolveModel(ctx, ins, provider.SpawnOptions{}, []string{"--model=opencode/big-pickle"}); err != nil || m != "opencode/big-pickle" || !inArgs {
 		t.Fatalf("hosted opt-in: %q %v %v", m, inArgs, err)
+	}
+}
+
+func TestResolveModelZenLogin(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	ins := provider.Instance{Type: provider.TypeOpencode, Name: "oc", OpencodeConfig: &provider.OpencodeConfig{DataDir: data}}
+	orig := listModels
+	live := []provider.ModelSeed{{ID: "opencode/big-pickle"}, {ID: "opencode-go/kimi"}, {ID: "openai/gpt-5.5"}}
+	listModels = func(context.Context, provider.Instance) ([]provider.ModelSeed, error) { return live, nil }
+	t.Cleanup(func() { listModels = orig })
+	// logged in to Zen itself → hosted models allowed without allow_hosted
+	os.MkdirAll(filepath.Join(data, "opencode"), 0o700)
+	os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(`{"opencode":{"type":"api"}}`), 0o600)
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "opencode/big-pickle" {
+		t.Fatalf("zen login: %q %v", m, err)
+	}
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{ModelID: "opencode-go/kimi"}, nil); err != nil || m != "opencode-go/kimi" {
+		t.Fatalf("zen pin: %q %v", m, err)
+	}
+	// Zen + openai → the non-hosted provider wins the fallback
+	os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(`{"opencode":{},"openai":{}}`), 0o600)
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
+		t.Fatalf("mixed login: %q %v", m, err)
+	}
+	// OPENCODE_API_KEY in the instance env counts as a Zen login
+	os.Remove(filepath.Join(data, "opencode", "auth.json"))
+	ins.Env = []string{"OPENCODE_API_KEY=k"}
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "opencode/big-pickle" {
+		t.Fatalf("env key: %q %v", m, err)
+	}
+}
+
+// Live mode: the resolved --model is the live pin when the CLI still lists
+// it, else the first model the live filter matches — ahead of opencode_model.
+func TestResolveModelLiveDefault(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "opencode")
+	os.WriteFile(bin, []byte("#!/bin/sh\nprintf 'opencode/big-pickle\\nopenai/gpt-5.5-mini\\nopenai/gpt-5.5\\nanthropic/claude-sonnet\\n'\n"), 0o755)
+	data := t.TempDir()
+	os.MkdirAll(filepath.Join(data, "opencode"), 0o700)
+	os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(`{"openai":{"type":"oauth"}}`), 0o600)
+	ins := provider.Instance{
+		Type: provider.TypeOpencode, Name: "oc-live-" + filepath.Base(dir), Binary: bin,
+		LiveModels: true, LiveModelFilter: "gpt|claude !mini",
+		OpencodeConfig: &provider.OpencodeConfig{DataDir: data, Model: "openai/o5"},
+	}
+	ctx := context.Background()
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
+		t.Fatalf("first live match: %q %v", m, err)
+	}
+	ins.LiveModelDefault = "anthropic/claude-sonnet"
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "anthropic/claude-sonnet" {
+		t.Fatalf("live pin: %q %v", m, err)
+	}
+	// a session pin still wins
+	if m, _, _ := resolveModel(ctx, ins, provider.SpawnOptions{ModelID: "openai/o6"}, nil); m != "openai/o6" {
+		t.Fatalf("session pin: %q", m)
+	}
+	// nothing matches → falls back to opencode_model
+	ins.LiveModelFilter, ins.LiveModelDefault = "nomatch", ""
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/o5" {
+		t.Fatalf("fallback: %q %v", m, err)
+	}
+}
+
+func TestUseServerAndSkillsEnv(t *testing.T) {
+	ins := provider.Instance{Type: provider.TypeOpencode, Name: "oc"}
+	if !useServer(ins, []string{"--model", "a/b"}, []string{"--model=a/b"}) {
+		t.Fatal("server mode must be the default")
+	}
+	if useServer(ins, []string{"--agent", "plan"}) {
+		t.Fatal("a run-only flag must fall back to opencode run")
+	}
+	ins.OpencodeConfig = &provider.OpencodeConfig{DataDir: t.TempDir()}
+	ins.RunPerTurn = true
+	if useServer(ins) {
+		t.Fatal("RunPerTurn must use opencode run")
+	}
+	if serverIdle(ins) != DefaultServerIdle {
+		t.Fatal("idle default")
+	}
+	has := func(env []string, kv string) bool {
+		for _, e := range env {
+			if e == kv {
+				return true
+			}
+		}
+		return false
+	}
+	env, err := spawnEnv(ins, "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(env, "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1") || !has(env, "OPENCODE_DISABLE_EXTERNAL_SKILLS=1") {
+		t.Fatalf("external skills not disabled by default: %v", env)
+	}
+	ins.LoadExternalSkills = true
+	env, _ = spawnEnv(ins, "", "", "", nil)
+	if has(env, "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1") {
+		t.Fatal("LoadExternalSkills still disables the scan")
 	}
 }

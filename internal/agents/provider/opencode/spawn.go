@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -81,6 +83,12 @@ func spawnEnv(ins provider.Instance, soulPath, endpoint, token string, disable [
 	// inline layer is the only addition allowed, and OPENCODE_AUTO_SHARE
 	// must not publish anything.
 	env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=false")
+	// Skip the external skill scans (~/.claude/skills, ~/.agents): the
+	// host's skills are not the instance's, and the scan cost every spawn
+	// ~70 files plus "duplicate skill name" noise.
+	if !ins.LoadExternalSkills {
+		env = append(env, "OPENCODE_DISABLE_EXTERNAL_SKILLS=1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1")
+	}
 	env = append(env, configEnvVar+"="+configContent(mcp != nil, soulPath, extras, disable))
 	return append(env, mcp...), nil
 }
@@ -101,11 +109,17 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if opt.Instance != nil {
 		ins = *opt.Instance
 	}
-	model, inArgs, err := resolveModel(ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
+	model, inArgs, err := resolveModel(ctx, ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
 	if err != nil {
 		return nil, err
 	}
 	home, _ := os.UserHomeDir()
+	if useServer(ins, s.ExtraArgs, opt.ExtraArgs) {
+		return s.spawnServe(ctx, opt, ins, bin, model, foreignMCPNames(opt.Workspace, home))
+	}
+	// Server mode off (or a run-only flag): this turn is a plain run, and
+	// a server the instance no longer uses stops once it has no turns.
+	servers.retire(ins.Name)
 	added, err := spawnEnv(ins, writeSoul(opt), mcpEndpointFromEnv(), s.MCPToken, foreignMCPNames(opt.Workspace, home))
 	if err != nil {
 		return nil, fmt.Errorf("opencode instance %s: %w", ins.Name, err)
@@ -149,4 +163,90 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 
 	log.Info().Int("pid", cmd.Process.Pid).Str("scope", scopeUnit).Msg("agents.spawn: started (opencode)")
 	return &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}, nil
+}
+
+// useServer reports whether a turn goes to the shared `opencode serve`
+// (server.go) instead of its own `opencode run`. The run path stays for an
+// instance that opts out, and for extra args other than --model: those are
+// `run` flags the server API has no equivalent for.
+func useServer(ins provider.Instance, extra ...[]string) bool {
+	if ins.RunPerTurn {
+		return false
+	}
+	for _, args := range extra {
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			switch {
+			case a == "--model" || a == "-m":
+				i++
+			case strings.HasPrefix(a, "--model="):
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// serverIdle is the instance's idle window; never zero (see manager.reap).
+func serverIdle(ins provider.Instance) time.Duration {
+	if ins.ServerIdleMinutes > 0 {
+		return time.Duration(ins.ServerIdleMinutes) * time.Minute
+	}
+	return DefaultServerIdle
+}
+
+// spawnServe runs one turn on the instance's shared server, starting it
+// when needed. The server env is the run env minus the per-session parts:
+// the wick MCP token (registered per turn, see remote.go) and the soul
+// (sent as the prompt's system text).
+func (s Spawner) spawnServe(ctx context.Context, opt provider.SpawnOptions, ins provider.Instance, bin, model string, disable []string) (provider.Process, error) {
+	added, err := spawnEnv(ins, "", "", "", disable)
+	if err != nil {
+		return nil, fmt.Errorf("opencode instance %s: %w", ins.Name, err)
+	}
+	dataDir, _ := provider.OpencodeDataDir(ins)
+	spec := serverSpec{
+		instance: ins.Name,
+		bin:      bin,
+		env:      append(append(envscrub.ScrubOSEnv(), opt.ExtraEnv...), added...),
+		dir:      dataDir,
+		idle:     serverIdle(ins),
+		turns:    DefaultServerTurns,
+		wrap: func(b string, a []string) (string, []string, string) {
+			return opt.MemGuard.Wrap(b, a, "opencode-serve", opt.SpawnSeq)
+		},
+	}
+	l, err := servers.acquire(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("opencode instance %s: server: %w", ins.Name, err)
+	}
+
+	t := turnSpec{
+		resumeID: opt.ResumeID,
+		title:    "wick " + opt.SessionID,
+		model:    model,
+		system:   skillsync.AppendBuiltinCatalog(opt.Preset),
+		prompt:   opt.InitialMessage,
+	}
+	if endpoint := mcpEndpointFromEnv(); endpoint != "" && s.MCPToken != "" {
+		t.mcpName, t.mcpURL, t.mcpToken = sessionMCPName(opt.SessionID), endpoint, s.MCPToken
+	}
+	argv := []string{"serve-turn", "--server", l.s.h.url, "--model", model}
+	if opt.ResumeID != "" {
+		argv = append(argv, "--session", opt.ResumeID)
+	}
+	addedEnv := provider.MaskSpawnEnv(append(append([]string{}, opt.ExtraEnv...), added...))
+	p := newRemoteProcess(addedEnv, bin, argv, opt.Workspace)
+	// The turn is bounded by Kill (abort), not by ctx: ctx is the spawn
+	// call's, and a turn outlives it the way a run subprocess does.
+	rctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	log.Info().Str("instance", ins.Name).Int("server_pid", l.s.h.pid).Str("resume", opt.ResumeID).
+		Str("cwd", opt.Workspace).Msg("agents.spawn: starting (opencode serve turn)")
+	go func() {
+		defer cancel()
+		p.run(rctx, l, t)
+	}()
+	return p, nil
 }

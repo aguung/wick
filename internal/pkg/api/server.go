@@ -40,6 +40,7 @@ import (
 	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/provider/managedbin"
 	"github.com/yogasw/wick/internal/agents/provider/oomscore"
+	opencodeprovider "github.com/yogasw/wick/internal/agents/provider/opencode"
 	wickprovider "github.com/yogasw/wick/internal/agents/provider/wick"
 	"github.com/yogasw/wick/internal/agents/providersync"
 	agentregistry "github.com/yogasw/wick/internal/agents/registry"
@@ -3403,6 +3404,9 @@ func (s *Server) Run(ctx context.Context, port int) error {
 		if s.agentsPool != nil {
 			s.agentsPool.Stop()
 		}
+		// After the pool: its turns are gone, so the shared opencode
+		// servers have no one left to serve and must not outlive wick.
+		opencodeprovider.ShutdownServers()
 		if s.pluginReloader != nil {
 			s.pluginReloader.Stop()
 		}
@@ -3644,6 +3648,9 @@ func (s *Server) drainForUpgrade(logger *zerolog.Logger, httpSrv *http.Server, b
 	if s.wfMgr != nil {
 		s.wfMgr.Stop()
 	}
+	// Every turn has drained by now; the shared opencode servers go with
+	// this process rather than lingering beside its successor.
+	opencodeprovider.ShutdownServers()
 	if s.pluginReloader != nil {
 		s.pluginReloader.Stop()
 	}

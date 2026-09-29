@@ -1,14 +1,19 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/rs/zerolog/log"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
 )
@@ -134,12 +139,43 @@ func foreignMCPNames(workspace, home string) []string {
 // ErrNoModel is returned when a spawn has no model to pass.
 var ErrNoModel = errors.New("no model")
 
-// resolveModel picks the --model value: a session pin, then --model/-m in
-// the instance args, then the instance's opencode_model. opencode without
-// --model silently uses its hosted default (opencode/…), sending the
-// conversation to opencode's servers, so an empty result refuses the spawn.
-// "opencode/…" (hosted) models additionally need AllowHosted.
-func resolveModel(ins provider.Instance, opt provider.SpawnOptions, args []string) (model string, fromArgs bool, err error) {
+// hostedProviders are opencode's own hosted services (Zen and its Go
+// subscription, core/src/plugin/provider/opencode.ts): a model under one
+// of these sends the conversation to opencode's servers.
+var hostedProviders = []string{"opencode", "opencode-go"}
+
+func isHosted(model string) bool {
+	return slices.Contains(hostedProviders, modelProvider(model))
+}
+
+func modelProvider(model string) string {
+	p, _, _ := strings.Cut(model, "/")
+	return p
+}
+
+// listModels asks the instance's binary for its live model list; swapped
+// in tests. Spawn-time default only — bounded so a hung CLI can't stall it.
+var listModels = func(ctx context.Context, ins provider.Instance) ([]provider.ModelSeed, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return provider.ListCLIModels(ctx, ins)
+}
+
+// resolveModel picks the --model value, first hit wins:
+//
+//  1. --model/-m in the instance or spawn args (operator-set, like claude)
+//  2. the session pin (composer model picker)
+//  3. the instance default: opencode_model, else the first curated entry
+//     of the Detail "Models" list (the composer's picker list)
+//  4. the first model `opencode models` reports for a provider the
+//     instance is logged in to (non-hosted providers first)
+//
+// opencode without --model silently uses its hosted default (opencode/…),
+// sending the conversation to opencode's servers, so an empty result
+// refuses the spawn. Hosted models (opencode/…, opencode-go/…) need
+// opencode_allow_hosted — unless the instance logged in to opencode's own
+// service, which is the user choosing it on purpose.
+func resolveModel(ctx context.Context, ins provider.Instance, opt provider.SpawnOptions, args []string) (model string, fromArgs bool, err error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -152,33 +188,119 @@ func resolveModel(ins provider.Instance, opt provider.SpawnOptions, args []strin
 	if !fromArgs {
 		if m := provider.ModelArgs(opt, nil); len(m) == 2 {
 			model = m[1]
-		} else if ins.OpencodeConfig != nil {
-			model = strings.TrimSpace(ins.OpencodeConfig.Model)
+		} else {
+			model = instanceDefault(ctx, ins)
 		}
 	}
-	allowHosted := ins.OpencodeConfig != nil && ins.OpencodeConfig.AllowHosted
+	logins := loggedInProviders(ins)
+	hostedOK := (ins.OpencodeConfig != nil && ins.OpencodeConfig.AllowHosted) || loggedInHosted(ins, logins)
+	if model == "" && len(logins) > 0 {
+		model = firstLoggedInModel(ctx, ins, logins, hostedOK)
+	}
 	if model == "" {
-		if !hasCredentials(ins) {
+		if len(logins) == 0 {
 			return "", false, fmt.Errorf("opencode instance %s: log in first (Providers → Connection) or pick a model (opencode_model) — refusing to fall back to opencode's hosted default: %w", ins.Name, ErrNoModel)
 		}
-		return "", false, fmt.Errorf("opencode instance %s: pick a model (opencode_model, e.g. openai/gpt-5.5) — without one opencode silently uses its hosted default: %w", ins.Name, ErrNoModel)
+		return "", false, fmt.Errorf("opencode instance %s: no model found for the logged-in provider (%s); pick one (opencode_model, e.g. openai/gpt-5.5) — without one opencode silently uses its hosted default: %w", ins.Name, strings.Join(logins, ", "), ErrNoModel)
 	}
-	if strings.HasPrefix(model, "opencode/") && !allowHosted {
+	if isHosted(model) && !hostedOK {
 		return "", false, fmt.Errorf("opencode instance %s: model %s is opencode's hosted service (conversation goes to opencode's servers); enable opencode_allow_hosted on the instance to allow it", ins.Name, model)
 	}
 	return model, fromArgs, nil
 }
 
-// hasCredentials reports whether the instance's auth.json holds any login.
-func hasCredentials(ins provider.Instance) bool {
-	p, err := provider.OpencodeAuthFile(ins)
-	if err != nil {
-		return false
+// instanceDefault is the instance's own default model. In live mode
+// (Model selection → Live from CLI) that is the pinned live default when the
+// CLI still lists it, else the first model the live filter matches
+// (provider.LiveDefaultModel, cached ~10 min). Otherwise, or when live
+// yields nothing: opencode_model, else the first curated Models entry. The
+// per-type seed list is not a choice anyone made, so it never counts.
+func instanceDefault(ctx context.Context, ins provider.Instance) string {
+	if provider.LiveModelsEnabled(ins) {
+		lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		m := provider.LiveDefaultModel(lctx, ins)
+		cancel()
+		if m != "" {
+			return m
+		}
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return false
+	if ins.OpencodeConfig != nil {
+		if m := strings.TrimSpace(ins.OpencodeConfig.Model); m != "" {
+			return m
+		}
 	}
-	var m map[string]json.RawMessage
-	return json.Unmarshal(b, &m) == nil && len(m) > 0
+	if ins.ModelSelect {
+		for _, m := range ins.Models {
+			if id := strings.TrimSpace(m.ID); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// firstLoggedInModel returns the first live model under a provider the
+// instance holds a login for. Non-hosted providers win over hosted ones;
+// hosted ones only count when hostedOK. Without a login filter, a keyless
+// opencode still lists Zen's free models, which nobody chose.
+func firstLoggedInModel(ctx context.Context, ins provider.Instance, logins []string, hostedOK bool) string {
+	seeds, err := listModels(ctx, ins)
+	if err != nil {
+		log.Warn().Err(err).Str("instance", ins.Name).Msg("agents.spawn: opencode models failed; no default model")
+		return ""
+	}
+	var hosted string
+	for _, s := range seeds {
+		p := modelProvider(s.ID)
+		if !slices.Contains(logins, p) {
+			continue
+		}
+		if !isHosted(s.ID) {
+			return s.ID
+		}
+		if hostedOK && hosted == "" {
+			hosted = s.ID
+		}
+	}
+	return hosted
+}
+
+// loggedInHosted reports whether the instance logged in to opencode's own
+// service: an auth.json entry for it, or OPENCODE_API_KEY in its env.
+func loggedInHosted(ins provider.Instance, logins []string) bool {
+	for _, p := range hostedProviders {
+		if slices.Contains(logins, p) {
+			return true
+		}
+	}
+	for _, e := range ins.Env {
+		if k, v, ok := strings.Cut(e, "="); ok && k == "OPENCODE_API_KEY" && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// loggedInProviders lists the provider ids the instance's auth.json holds
+// a login for, sorted. An OPENCODE_API_KEY in the instance env counts as
+// an "opencode" login (opencode.ts reads it the same way).
+func loggedInProviders(ins provider.Instance) []string {
+	var out []string
+	if p, err := provider.OpencodeAuthFile(ins); err == nil {
+		if b, err := os.ReadFile(p); err == nil {
+			var m map[string]json.RawMessage
+			if json.Unmarshal(b, &m) == nil {
+				for k := range m {
+					out = append(out, k)
+				}
+			}
+		}
+	}
+	for _, e := range ins.Env {
+		if k, v, ok := strings.Cut(e, "="); ok && k == "OPENCODE_API_KEY" && strings.TrimSpace(v) != "" && !slices.Contains(out, "opencode") {
+			out = append(out, "opencode")
+		}
+	}
+	sort.Strings(out)
+	return out
 }
