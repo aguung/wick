@@ -92,7 +92,7 @@ func apiComposerUsage(c *tool.Ctx) {
 		Provider:  string(ins.Type) + "/" + ins.Name,
 		CanManage: canManageProvider(c, ins.Type, ins.Name),
 	}
-	acc := logintty.ReadAccount(ins.Type, ins.Env)
+	acc := logintty.ReadAccount(ins.Type, provider.AccountEnv(ins))
 	res.Account = &composerUsageAccount{
 		Connected:  acc.Connected,
 		Email:      acc.Email,
@@ -113,9 +113,9 @@ func apiComposerUsage(c *tool.Ctx) {
 
 	ctx, cancel := context.WithTimeout(c.Context(), connectionsUsageTimeout)
 	defer cancel()
-	v := usageProbes.getWait(ctx, logintty.UsageIdentity(ins.Type, ins.Env), func() ([]logintty.UsageWindow, error) {
-		return logintty.ReadUsage(ins.Type, ins.Env)
-	}, logintty.CredentialsChangedAt(ins.Type, ins.Env))
+	v := usageProbes.getWait(ctx, logintty.UsageIdentity(ins.Type, provider.AccountEnv(ins)), func() ([]logintty.UsageWindow, error) {
+		return logintty.ReadUsage(ins.Type, provider.AccountEnv(ins))
+	}, logintty.CredentialsChangedAt(ins.Type, provider.AccountEnv(ins)))
 
 	now := time.Now()
 	res.Checking = v.Checking
@@ -194,8 +194,8 @@ func apiComposerUsageRefresh(c *tool.Ctx) {
 		c.JSON(http.StatusOK, ComposerUsageRefreshResponse{Supported: false})
 		return
 	}
-	accepted, wait := usageProbes.forceRefresh(logintty.UsageIdentity(ins.Type, ins.Env), func() ([]logintty.UsageWindow, error) {
-		return logintty.ReadUsage(ins.Type, ins.Env)
+	accepted, wait := usageProbes.forceRefresh(logintty.UsageIdentity(ins.Type, provider.AccountEnv(ins)), func() ([]logintty.UsageWindow, error) {
+		return logintty.ReadUsage(ins.Type, provider.AccountEnv(ins))
 	})
 	res := ComposerUsageRefreshResponse{Supported: true, Accepted: accepted, Checking: accepted}
 	if !accepted {

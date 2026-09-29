@@ -87,7 +87,7 @@ type UsageWindow struct {
 // types that would only answer ErrUsageUnsupported — no cache entry, no
 // pacing slot, no goroutine for a verdict that is a build constant.
 func SupportsUsage(t provider.Type) bool {
-	return t == provider.TypeClaude || t == provider.TypeCodex
+	return t == provider.TypeClaude || t == provider.TypeCodex || t == provider.TypeOMP
 }
 
 // ReadUsage fetches the current rate-limit utilization for one
@@ -102,6 +102,10 @@ func ReadUsage(t provider.Type, env []string) ([]UsageWindow, error) {
 		// rollout, so this is a file read that cannot fail upstream or
 		// be rate-limited. See codex_usage.go.
 		return readCodexUsage(env)
+	case provider.TypeOMP:
+		// A network probe run by omp itself (`omp usage --json`); the
+		// caller's per-account cache + pace gate bounds how often.
+		return readOMPUsage(env)
 	default:
 		return nil, ErrUsageUnsupported
 	}
@@ -119,6 +123,10 @@ func CredentialsChangedAt(t provider.Type, env []string) time.Time {
 	switch t {
 	case provider.TypeClaude:
 		return claudeCredentialsChangedAt(env)
+	case provider.TypeOMP:
+		return ompCredentialsChangedAt(env)
+	case provider.TypeOpencode:
+		return opencodeCredentialsChangedAt(env)
 	default:
 		return time.Time{}
 	}

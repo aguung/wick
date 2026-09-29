@@ -159,3 +159,55 @@ func binaryOnPath(bin string) bool {
 	_, err := safeexec.LookPath(bin)
 	return err == nil
 }
+
+// accountEnvKeys are the env keys that select an account store. An
+// instance's own Env must not carry them for omp/opencode: the store is
+// pinned by wick, and a stray value would split login from spawn.
+var accountEnvKeys = map[Type][]string{
+	TypeOMP:      {"OMP_PROFILE", "PI_PROFILE"},
+	TypeOpencode: {"XDG_DATA_HOME"},
+}
+
+// AccountEnv is ins.Env with the instance's account store made explicit:
+// OMP_PROFILE=<profile> for omp (omp's own profile env, utils/src/dirs.ts)
+// and XDG_DATA_HOME=<dir> for opencode. Any conflicting key in ins.Env is
+// dropped so the value is unique — readers that take the first match and
+// exec (which takes the last) agree. Other types get ins.Env unchanged.
+//
+// This is what the login TTY, the account probe and the usage probe hand
+// around, so they resolve the same store the spawner does.
+func AccountEnv(ins Instance) []string {
+	keys := accountEnvKeys[ins.Type]
+	if len(keys) == 0 {
+		return ins.Env
+	}
+	out := make([]string, 0, len(ins.Env)+1)
+	for _, kv := range ins.Env {
+		drop := false
+		for _, k := range keys {
+			if strings.HasPrefix(kv, k+"=") {
+				drop = true
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	switch ins.Type {
+	case TypeOMP:
+		out = append(out, "OMP_PROFILE="+OMPProfile(ins))
+	case TypeOpencode:
+		if d, err := OpencodeDataDir(ins); err == nil {
+			out = append(out, "XDG_DATA_HOME="+d)
+		}
+	}
+	if b := strings.TrimSpace(ins.Binary); b != "" {
+		out = append(out, AccountBinEnvKey+"="+b)
+	}
+	return out
+}
+
+// AccountBinEnvKey carries the instance's configured binary through
+// AccountEnv, for probes that must exec the CLI (omp usage). wick-internal:
+// never read by the CLIs themselves.
+const AccountBinEnvKey = "WICK_ACCOUNT_BIN"

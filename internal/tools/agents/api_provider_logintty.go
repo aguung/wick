@@ -39,6 +39,15 @@ type LoginTTYStatusResponse struct {
 	DefaultTTLS int                 `json:"default_ttl_s"`
 	ExtendS     int                 `json:"extend_s"`
 	MaxTTLS     int                 `json:"max_ttl_s"`
+	// LoginChoices is the picker shown before Login for types whose login
+	// needs a provider choice (omp, opencode). Empty = no picker.
+	LoginChoices []logintty.LoginChoice `json:"login_choices,omitempty"`
+	// LoginNote is a caveat shown beside the picker (opencode: Claude
+	// subscriptions unsupported).
+	LoginNote string `json:"login_note,omitempty"`
+	// AccountStore names where this instance's single account lives (omp
+	// profile / opencode data dir), so the card can show it.
+	AccountStore string `json:"account_store,omitempty"`
 }
 
 func loginTTYSessionDTO(s *logintty.Session) *LoginTTYSessionDTO {
@@ -83,12 +92,15 @@ func apiProviderLoginTTYStatus(c *tool.Ctx) {
 	}
 	_, supported := logintty.LoginCommand(ins.Type, nil)
 	c.JSON(http.StatusOK, LoginTTYStatusResponse{
-		Supported:   supported,
-		Account:     logintty.ReadAccount(ins.Type, ins.Env),
-		Session:     loginTTYSessionDTO(loginTTY.Get(ins.Type, ins.Name)),
-		DefaultTTLS: int(logintty.DefaultTTL.Seconds()),
-		ExtendS:     int(logintty.ExtendStep.Seconds()),
-		MaxTTLS:     int(logintty.MaxTTL.Seconds()),
+		Supported:    supported,
+		Account:      logintty.ReadAccount(ins.Type, provider.AccountEnv(ins)),
+		Session:      loginTTYSessionDTO(loginTTY.Get(ins.Type, ins.Name)),
+		DefaultTTLS:  int(logintty.DefaultTTL.Seconds()),
+		ExtendS:      int(logintty.ExtendStep.Seconds()),
+		MaxTTLS:      int(logintty.MaxTTL.Seconds()),
+		LoginChoices: logintty.LoginChoices(ins.Type),
+		LoginNote:    logintty.LoginNote(ins.Type),
+		AccountStore: accountStoreLabel(ins),
 	})
 }
 
@@ -119,9 +131,9 @@ func apiProviderLoginTTYUsage(c *tool.Ctx) {
 	ctx, cancel := context.WithTimeout(c.Context(), connectionsUsageTimeout)
 	defer cancel()
 
-	v := usageProbes.getWait(ctx, logintty.UsageIdentity(ins.Type, ins.Env), func() ([]logintty.UsageWindow, error) {
-		return logintty.ReadUsage(ins.Type, ins.Env)
-	}, logintty.CredentialsChangedAt(ins.Type, ins.Env))
+	v := usageProbes.getWait(ctx, logintty.UsageIdentity(ins.Type, provider.AccountEnv(ins)), func() ([]logintty.UsageWindow, error) {
+		return logintty.ReadUsage(ins.Type, provider.AccountEnv(ins))
+	}, logintty.CredentialsChangedAt(ins.Type, provider.AccountEnv(ins)))
 	body := map[string]any{"supported": true, "windows": []logintty.UsageWindow{}, "checking": v.Checking}
 	// Same provenance the list carries: this panel is looking at a
 	// SHARED, cached reading, so it says how old it is.
@@ -183,8 +195,8 @@ func apiProviderLoginTTYUsageRefresh(c *tool.Ctx) {
 		c.JSON(http.StatusOK, map[string]any{"supported": false, "accepted": false})
 		return
 	}
-	accepted, wait := usageProbes.forceRefresh(logintty.UsageIdentity(ins.Type, ins.Env), func() ([]logintty.UsageWindow, error) {
-		return logintty.ReadUsage(ins.Type, ins.Env)
+	accepted, wait := usageProbes.forceRefresh(logintty.UsageIdentity(ins.Type, provider.AccountEnv(ins)), func() ([]logintty.UsageWindow, error) {
+		return logintty.ReadUsage(ins.Type, provider.AccountEnv(ins))
 	})
 	body := map[string]any{"supported": true, "accepted": accepted, "checking": accepted}
 	if !accepted {
@@ -211,7 +223,9 @@ func apiProviderLoginTTYStart(c *tool.Ctx) {
 		c.JSON(http.StatusConflict, map[string]string{"error": "binary not found: " + bin})
 		return
 	}
-	s, err := loginTTY.Start(ins, bin)
+	// omp/opencode: which OAuth provider to log in to, picked in the UI.
+	// Validated against an allowlist inside logintty; never raw argv.
+	s, err := loginTTY.StartWith(ins, bin, strings.TrimSpace(c.Query("login_provider")))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -410,4 +424,18 @@ func headerHasToken(h http.Header, key, token string) bool {
 		}
 	}
 	return false
+}
+
+// accountStoreLabel is the omp profile or opencode data dir of ins, "" for
+// types whose account is not pinned by wick.
+func accountStoreLabel(ins provider.Instance) string {
+	switch ins.Type {
+	case provider.TypeOMP:
+		return "profile " + provider.OMPProfile(ins)
+	case provider.TypeOpencode:
+		if d, err := provider.OpencodeDataDir(ins); err == nil {
+			return d
+		}
+	}
+	return ""
 }

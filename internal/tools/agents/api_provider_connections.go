@@ -137,6 +137,9 @@ func collectConnections(ctx context.Context, instances []provider.Instance, p co
 	probeEnv := map[string][]string{}
 	probeType := map[string]provider.Type{}
 	for _, ins := range instances {
+		// The account store for omp/opencode lives in the instance config,
+		// not its Env; AccountEnv makes it visible to every probe below.
+		ins.Env = provider.AccountEnv(ins)
 		if p.configDir(ins.Type, ins.Env) == "" {
 			continue // no on-disk credentials (wick) — nothing to report
 		}
