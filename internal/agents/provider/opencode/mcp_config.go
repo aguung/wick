@@ -29,6 +29,7 @@ func mcpEndpointFromEnv() string {
 }
 
 // configContent is the inline config for one spawn:
+//   - share "disabled": never publish a wick session (docs share.mdx).
 //   - permission "allow": headless — nobody can answer an approval prompt
 //     (docs permissions.mdx, `"permission": "allow"`).
 //   - mcp.wick: remote server (docs mcp-servers.mdx, type "remote" + headers),
@@ -36,7 +37,11 @@ func mcpEndpointFromEnv() string {
 //   - instructions: the wick system prompt file, additive to AGENTS.md
 //     (docs rules.mdx "instructions").
 func configContent(withMCP bool, soulPath string) string {
-	cfg := map[string]any{"permission": "allow"}
+	// share "disabled" makes opencode refuse every share request
+	// (src/share/session.ts:28), which also defeats a user/project config
+	// with share "auto" or OPENCODE_AUTO_SHARE — a wick session, with its
+	// system prompt and tool output, must never be published to opncd.ai.
+	cfg := map[string]any{"permission": "allow", "share": "disabled"}
 	if withMCP {
 		cfg["mcp"] = map[string]any{
 			mcpServerName: map[string]any{

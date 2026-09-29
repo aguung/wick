@@ -222,7 +222,7 @@ func oneShotArgs(ins agentprovider.Instance, prompt string) (env, args []string,
 		if err != nil {
 			return nil, nil, err
 		}
-		env = append(env, `OPENCODE_CONFIG_CONTENT={"permission":"allow"}`)
+		env = append(env, `OPENCODE_CONFIG_CONTENT={"permission":"allow","share":"disabled"}`)
 		args = append([]string{"run", "--auto"}, ins.ExtraArgs...)
 		return env, append(args, "--", prompt), nil
 	}

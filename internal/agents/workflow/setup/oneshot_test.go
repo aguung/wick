@@ -20,6 +20,9 @@ func TestOneShotArgs(t *testing.T) {
 	if err != nil || env[0] != "XDG_DATA_HOME="+dir || !slices.Equal(args, []string{"run", "--auto", "--", "hi"}) {
 		t.Fatalf("opencode %v %q %v", env, args, err)
 	}
+	if env[1] != `OPENCODE_CONFIG_CONTENT={"permission":"allow","share":"disabled"}` {
+		t.Fatalf("share not disabled: %q", env[1])
+	}
 	if _, args, _ := oneShotArgs(agentprovider.Instance{Type: agentprovider.TypeClaude}, "x"); args != nil {
 		t.Fatal("claude must keep its own shape")
 	}

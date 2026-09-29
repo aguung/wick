@@ -44,6 +44,9 @@ func TestSpawnEnvIsolatesDataDir(t *testing.T) {
 	if err := json.Unmarshal([]byte(cfgRaw), &cfg); err != nil {
 		t.Fatal(err)
 	}
+	if cfg["share"] != "disabled" {
+		t.Errorf("share = %v, want disabled", cfg["share"])
+	}
 	if cfg["permission"] != "allow" {
 		t.Errorf("permission = %v", cfg["permission"])
 	}
@@ -60,7 +63,7 @@ func TestSpawnEnvIsolatesDataDir(t *testing.T) {
 }
 
 func TestConfigWithoutMCP(t *testing.T) {
-	if c := configContent(false, ""); strings.Contains(c, "mcp") || !strings.Contains(c, `"permission":"allow"`) {
+	if c := configContent(false, ""); strings.Contains(c, "mcp") || !strings.Contains(c, `"permission":"allow"`) || !strings.Contains(c, `"share":"disabled"`) {
 		t.Fatal(c)
 	}
 }
