@@ -90,9 +90,16 @@ func (p *cliProvider) StructuredCall(ctx context.Context, req provider.Structure
 	if len(p.ins.ExtraArgs) > 0 {
 		args = append(p.ins.ExtraArgs, args...)
 	}
+	extraEnv, oneShot, err := oneShotArgs(p.ins, prompt)
+	if err != nil {
+		return provider.StructuredResult{OK: false, Error: err.Error()}, nil
+	}
+	if oneShot != nil {
+		args = oneShot
+	}
 	start := time.Now()
 	cmd := safeexec.CommandContext(cctx, bin, args...)
-	cmd.Env = envscrub.ScrubOSEnv()
+	cmd.Env = append(envscrub.ScrubOSEnv(), extraEnv...)
 	out, err := cmd.Output()
 	usage := provider.Usage{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
@@ -138,9 +145,16 @@ func (p *cliProvider) AgentCall(ctx context.Context, req provider.AgentRequest) 
 	}
 	args := append([]string(nil), p.ins.ExtraArgs...)
 	args = append(args, "--print", req.Prompt)
+	extraEnv, oneShot, err := oneShotArgs(p.ins, req.Prompt)
+	if err != nil {
+		return provider.AgentResult{}, fmt.Errorf("%s: %w", p.ins.Name, err)
+	}
+	if oneShot != nil {
+		args = oneShot
+	}
 	start := time.Now()
 	cmd := safeexec.CommandContext(ctx, bin, args...)
-	cmd.Env = envscrub.ScrubOSEnv()
+	cmd.Env = append(envscrub.ScrubOSEnv(), extraEnv...)
 	out, err := cmd.Output()
 	usage := provider.Usage{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
@@ -189,4 +203,28 @@ func tryParseJSONObject(s string) (map[string]any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// oneShotArgs is the plain-text one-shot argv for CLIs whose headless
+// surface is not claude's `--print` (nil args = use the claude shape).
+// The account store is pinned the same way the chat spawner pins it, so a
+// workflow node runs under the instance's own login. `--` ends flag
+// parsing in both CLIs, so a prompt starting with "-" stays a prompt.
+func oneShotArgs(ins agentprovider.Instance, prompt string) (env, args []string, err error) {
+	switch ins.Type {
+	case agentprovider.TypeOMP:
+		args = agentprovider.OMPProfileArgs(ins)
+		args = append(args, "-p", "--no-title", "--yolo")
+		args = append(args, ins.ExtraArgs...)
+		return nil, append(args, "--", prompt), nil
+	case agentprovider.TypeOpencode:
+		env, err = agentprovider.OpencodeEnv(ins)
+		if err != nil {
+			return nil, nil, err
+		}
+		env = append(env, `OPENCODE_CONFIG_CONTENT={"permission":"allow"}`)
+		args = append([]string{"run", "--auto"}, ins.ExtraArgs...)
+		return env, append(args, "--", prompt), nil
+	}
+	return nil, nil, nil
 }

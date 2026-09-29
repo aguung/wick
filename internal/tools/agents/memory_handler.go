@@ -163,7 +163,7 @@ type memoryCurrentLimits struct {
 }
 
 // agentProcessNames are the process names reported as tree roots.
-var agentProcessNames = []string{"claude", "codex", "gemini"}
+var agentProcessNames = []string{"claude", "codex", "gemini", "omp", "opencode"}
 
 // resourceHistory is the process-wide sample buffer, installed at boot by
 // SetResourceHistory. nil = history was never started (a test binary, or

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	_ "github.com/yogasw/wick/internal/agents/provider/claude"
 	_ "github.com/yogasw/wick/internal/agents/provider/codex"
 	_ "github.com/yogasw/wick/internal/agents/provider/gemini"
+	_ "github.com/yogasw/wick/internal/agents/provider/omp"
+	_ "github.com/yogasw/wick/internal/agents/provider/opencode"
 	// wick is imported (named) in handler.go for SetSecretDecryptor;
 	// that import also runs its init() catalog/capability registration.
 
@@ -276,6 +279,10 @@ func saveProviderDetail(c *tool.Ctx) {
 	ins.Env = splitLines(c.Form("env"))
 	ins.Disabled = c.Form("disabled") == "on"
 	ins.MaxConcurrent = parseIntForm(c.Form("max_concurrent"))
+	if msg := applyAccountForm(&ins, c); msg != "" {
+		c.Error(http.StatusBadRequest, msg)
+		return
+	}
 	if t == provider.TypeCodex {
 		if ins.CodexConfig == nil {
 			ins.CodexConfig = &provider.CodexConfig{}
@@ -445,6 +452,10 @@ func saveProviderInstance(c *tool.Ctx) {
 		ins.CodexConfig = &provider.CodexConfig{
 			SandboxMode: provider.CodexSandboxMode(strings.TrimSpace(c.Form("sandbox_mode"))),
 		}
+	}
+	if msg := applyAccountForm(&ins, c); msg != "" {
+		c.Error(http.StatusBadRequest, msg)
+		return
 	}
 	applyAIRouterForm(&ins, c)
 	if mode := strings.TrimSpace(c.Form("storage_mode")); mode != "" {
@@ -1659,4 +1670,29 @@ func filenameOf(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// applyAccountForm reads the optional account-store override for omp
+// (`omp_profile`) and opencode (`opencode_data_dir`). Absent/empty = keep
+// what the instance has (or the default for a new one) — the store is
+// pinned at first save and must not silently follow a rename. Returns a
+// user-facing error message, "" when fine.
+func applyAccountForm(ins *provider.Instance, c *tool.Ctx) string {
+	switch ins.Type {
+	case provider.TypeOMP:
+		if p := strings.TrimSpace(c.Form("omp_profile")); p != "" {
+			if !provider.ValidOMPProfile(p) {
+				return "omp profile must match ^[a-z0-9][a-z0-9._-]{0,63}$"
+			}
+			ins.OMPConfig = &provider.OMPConfig{Profile: p}
+		}
+	case provider.TypeOpencode:
+		if d := strings.TrimSpace(c.Form("opencode_data_dir")); d != "" {
+			if !filepath.IsAbs(d) {
+				return "opencode data dir must be an absolute path"
+			}
+			ins.OpencodeConfig = &provider.OpencodeConfig{DataDir: d}
+		}
+	}
+	return ""
 }
