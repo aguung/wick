@@ -1,6 +1,7 @@
 export { default as ConfirmDialog } from "./ConfirmDialog.svelte";
 export { default as ToastHost } from "./ToastHost.svelte";
 export { default as Select } from "./Select.svelte";
+export type { SelectOption } from "./select-types.js";
 export { default as KvList } from "./KvList.svelte";
 export { default as Button } from "./Button.svelte";
 export { default as Toggle } from "./Toggle.svelte";
