@@ -102,8 +102,10 @@ describe("ProviderDetail - rendering", () => {
     render(ProviderDetail, { props: defaultProps });
     await fireEvent.click(await screen.findByText("Configuration"));
     await screen.findByText("send_mode");
-    const selects = document.querySelectorAll("select");
+    // Themed <Select> (common-ui), not a native <select>.
+    const selects = screen.getAllByTestId("wick-select-trigger");
     expect(selects.length).toBeGreaterThan(0);
+    expect(document.querySelectorAll("select").length).toBe(0);
   });
 
   it("renders hooks section", async () => {

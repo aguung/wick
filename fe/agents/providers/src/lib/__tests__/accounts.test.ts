@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { suggestName, defaultOMPProfile, validOMPProfile, accountStorePreview, typeLabel } from "../accounts";
+import { suggestName, defaultOMPProfile, validOMPProfile, accountStorePreview, typeLabel, typeOption } from "../accounts";
 
 describe("accounts helpers", () => {
   it("suggests the first free name", () => {
@@ -22,5 +22,8 @@ describe("accounts helpers", () => {
   it("labels new types", () => {
     expect(typeLabel("omp")).toContain("oh-my-pi");
     expect(typeLabel("unknown")).toBe("unknown");
+    expect(typeOption("omp")).toEqual({ label: "oh-my-pi (omp)", value: "omp", description: "Login ChatGPT atau Claude · 1 profile per instance" });
+    expect(typeOption("gemini").badge).toBe("experimental");
+    expect(typeOption("x")).toEqual({ label: "x", value: "x" });
   });
 });

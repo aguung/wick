@@ -871,14 +871,12 @@
                   {/if}
                 </div>
                 {#if (f.Type === "dropdown" || f.Type === "select") && f.Options}
-                  <select
-                    bind:value={fieldValues[f.Key]}
-                    class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2.5 text-sm font-mono text-black-900 dark:text-white-100 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 transition-colors cursor-pointer"
-                  >
-                    {#each f.Options.split(f.Type === "dropdown" ? "|" : ",").map((o) => o.trim()).filter(Boolean) as opt (opt)}
-                      <option value={opt}>{opt}</option>
-                    {/each}
-                  </select>
+                  <Select
+                    ariaLabel={f.Key}
+                    value={fieldValues[f.Key] ?? ""}
+                    options={f.Options.split(f.Type === "dropdown" ? "|" : ",").map((o) => o.trim()).filter(Boolean)}
+                    onChange={(v) => { fieldValues[f.Key] = v; }}
+                  />
                 {:else if f.IsSecret}
                   <input
                     type="password"

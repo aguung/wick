@@ -5,22 +5,31 @@
 
 export const ACCOUNT_ISOLATED = new Set(["omp", "opencode"]);
 
-export type TypeInfo = { label: string; desc: string };
+export type TypeInfo = { label: string; desc: string; badge?: string };
 
 /* Short description per type for the Add provider picker. Unknown types
    fall back to the bare key. */
 export const TYPE_INFO: Record<string, TypeInfo> = {
-  claude: { label: "Claude Code", desc: "Anthropic's claude CLI" },
-  codex: { label: "Codex", desc: "OpenAI's codex CLI" },
-  gemini: { label: "Gemini CLI", desc: "Google's gemini CLI (experimental)" },
-  omp: { label: "oh-my-pi (omp)", desc: "omp CLI — ChatGPT or Claude login, one omp profile per instance" },
-  opencode: { label: "opencode", desc: "opencode CLI — own data dir per instance; Claude subscriptions not supported" },
+  claude: { label: "Claude Code", desc: "Anthropic claude CLI" },
+  codex: { label: "Codex", desc: "OpenAI codex CLI" },
+  gemini: { label: "Gemini CLI", desc: "Google gemini CLI", badge: "experimental" },
+  omp: { label: "oh-my-pi (omp)", desc: "Login ChatGPT atau Claude · 1 profile per instance" },
+  opencode: { label: "opencode", desc: "Data dir sendiri per instance · Claude subscription tidak didukung" },
   wick: { label: "Wick", desc: "Built-in engine" },
 };
 
 export function typeLabel(t: string): string {
   const i = TYPE_INFO[t];
   return i ? `${i.label} — ${i.desc}` : t;
+}
+
+/* typeOption is the <Select> entry for a provider type: short label on
+   the first line, description underneath, optional badge. Unknown types
+   fall back to the bare key. */
+export function typeOption(t: string): { label: string; value: string; description?: string; badge?: string } {
+  const i = TYPE_INFO[t];
+  if (!i) return { label: t, value: t };
+  return { label: i.label, value: t, description: i.desc, ...(i.badge ? { badge: i.badge } : {}) };
 }
 
 /* suggestName picks `type`, then `type_2`, `type_3`, … — the first not

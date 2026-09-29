@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ConfirmDialog } from "@wick-fe/common-ui";
+  import { ConfirmDialog, Select } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import AIRouterConfig from "$lib/components/AIRouterConfig.svelte";
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
@@ -28,8 +28,7 @@
   import { pickWindows, connectionKey, resetHint, fmtSecsShort } from "$lib/usagerings.js";
   import {
     ACCOUNT_ISOLATED,
-    TYPE_INFO,
-    typeLabel,
+    typeOption,
     suggestName,
     accountStorePreview,
     validOMPProfile,
@@ -1063,11 +1062,13 @@
       <form onsubmit={doCreate} class="space-y-4">
         <div>
           <label for="add-provider-type" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Type <span class="text-red-500">*</span></label>
-          <select id="add-provider-type" bind:value={formType} onchange={onTypeChange} required class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100">
-            {#each data?.SupportedKeys ?? [] as k (k)}
-              <option value={k}>{TYPE_INFO[k] ? typeLabel(k) : k}</option>
-            {/each}
-          </select>
+          <Select
+            id="add-provider-type"
+            name="type"
+            value={formType}
+            options={(data?.SupportedKeys ?? []).map(typeOption)}
+            onChange={(v) => { formType = v; onTypeChange(); }}
+          />
         </div>
         {#if formIsolated}
           <div data-testid="add-account-store" class="rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-3 py-2 space-y-2">

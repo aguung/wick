@@ -202,8 +202,8 @@ describe("ReconnectPanel", () => {
     expect(picker).toBeTruthy();
     expect(screen.getByTestId("panel-account-store").textContent).toContain("wick-omp");
     expect(screen.queryByTestId("panel-login-warning")).toBeNull();
-    const select = picker.querySelector("select") as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: "anthropic" } });
+    await fireEvent.click(picker.querySelector('[data-testid="wick-select-trigger"]') as HTMLElement);
+    await fireEvent.click(document.body.querySelector('[role="option"][data-value="anthropic"]') as HTMLElement);
     expect((await screen.findByTestId("panel-login-warning")).textContent).toContain("policy risk");
     await fireEvent.click(screen.getByText("Reconnect"));
     expect(vi.mocked(logintty.apiLoginTTYStart)).toHaveBeenCalledWith("", "omp", "omp", "anthropic");

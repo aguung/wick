@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Button } from "@wick-fe/common-ui";
+  import { Button, Select } from "@wick-fe/common-ui";
   import { toastError } from "@wick-fe/common-stores";
   import {
     apiLoginTTYStatus,
@@ -262,15 +262,12 @@
       {#if status.supported && (status.loginChoices ?? []).length > 0}
         <div class="space-y-2" data-testid="panel-login-choice">
           <label for="login-choice-{type}-{name}" class="block text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">LOG IN WITH</label>
-          <select
+          <Select
             id="login-choice-{type}-{name}"
-            bind:value={loginChoice}
-            class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100"
-          >
-            {#each status.loginChoices as c (c.id)}
-              <option value={c.id}>{c.label}</option>
-            {/each}
-          </select>
+            value={loginChoice}
+            options={status.loginChoices.map((c) => ({ label: c.label, value: c.id, ...(c.warning ? { badge: "policy" } : {}) }))}
+            onChange={(v) => { loginChoice = v; }}
+          />
           {#if choice?.warning}
             <p data-testid="panel-login-warning" class="rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">{choice.warning}</p>
           {/if}
