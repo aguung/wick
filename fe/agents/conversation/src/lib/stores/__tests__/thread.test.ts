@@ -239,6 +239,63 @@ describe("createThreadStore", () => {
     expect(get(store.live)).not.toBeNull();
   });
 
+  /* Claude streams thinking as fragments; the store folds them into one event
+     and a reload renders that. Live must render the same thing. */
+  test("consecutive thinking fragments fold into one block", () => {
+    for (const d of ["Mas", "ih bocor:", " da", "emon baru (0.1", ".374, pid 1666"]) {
+      store.handleEvent(ev("thinking", { data: d }));
+    }
+    const live = get(store.live)!;
+    expect(live.blocks).toHaveLength(1);
+    expect(live.blocks[0]).toEqual({ kind: "thinking", text: "Masih bocor: daemon baru (0.1.374, pid 1666" });
+  });
+
+  test("a tool call between fragments starts a new thinking block", () => {
+    store.handleEvent(ev("thinking", { data: "before " }));
+    store.handleEvent(ev("thinking", { data: "tool" }));
+    store.handleEvent(ev("tool_use", { tool_use_id: "u1", tool_name: "bash", tool_input: "{}" }));
+    store.handleEvent(ev("tool_result", { tool_use_id: "u1", data: "ok" }));
+    store.handleEvent(ev("thinking", { data: "after " }));
+    store.handleEvent(ev("thinking", { data: "tool" }));
+    const kinds = get(store.live)!.blocks.map((b) => (b.kind === "thinking" ? `thinking:${b.text}` : b.kind));
+    expect(kinds).toEqual(["thinking:before tool", "tool", "thinking:after tool"]);
+  });
+
+  test("text streamed between fragments closes the thinking block, like the store's text flush", () => {
+    store.handleEvent(ev("thinking", { data: "first" }));
+    store.handleEvent(ev("text_delta", { data: "visible answer" }));
+    store.handleEvent(ev("thinking", { data: "second" }));
+    const blocks = get(store.live)!.blocks;
+    expect(blocks).toEqual([
+      { kind: "thinking", text: "first" },
+      { kind: "thinking", text: "second" },
+    ]);
+  });
+
+  test("whitespace-only text between fragments does not split the block", () => {
+    store.handleEvent(ev("thinking", { data: "one" }));
+    store.handleEvent(ev("text_delta", { data: "\n" }));
+    store.handleEvent(ev("thinking", { data: " two" }));
+    expect(get(store.live)!.blocks).toEqual([{ kind: "thinking", text: "one two" }]);
+  });
+
+  test("a finished live turn carries one thinking event per folded block", () => {
+    for (const d of ["a", "b", "c"]) store.handleEvent(ev("thinking", { data: d }));
+    store.handleEvent(ev("text_delta", { data: "answer" }));
+    store.handleEvent(ev("done"));
+    const turns = get(store.turns);
+    const last = turns[turns.length - 1];
+    expect(last.events.filter((e) => e.type === "thinking")).toEqual([{ type: "thinking", text: "abc" }]);
+  });
+
+  test("a new turn does not fold into the previous turn's thinking", () => {
+    store.handleEvent(ev("thinking", { data: "old" }));
+    store.handleEvent(ev("text_delta", { data: "long answer text" }));
+    store.handleEvent(ev("done"));
+    store.handleEvent(ev("thinking", { data: "new" }));
+    expect(get(store.live)!.blocks).toEqual([{ kind: "thinking", text: "new" }]);
+  });
+
   /* ── tool_use ───────────────────────────────────────────────────── */
 
   test("tool_use pushes a tool block to live", () => {
