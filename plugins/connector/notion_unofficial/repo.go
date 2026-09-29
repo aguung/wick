@@ -1331,6 +1331,12 @@ func (cl *v3Client) createPage(parentID, parentTable, title string, extraProps [
 		}),
 		op("block", newID, spaceID, []any{"properties", "title"}, "set", [][]any{{title}}),
 	}
+	// Deliberately the PLAIN set, not propOp's updateBlockPropertyValue. A cell
+	// of a block being created in this same transaction has no CRDT value to
+	// update yet, so the high-level op has nothing to wrap — and this path kept
+	// working throughout the 2026-09-28 outage that killed every edit of an
+	// EXISTING row. Do not "make it consistent" with propOp without testing a
+	// live create; the asymmetry is the server's, not an oversight here.
 	for _, p := range extraProps {
 		ops = append(ops, op("block", newID, spaceID, []any{"properties", p.ID}, "set", p.Value))
 	}
@@ -1429,15 +1435,66 @@ func (cl *v3Client) updatePageProps(pageID string, props map[string]string) (set
 	for name, id := range nameToID {
 		idToName[id] = name
 	}
-	ops := make([]map[string]any, 0, len(sets))
+	ops := propOps(pageID, spaceID, sets)
 	for _, p := range sets {
-		ops = append(ops, op("block", pageID, spaceID, []any{"properties", p.ID}, "set", p.Value))
 		set = append(set, idToName[p.ID])
 	}
 	if err := cl.saveTransactions(spaceID, ops); err != nil {
 		return nil, nil, err
 	}
 	return set, skipped, nil
+}
+
+// propOps builds the saveTransactions operations that write property cells on an
+// EXISTING row. Split out of updatePageProps so the payload can be asserted in a
+// unit test without a network round-trip: a property write must look exactly like
+// the title write setTitle performs (same pointer, same ["properties", <id>] path,
+// same "set" command) and differ only in which property id it targets.
+func propOps(pageID, spaceID string, sets []propSet) []map[string]any {
+	ops := make([]map[string]any, 0, len(sets))
+	for _, p := range sets {
+		ops = append(ops, propOp(pageID, spaceID, p))
+	}
+	return ops
+}
+
+// propOp builds ONE property write in the shape Notion now requires.
+//
+// The plain `set` on ["properties", <id>] that every other write here uses
+// stopped working on 2026-09-28 — rows moved behind a CRDT and the private API
+// answers 400 `Unsaved transactions: Block property value updates must use
+// high-level property operations.` for it. `title` is exempt, which is why
+// set_title and create_page kept working while every schema column died.
+//
+// This shape was captured from Notion's own web client (a real cell edit,
+// recorded off the wire), not guessed: the primitive `set` is not gone, it is
+// WRAPPED — the high-level command owns the cell and carries the old primitive
+// in args.primitiveOp.
+//
+//	{"command":"updateBlockPropertyValue",
+//	 "pointer":{"table":"block","id":<page>,"spaceId":<space>},
+//	 "path":["properties",<propID>],
+//	 "args":{"primitiveOp":{"command":"set","args":<value>}},
+//	 "blockPropertyValueExpectedVersions":{},
+//	 "additionalUpdatedPointers":[<the same pointer>]}
+//
+// blockPropertyValueExpectedVersions is the CRDT's optimistic-concurrency slot;
+// empty means "no expectation", i.e. last write wins, which is what a scripted
+// single-cell edit wants. additionalUpdatedPointers is what the client tells
+// the server to invalidate — the row itself, since that is the record whose
+// cell changed.
+func propOp(pageID, spaceID string, p propSet) map[string]any {
+	ptr := map[string]any{"table": "block", "id": pageID, "spaceId": spaceID}
+	return map[string]any{
+		"command": "updateBlockPropertyValue",
+		"pointer": ptr,
+		"path":    []any{"properties", p.ID},
+		"args": map[string]any{
+			"primitiveOp": map[string]any{"command": "set", "args": p.Value},
+		},
+		"blockPropertyValueExpectedVersions": map[string]any{},
+		"additionalUpdatedPointers":          []any{ptr},
+	}
 }
 
 // createComment adds a page-level comment: it creates a discussion + a comment

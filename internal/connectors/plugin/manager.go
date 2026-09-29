@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 
 	wickenv "github.com/yogasw/wick/internal/pkg/env"
+	"github.com/yogasw/wick/internal/pkg/envscrub"
 	"github.com/yogasw/wick/internal/pkg/upgrade"
 	wickplugin "github.com/yogasw/wick/pkg/plugin"
 	"github.com/yogasw/wick/pkg/safeexec"
@@ -235,8 +236,10 @@ func (m *Manager) spawn(key string) (*entry, error) {
 // native processes and do not require proot or filesystem bind mounts.
 func (m *Manager) pluginCommand(bin string) *exec.Cmd {
 	cmd := safeexec.Command(bin)
+	// Plugins can be third-party binaries; none of them reads the daemon's DSN.
+	cmd.Env = envscrub.ScrubOSEnv()
 	if wickenv.IsTermux() && m.dnsServers != nil {
-		cmd.Env = append(os.Environ(), "WICK_DNS_SERVERS="+m.dnsServers())
+		cmd.Env = append(cmd.Env, "WICK_DNS_SERVERS="+m.dnsServers())
 	}
 	return cmd
 }

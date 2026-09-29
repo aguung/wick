@@ -35,6 +35,7 @@ import (
 	provider "github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/provider/procgroup"
 	"github.com/yogasw/wick/internal/agents/skillsync"
+	"github.com/yogasw/wick/internal/pkg/envscrub"
 	"github.com/yogasw/wick/pkg/safeexec"
 )
 
@@ -226,7 +227,7 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 
 	cmd := safeexec.CommandContext(ctx, execBin, execArgs...)
 	cmd.Dir = opt.Workspace
-	cmd.Env = append(spawnEnv(os.Environ(), opt), routerContrib.Env...)
+	cmd.Env = append(spawnEnv(envscrub.ScrubOSEnv(), opt), routerContrib.Env...)
 	hideConsole(cmd)
 	// Own process group: teardown must reach the descendants this CLI
 	// spawns (MCP servers, tool subprocesses), not just the leader.
