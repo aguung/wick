@@ -153,12 +153,12 @@ describe("TicketPanel — the ticket's description", () => {
 });
 
 describe("TicketPanel — additional info", () => {
-  test("the project's fields show under Additional info", () => {
+  test("the project's fields show under Custom fields", () => {
     renderPanel({
       ticket: { id: "T-1", title: "Fix retries", status: "open", fields: { app_code: "locot-uv3" } },
       fields: [{ key: "app_code", label: "App Code", type: "text" }],
     });
-    expect(screen.getByTestId("ticket-fields").textContent).toContain("Additional info");
+    expect(screen.getByTestId("ticket-fields").textContent).toContain("Custom fields");
     expect(screen.getByText("locot-uv3")).toBeTruthy();
   });
 
@@ -182,5 +182,65 @@ describe("TicketPanel — additional info", () => {
       expect(call).toBeTruthy();
       expect(jsonBody(call![1] as RequestInit)).toEqual({ fields: { app_code: "new" } });
     });
+  });
+});
+
+describe("TicketPanel — custom fields only when something is filled", () => {
+  test("every field empty means no section", () => {
+    renderPanel({
+      ticket: { id: "T-1", title: "Fix retries", status: "open", fields: { app_code: "  " } },
+      fields: [{ key: "app_code", label: "App Code", type: "text" }, { key: "type", label: "Type", type: "select" }],
+    });
+    expect(screen.queryByTestId("ticket-fields")).toBeNull();
+  });
+});
+
+describe("TicketPanel — the description's fold", () => {
+  test("Show more sits at the bottom, under the text it folds", () => {
+    renderPanel({ ticket: { id: "T-1", title: "Fix retries", status: "open", body: "line\n".repeat(20) } });
+    const section = screen.getByTestId("ticket-body");
+    const toggle = screen.getByTestId("ticket-body-toggle");
+    expect(section.lastElementChild).toBe(toggle);
+  });
+});
+
+describe("TicketPanel — custom buttons (Sync)", () => {
+  test("no buttons, no row", () => {
+    renderPanel();
+    expect(screen.queryByTestId("ticket-buttons")).toBeNull();
+  });
+
+  test("a sync button runs the ticket action by id and re-reads the ticket", async () => {
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation(async () =>
+      new Response(JSON.stringify({ ok: true, status: 200, message: "synced from Notion" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const onChanged = vi.fn();
+    renderPanel({ buttons: [{ id: "btn-1", label: "Sync from Notion" }], onChanged });
+    const btn = screen.getByTestId("ticket-button-btn-1");
+    expect(btn.textContent).toContain("Sync from Notion");
+    await fireEvent.click(btn);
+    await vi.waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/tickets/T-1/actions/btn-1"));
+      expect(call).toBeTruthy();
+      expect((call![1] as RequestInit).method).toBe("POST");
+      expect(onChanged).toHaveBeenCalled();
+    });
+  });
+
+  test("while one runs, the buttons are disabled so a slow receiver is not double-fired", async () => {
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    let release!: () => void;
+    fetchMock.mockImplementation(() => new Promise<Response>((res) => {
+      release = () => res(new Response(JSON.stringify({ ok: true, status: 200 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }));
+    renderPanel({ buttons: [{ id: "btn-1", label: "Sync from Notion" }, { id: "btn-2", label: "Open in Notion" }] });
+    await fireEvent.click(screen.getByTestId("ticket-button-btn-1"));
+    await vi.waitFor(() => expect(screen.getByTestId("ticket-button-btn-1").textContent).toContain("Syncing"));
+    expect((screen.getByTestId("ticket-button-btn-2") as HTMLButtonElement).disabled).toBe(true);
+    release();
   });
 });

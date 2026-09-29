@@ -715,6 +715,10 @@ export type NotesResponse = {
   /** The project's ticket field definitions — labels, types and options for
       the values in `ticket.fields`, so the rail can show and edit them. */
   ticket_fields?: TicketField[];
+  /** The project's custom buttons placed on a ticket ("Sync from Notion").
+      Id and label only — the click goes through /actions/{id}, which looks
+      the URL up server-side. */
+  ticket_buttons?: { id: string; label: string }[];
   /** Whether the project runs tickets at all. Absent on an older server,
       which is why it is optional rather than defaulted to false: the rail
       hides its Ticket tab on an explicit `false` and shows it otherwise. */

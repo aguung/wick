@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
+  import { railRefreshTargets, type RefreshableRailTab } from "../railRefresh.js";
   import { get } from "svelte/store";
   import { Effect } from "effect";
   import { WickClientLayer, listAgentProfiles } from "@wick-fe/common-api";
@@ -1945,6 +1946,36 @@
     }
   }
 
+  /* ── fresh data on open and close ──
+     Every change of the open panel re-fetches the panel(s) it touched —
+     whatever changed it: a strip click, the close button, Escape, or a panel
+     opening itself. Watching railTab rather than each button is what makes
+     that "whatever". The loaders are called untracked so this effect depends
+     on railTab alone, and none of them writes railTab, so it cannot loop. */
+  const railRefresh: Record<RefreshableRailTab, () => void> = {
+    subagents: () => loadSubAgents(),
+    ticket: () => loadTicket(),
+    notes: () => loadTicket(),
+    process: () => loadProcesses(),
+    scheduled: () => loadSchedules(),
+  };
+  let railTabPrev: RailTab | null = null;
+  $effect(() => {
+    const next = railTab;
+    untrack(() => {
+      const prev = railTabPrev;
+      railTabPrev = next;
+      const targets = railRefreshTargets(prev, next);
+      // Ticket and Notes share one loader: switching between them is one call.
+      const ran = new Set<() => void>();
+      for (const t of targets) {
+        const fn = railRefresh[t];
+        if (t === "notes" && targets.includes("ticket")) continue;
+        if (!ran.has(fn)) { ran.add(fn); fn(); }
+      }
+    });
+  });
+
   /* ── rail toggle ──────────────────────────────────────────────── */
   function toggleRail(tab: RailTab) {
     railTab = railTab === tab ? null : tab;
@@ -2705,6 +2736,7 @@
           ticket={notesInfo?.ticket ?? null}
           statuses={notesInfo?.statuses}
           fields={notesInfo?.ticket_fields}
+          buttons={notesInfo?.ticket_buttons}
           noteCount={(notesInfo?.notes ?? []).length}
           notes={notesInfo?.notes}
           users={notesInfo?.users}
@@ -2897,6 +2929,7 @@
               ticket={notesInfo?.ticket ?? null}
               statuses={notesInfo?.statuses}
               fields={notesInfo?.ticket_fields}
+              buttons={notesInfo?.ticket_buttons}
               noteCount={(notesInfo?.notes ?? []).length}
               notes={notesInfo?.notes}
               users={notesInfo?.users}

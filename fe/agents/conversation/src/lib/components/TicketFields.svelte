@@ -5,16 +5,19 @@
      - Only fields the project DEFINES are shown, in the project's order.
        Values under keys nobody defined (a mirror's bookkeeping, a linked
        page id) have no label to show them under and are left alone.
-     - A few rows first, the rest behind Show more — the same fold as the
-       description, for the same reason: the notes below must stay in view.
+     - Only fields that HOLD a value are listed: an empty one says nothing
+       about the ticket, and a column of "Add …" slots pushed the values off
+       the panel. Two rows first, the rest behind Show more at the bottom —
+       the same fold as the description, so the notes below stay in view.
      - A URL in a value is a link, with an explicit open-in-new-tab button,
        because a Slack thread or an upstream ticket is usually the next place
        to look.
-     - An empty field is a dashed slot, like "Write a note": the place to
-       fill it in is where you notice it is missing. */
+     - Clearing a value in place removes the row once saved; filling an
+       empty field is done on the ticket's own page. */
   import type { TicketField } from "../types/agents.js";
   import { linkify, firstUrl } from "../linkify.js";
   import { toastError } from "@wick-fe/common-stores";
+  import FoldToggle from "./FoldToggle.svelte";
 
   type Props = {
     fields: TicketField[];
@@ -26,18 +29,21 @@
     initialVisible?: number;
   };
 
-  let { fields, values, onSave, initialVisible = 4 }: Props = $props();
+  let { fields, values, onSave, initialVisible = 2 }: Props = $props();
 
   /* Values saved from here, shown until the parent's reload brings them
      back — so a field does not flash its old value in between. */
   let saved = $state<Record<string, string>>({});
+  let editing = $state<string | null>(null);
   const valueOf = (key: string) => (key in saved ? saved[key] : (values?.[key] ?? ""));
 
   let showAll = $state(false);
-  const hiddenCount = $derived(Math.max(0, fields.length - initialVisible));
-  const visible = $derived(showAll ? fields : fields.slice(0, initialVisible));
+  /* The field being edited stays listed even while its draft is empty, so
+     the input does not vanish from under the cursor mid-edit. */
+  const filled = $derived(fields.filter((f) => valueOf(f.key).trim() !== "" || editing === f.key));
+  const hiddenCount = $derived(Math.max(0, filled.length - initialVisible));
+  const visible = $derived(showAll ? filled : filled.slice(0, initialVisible));
 
-  let editing = $state<string | null>(null);
   let draft = $state("");
   let saving = $state(false);
 
@@ -169,28 +175,11 @@
             {:else}{seg.text}{/if}
           {/each}
         </p>
-      {:else}
-        <button
-          type="button"
-          data-testid="ticket-field-add-{f.key}"
-          onclick={() => start(f)}
-          class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-white-400 px-3 py-1.5 text-xs font-medium text-black-700 transition-colors hover:border-green-500 hover:text-green-600 dark:border-navy-600 dark:text-black-600 dark:hover:text-green-400"
-        >
-          <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-            <path d="M8 3.5v9M3.5 8h9" stroke-linecap="round"></path>
-          </svg>
-          Add {f.label || f.key}
-        </button>
       {/if}
     </li>
   {/each}
 </ul>
 
 {#if hiddenCount > 0}
-  <button
-    type="button"
-    data-testid="ticket-fields-toggle"
-    class="mt-2 text-[11px] font-medium text-green-600 hover:underline dark:text-green-400"
-    onclick={() => { showAll = !showAll; }}
-  >{showAll ? "Show less" : `Show more (${hiddenCount})`}</button>
+  <FoldToggle open={showAll} hidden={hiddenCount} testid="ticket-fields-toggle" onclick={() => { showAll = !showAll; }} />
 {/if}
