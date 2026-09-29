@@ -86,7 +86,7 @@ One session can hold many named agents (e.g. `backend`, `reviewer`, `default`); 
 ```go
 type AgentEntry struct {
     Name          string    // unique within session
-    Provider      string    // provider type ("claude" / "codex" / "gemini")
+    Provider      string    // provider type ("claude" / "codex" / "gemini" / "omp" / "opencode")
     CLISessionID  string    // <-- key to resume; written when CLI emits SessionStart
     Status        Status
     CreatedAt     time.Time
@@ -173,6 +173,27 @@ Each Claude spawn includes some fixed extra flags:
 | Max turns | `--max-turns N` | Only added when `max_turns > 0` (set on the workflow agent node). `0` = omit the flag, letting the provider default apply. |
 
 `WICK_CLAUDE_STDERR_LOG` (env var, unset by default) redirects the spawned Claude process's stderr to a file instead of wick's stderr. Regardless of this setting, the last ~4 KB of stderr is always captured in memory so abnormal exits can surface the real error in logs (`exit_code` + `stderr_tail` fields).
+
+## Spawn environment (omp, opencode)
+
+Both run **one process per turn** (send mode `queue`, like codex): a message sent mid-turn waits for the turn to end. The prompt goes in on stdin, which is then closed, so it never shows in process listings and a prompt starting with `-` is not read as a flag.
+
+| | `omp` | `opencode` |
+|---|---|---|
+| argv | `--profile <p> -p --mode json --no-title --yolo --cwd <ws> [--append-system-prompt <soul.md>] [--model m] [--resume <sid>]` | `run --format json --thinking --auto [--model m] [--session <sid>]` |
+| Account | the instance's omp profile | `XDG_DATA_HOME=<instance data dir>` |
+| wick system prompt | `<session>/.omp/soul.md` via `--append-system-prompt` | `<session>/.opencode-wick/soul.md` as an extra `instructions` entry — the project's `AGENTS.md` still loads |
+| wick MCP | a static `wick` entry in `~/.omp/profiles/<p>/agent/mcp.json` with `${WICK_MCP_URL}` / `${WICK_MCP_TOKEN}` placeholders; the values come from the spawn env, so the token is never written to disk | `OPENCODE_CONFIG_CONTENT` (`mcp.wick`, type `remote`, `{env:…}` placeholders) |
+| Permissions | `--yolo` | `--auto` + `"permission": "allow"` |
+| Sharing | — | `"share": "disabled"` is forced, so a user/project config with `share: auto` (or `OPENCODE_AUTO_SHARE`) can never publish a wick session |
+| Resume id | `id` of the first `{"type":"session"}` line | `sessionID` on every line |
+| Skills | `~/.agents/skills` (omp's native user root) + wick's shipped catalog in the system prompt | `~/.claude/skills` / `~/.agents/skills` natively + the catalog |
+
+The gate hook is **off** for both (their hooks are TS/JS extensions, not a command contract), which is why approvals are bypassed unconditionally. Both binaries go through the memory-guard shim like claude/codex.
+
+Parsing: `event.OMPParser` ends the turn at `agent_end` unless `isTerminal` is `false`; `event.OpencodeParser` ends it at a `step_finish` whose reason is not `tool-calls`, and turns each `tool_use` line (opencode only reports finished tools) into a tool start **and** result. An error whose text looks like a rate limit / quota becomes `akun instance <type>/<name> kena limit/kuota: …`, naming which login ran dry.
+
+MVP limits: no long-lived process (`omp --mode rpc` / `opencode serve` are later), no failover between instances when an account hits its limit, no gate.
 
 ## Exit flow
 

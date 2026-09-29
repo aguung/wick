@@ -138,6 +138,35 @@ It symlinks what should be shared and copies what must not be, and the split dif
 
 `gemini` is refused by the script: `geminiConfigDir()` takes no env override, so two gemini instances share `~/.gemini` whatever you do to the filesystem.
 
+#### omp and opencode: one instance = one account
+
+`omp` (oh-my-pi) and `opencode` need no script: wick owns their account store and pins it per instance ([`accounts.go`](https://github.com/yogasw/wick/blob/master/internal/agents/provider/accounts.go)).
+
+| | `omp` | `opencode` |
+|---|---|---|
+| Account store | omp profile `--profile <p>` → `~/.omp/profiles/<p>/agent` | data dir, passed as `XDG_DATA_HOME` → `<dir>/opencode/auth.json` |
+| Default | `wick-<instance name>` (folded into omp's `^[a-z0-9][a-z0-9._-]{0,63}$`) | `<wick data>/providers/opencode/<instance name>`, created `0700` on first use |
+| Saved as | `omp_profile` | `opencode_data_dir` |
+| Override | Add form → **Override** (must be a valid profile name) | Add form → **Override** (absolute path) |
+
+The value is written into the instance config on its **first save** and never re-derived, so renaming an instance keeps its login. Spawn, login, account status, usage and the model list all resolve the store through the same helper (`provider.AccountEnv`), and any `OMP_PROFILE` / `PI_PROFILE` / `XDG_DATA_HOME` in the instance Env is dropped so it cannot split them.
+
+Log in **once per instance**. omp would accept a second login into the same profile and rotate between the accounts itself; wick's rule is one account per instance, so add another instance for another account.
+
+Login flows:
+
+| | `omp` | `opencode` |
+|---|---|---|
+| argv | `--profile <p> login <provider>` | `auth login -p <provider> [-m <method>]` |
+| Picker | `openai-codex-device` (default, device code), `openai-codex` (browser), `anthropic` (browser, with a policy warning) | ChatGPT Plus/Pro device code (default, `-p openai -m "ChatGPT Pro/Plus (headless)"`), or pick another provider in the terminal |
+| Headless callback | browser flows redirect to `localhost:1455` / `localhost:54545`, which the wick host never receives: copy the failed page's full URL from the address bar and paste it at omp's "Paste the authorization code (or full redirect URL)" prompt | the device-code method needs no callback |
+| Account status | `omp usage --json` (cached 2 min) — email + provider | `auth.json` read directly (read-only); opencode stores no email, so the card shows provider + auth method |
+| Usage | `omp usage --json`, mapped to the same 5-hour / 7-day rings as codex, through the shared usage cache and pace gate | not available — opencode has no usage command |
+
+Claude Pro/Max subscriptions are not offered for opencode (opencode does not support them); for omp, `anthropic` works but carries a warning that Anthropic's terms may not allow a subscription outside its own apps.
+
+Deleting an omp/opencode instance does **not** delete its login folder. The confirm dialog names where it lives; remove it by hand if the account is no longer needed.
+
 ### Session TTL
 
 | | |
@@ -156,12 +185,16 @@ It symlinks what should be shared and copies what must not be, and the split dif
 | `claude` | ✓ | ✓ — OAuth link, paste the code back |
 | `codex` | ✓ | ✓ — device code (`codex login --device-auth`) |
 | `gemini` | ✓ | not yet — "Reconnect via terminal is not available for this provider type yet" |
+| `omp` | ✓ (via `omp usage --json`) | ✓ — provider picker; device code or paste-redirect |
+| `opencode` | ✓ (via `auth.json`) | ✓ — device code for ChatGPT, or pick in the terminal |
 | `wick` | — | No Connection panel at all — `wick` authenticates per-model with API keys, not a CLI login. |
 
 Backing endpoints:
 
 - `GET /api/providers/{type}/{name}/logintty` — connect status: `supported`, `account`, the live `session` (if any), and the TTL constants.
-- `GET /api/providers/{type}/{name}/logintty/usage` — usage windows for the connected account (`claude` only; `supported:false` for the rest).
+- `GET /api/providers/{type}/{name}/logintty/usage` — usage windows for the connected account (`claude`, `codex`, `omp`; `supported:false` for the rest).
+- `POST .../logintty/start?login_provider=<id>` — omp/opencode take the picker choice here; it is checked against an allowlist and never reaches argv unvalidated. The status response carries `login_choices`, `login_note` and `account_store` for the picker.
+- `GET /api/providers/{type}/{name}/cli-models` — live model list from `omp models --json` / `opencode models`, for omp/opencode only. Read-only.
 - `POST .../logintty/start`, `.../extend`, `.../kill` — session lifecycle. `extend` and `kill` return `409` once there's nothing to act on.
 - `GET .../logintty/ws` — the websocket stream powering the terminal modal (PTY output, detected link/success/failure, TTL countdown, post-exit account snapshot).
 
