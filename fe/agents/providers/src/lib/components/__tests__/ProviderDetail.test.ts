@@ -449,3 +449,21 @@ describe("ProviderDetail - card rhythm", () => {
     expect(cardStacksMissingRhythm(el)).toHaveLength(0);
   });
 });
+
+describe("ProviderDetail - opencode MCP + hosted model settings", () => {
+  it("renders extra MCP as a textarea and warns about hosted models / a missing model", async () => {
+    const d = makeDetail();
+    d.Instance = { ...d.Instance, Type: "opencode", Name: "oc" };
+    d.ConfigFields = [
+      { Key: "extra_mcp_servers", Value: "{}", Type: "textarea", Options: "", IsSecret: false, Description: "Extra MCP", Required: false },
+      { Key: "opencode_model", Value: "", Type: "text", Options: "", IsSecret: false, Description: "model", Required: false },
+      { Key: "opencode_allow_hosted", Value: "true", Type: "dropdown", Options: "false|true", IsSecret: false, Description: "hosted", Required: false },
+    ];
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(d);
+    render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    await fireEvent.click(await screen.findByText("Configuration"));
+    expect((await screen.findByLabelText("extra_mcp_servers")).tagName).toBe("TEXTAREA");
+    expect(screen.getByTestId("opencode-hosted-warning").textContent).toContain("opencode's servers");
+    expect(screen.getByTestId("opencode-model-missing")).toBeTruthy();
+  });
+});

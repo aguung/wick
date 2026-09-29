@@ -927,6 +927,14 @@
                 {#if f.Description}
                   <p class="mt-1.5 text-[11px] text-black-700 dark:text-black-600 leading-relaxed whitespace-pre-line">{f.Description}</p>
                 {/if}
+                {#if f.Key === "opencode_allow_hosted" && fieldValues[f.Key] === "true"}
+                  <p data-testid="opencode-hosted-warning" class="mt-1.5 rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">
+                    Hosted opencode models are ON: every prompt, file and tool output of sessions on this instance is sent to opencode's servers.
+                  </p>
+                {/if}
+                {#if f.Key === "opencode_model" && !(fieldValues[f.Key] ?? "").trim()}
+                  <p data-testid="opencode-model-missing" class="mt-1.5 text-[11px] text-neg-400">No model set — spawns on this instance are refused until you pick one (or a session pins one).</p>
+                {/if}
               </div>
             {/each}
           </div>

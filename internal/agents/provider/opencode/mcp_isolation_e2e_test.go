@@ -134,7 +134,7 @@ func TestE2EOpencodeMCPIsolation(t *testing.T) {
 	ins := provider.Instance{Type: provider.TypeOpencode, Name: "probe",
 		// No login and a non-hosted model: opencode must still connect MCP
 		// at startup; the model call itself then fails without credentials.
-		OpencodeConfig: &provider.OpencodeConfig{DataDir: filepath.Join(root, "ocdata"), Model: "openai/gpt-5.5"},
+		OpencodeConfig:  &provider.OpencodeConfig{DataDir: filepath.Join(root, "ocdata"), Model: "openai/gpt-5.5"},
 		Env:             []string{"EXTRA_TOKEN=extra-secret"},
 		ExtraMCPServers: fmt.Sprintf(`{"extra":{"type":"http","url":%q,"headers":{"Authorization":"Bearer ${EXTRA_TOKEN}"}}}`, extraSrv.URL+"/mcp")}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
