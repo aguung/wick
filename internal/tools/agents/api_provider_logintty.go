@@ -439,3 +439,36 @@ func accountStoreLabel(ins provider.Instance) string {
 	}
 	return ""
 }
+
+// apiProviderCLIModels asks an omp/opencode instance's CLI for the models
+// its logged-in account can use (`omp models --json` / `opencode models`),
+// for the model picker's refresh button. Read-only: nothing is saved — the
+// SPA puts the chosen ids into the instance's model list itself.
+func apiProviderCLIModels(c *tool.Ctx) {
+	if notReady(c) || !requireApprovedUser(c) {
+		return
+	}
+	ins, ok := findLoginInstance(c)
+	if !ok {
+		return
+	}
+	if !requireProviderManage(c, ins.Type, ins.Name) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
+	defer cancel()
+	seeds, err := provider.ListCLIModels(ctx, ins)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	type model struct {
+		ID   string `json:"id"`
+		Desc string `json:"desc,omitempty"`
+	}
+	out := make([]model, 0, len(seeds))
+	for _, s := range seeds {
+		out = append(out, model{ID: s.ID, Desc: s.Desc})
+	}
+	c.JSON(http.StatusOK, map[string]any{"models": out})
+}
