@@ -983,6 +983,28 @@ func noteTicketSummary(tk ticket.Ticket) map[string]any {
 	}
 }
 
+// ticketPanelButton is a custom button as the rail needs it: enough to draw
+// and click it, nothing it could leak.
+type ticketPanelButton struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// ticketPanelButtons keeps the buttons placed on a TICKET — a ticket-list
+// button acts on a board filter the rail does not have — and drops any that
+// cannot be clicked (no id yet, or no label to show). Never nil, so the rail
+// reads an empty list rather than null.
+func ticketPanelButtons(all []project.TicketButton) []ticketPanelButton {
+	out := []ticketPanelButton{}
+	for _, b := range all {
+		if !b.On(project.ButtonOnTicket) || b.ID == "" || strings.TrimSpace(b.Label) == "" {
+			continue
+		}
+		out = append(out, ticketPanelButton{ID: b.ID, Label: strings.TrimSpace(b.Label)})
+	}
+	return out
+}
+
 func apiNotesList(c *tool.Ctx) {
 	if notReady(c) {
 		return
@@ -1031,6 +1053,11 @@ func apiNotesList(c *tool.Ctx) {
 			if p, pok := globalMgr.Registry().Project(sc.ProjectID); pok {
 				out["statuses"] = p.Meta.Ticket.StatusList()
 				out["ticket_fields"] = p.Meta.Ticket.Fields
+				// The ticket's custom buttons ("Sync from Notion"), so the rail
+				// can offer them where the ticket is being worked on. Id and
+				// label only: the click goes through /actions/{buttonID}, which
+				// looks the URL up server-side, so the rail never needs it.
+				out["ticket_buttons"] = ticketPanelButtons(p.Meta.Ticket.Integrations.Buttons)
 			}
 		}
 	}

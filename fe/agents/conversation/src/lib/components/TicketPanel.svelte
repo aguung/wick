@@ -11,6 +11,7 @@
   import type { Note, TicketCard, TicketField, TicketStatus } from "../types/agents.js";
   import NotesPanel from "./NotesPanel.svelte";
   import TicketFields from "./TicketFields.svelte";
+  import FoldToggle from "./FoldToggle.svelte";
   import { renderMarkdown } from "../markdown.js";
   import "../notesMarkdown.css";
   import {
@@ -18,9 +19,10 @@
     createTicket,
     detachSession,
     getProjectTickets,
+    runTicketAction,
     updateTicket,
   } from "../api/tickets.js";
-  import { toastError } from "@wick-fe/common-stores";
+  import { toastError, toastOk } from "@wick-fe/common-stores";
   import { Effect } from "effect";
   import { WickClientLayer } from "@wick-fe/common-api";
 
@@ -36,6 +38,9 @@
     /* The project's ticket field definitions. The rail shows and edits the
        ticket's values for these, in this order; none means no section. */
     fields?: TicketField[];
+    /* The project's custom buttons placed on a ticket — typically "Sync from
+       Notion". Clicked through /actions/{id}; the URL never reaches here. */
+    buttons?: { id: string; label: string }[];
     /* The project's board columns, so the rail offers the same choices as
        the board rather than the built-in four. */
     statuses?: TicketStatus[];
@@ -63,6 +68,7 @@
     ticket,
     statuses,
     fields,
+    buttons,
     noteCount = 0,
     notes,
     users,
@@ -239,6 +245,32 @@
     el.focus();
   }
 
+  /* ── custom buttons ("Sync from Notion") ──
+     Same behaviour as on the ticket's own page: one click at a time, the
+     receiver's own words in the toast, and the ticket re-read twice after a
+     success, because some receivers answer before their write has landed. */
+  let actionBusy = $state("");
+  function runButton(b: { id: string; label: string }) {
+    if (!ticket || actionBusy !== "") return;
+    actionBusy = b.id;
+    Effect.runPromise(runTicketAction(base, ticket.id, b.id).pipe(Effect.provide(WickClientLayer)))
+      .then((r) => {
+        if (r.ok) {
+          toastOk(`${b.label}: ${r.message || `done (HTTP ${r.status})`}`);
+          onChanged?.();
+          setTimeout(() => onChanged?.(), 2500);
+        } else {
+          toastError(`${b.label} failed: ${r.error || r.message || "HTTP " + r.status}`);
+        }
+      })
+      .catch((e: unknown) => toastError(e instanceof Error ? e.message : `${b.label} failed`))
+      .finally(() => { actionBusy = ""; });
+  }
+  const isSyncLabel = (label: string) => /sync|refresh|pull|reload/i.test(label);
+  /* The header has room for a word, not a sentence: "Sync from Notion" reads
+     as "Sync" beside the status pill, and the full label is the tooltip. */
+  const shortLabel = (label: string) => (isSyncLabel(label) ? "Sync" : label.length > 14 ? label.slice(0, 13) + "…" : label);
+
   function startTitle() {
     if (!ticket) return;
     titleDraft = ticket.title;
@@ -278,8 +310,39 @@
           title="Open this ticket's page"
           class="rounded bg-white-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-black-800 transition-colors hover:text-green-600 dark:bg-navy-700 dark:text-black-600 dark:hover:text-green-400"
         >{ticket.id}</button>
-        <span class={"ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold " + pillFor(ticket.status)}>
-          {labelOf(ticket.status)}
+        <span class="ml-auto flex items-center gap-1.5">
+          {#if buttons && buttons.length > 0}
+            <!-- Custom buttons ("Sync from Notion") sit in the header, quiet
+                 until hovered: an action on the ticket, not content of it. -->
+            <span class="flex items-center gap-0.5" data-testid="ticket-buttons">
+              {#each buttons as b (b.id)}
+                <button
+                  type="button"
+                  data-testid="ticket-button-{b.id}"
+                  disabled={actionBusy !== ""}
+                  aria-busy={actionBusy === b.id}
+                  onclick={() => runButton(b)}
+                  title={b.label}
+                  aria-label={b.label}
+                  class="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-black-700 transition-colors hover:bg-white-100 hover:text-green-600 disabled:cursor-not-allowed disabled:opacity-60 dark:text-black-600 dark:hover:bg-navy-700 dark:hover:text-green-400"
+                >
+                  {#if isSyncLabel(b.label)}
+                    <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 {actionBusy === b.id ? 'animate-spin' : ''}" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                      <path d="M13 8a5 5 0 0 1-8.6 3.5M3 8a5 5 0 0 1 8.6-3.5M11.5 2v2.7H8.8M4.5 14v-2.7h2.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  {:else if actionBusy === b.id}
+                    <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                      <path d="M8 2a6 6 0 1 1-6 6" stroke-linecap="round"></path>
+                    </svg>
+                  {/if}
+                  <span>{actionBusy === b.id ? (isSyncLabel(b.label) ? "Syncing…" : "Working…") : shortLabel(b.label)}</span>
+                </button>
+              {/each}
+            </span>
+          {/if}
+          <span class={"rounded-full px-2 py-0.5 text-[10px] font-semibold " + pillFor(ticket.status)}>
+            {labelOf(ticket.status)}
+          </span>
         </span>
       </div>
 
@@ -299,6 +362,7 @@
           class="mt-2 w-full rounded text-left text-xs font-medium text-black-900 hover:bg-white-100 dark:text-white-100 dark:hover:bg-navy-700"
         >{ticket.title}</button>
       {/if}
+
 
       <label class="mt-3 block text-[10px] font-medium uppercase tracking-wide text-black-700 dark:text-black-600" for="rail-tkt-status">
         Status
@@ -362,27 +426,27 @@
             <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
               What the ticket asks
             </h4>
-            <span class="ml-auto flex items-center gap-2">
             <button
               type="button"
               data-testid="ticket-body-edit"
               onclick={startBody}
               title="Edit what the ticket asks"
-              class="shrink-0 text-[11px] font-medium text-black-700 hover:text-green-600 hover:underline dark:text-black-600 dark:hover:text-green-400"
+              class="ml-auto shrink-0 text-[11px] font-medium text-black-700 hover:text-green-600 hover:underline dark:text-black-600 dark:hover:text-green-400"
             >Edit</button>
-            {#if bodyLong}
-              <button
-                type="button"
-                data-testid="ticket-body-toggle"
-                class="shrink-0 text-[11px] font-medium text-green-600 hover:underline dark:text-green-400"
-                onclick={() => { bodyOpen = !bodyOpen; }}
-              >{bodyOpen ? "Show less" : "Show more"}</button>
-            {/if}
-            </span>
           </div>
           <div class="relative">
+            <!-- Clicking the folded text is a mouse shortcut to "Show more";
+                 the keyboard path is the toggle button below, which is a real
+                 focusable button — so the text itself stays a plain block. -->
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div
-              class="wick-note-md mt-1.5 break-words text-xs text-black-900 dark:text-white-100 {bodyLong && !bodyOpen ? 'max-h-24 overflow-hidden' : ''}"
+              class="wick-note-md mt-1.5 break-words text-xs text-black-900 dark:text-white-100 {bodyLong && !bodyOpen ? 'max-h-24 cursor-pointer overflow-hidden' : ''}"
+              data-testid="ticket-body-text"
+              onclick={(e) => {
+                // Folded text opens on a click anywhere in it — except on a
+                // link, which must still go where it points.
+                if (bodyLong && !bodyOpen && !(e.target as HTMLElement).closest("a")) bodyOpen = true;
+              }}
             >
               {@html renderMarkdown(body)}
             </div>
@@ -393,6 +457,9 @@
               ></div>
             {/if}
           </div>
+          {#if bodyLong}
+            <FoldToggle open={bodyOpen} testid="ticket-body-toggle" onclick={() => { bodyOpen = !bodyOpen; }} />
+          {/if}
         </section>
       {:else}
         <button
@@ -414,7 +481,7 @@
           class="mt-3 rounded-lg border border-white-300 bg-white-100 p-2.5 dark:border-navy-600 dark:bg-navy-700"
         >
           <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
-            Additional info
+            Custom fields
           </h4>
           <div class="mt-1.5">
             <TicketFields {fields} values={ticket.fields} onSave={saveField} />

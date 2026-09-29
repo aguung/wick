@@ -45,7 +45,7 @@ describe("TicketFields — reading", () => {
   });
 
   test("a URL inside text is linked and the text around it kept", () => {
-    renderFields();
+    renderFields({ initialVisible: 10 });
     const row = screen.getByTestId("ticket-field-qticket");
     expect(row.textContent).toContain("Qticketing ticket :");
     expect((screen.getByTestId("ticket-field-open-qticket") as HTMLAnchorElement).getAttribute("href")).toBe(
@@ -58,23 +58,46 @@ describe("TicketFields — reading", () => {
     expect(screen.queryByTestId("ticket-field-open-app_code")).toBeNull();
   });
 
-  test("an empty field is a slot to fill in", () => {
-    renderFields();
-    expect(screen.getByTestId("ticket-field-add-priority").textContent).toContain("Add Priority");
+  // An empty field says nothing about the ticket; a column of "Add …" slots
+  // only pushed the values that do off the panel.
+  test("empty fields are not listed at all", () => {
+    renderFields({ initialVisible: 10 });
+    expect(screen.queryByTestId("ticket-field-priority")).toBeNull();
+    expect(screen.queryByTestId("ticket-field-changelog")).toBeNull();
+    expect(screen.queryByText(/^\s*Add /)).toBeNull();
   });
 
-  test("a few rows first, the rest behind Show more", async () => {
+  test("two filled rows at rest; Show more counts every other field, empty ones too", async () => {
     renderFields();
-    expect(screen.queryByTestId("ticket-field-changelog")).toBeNull();
+    // filled, in project order: app_code, slack, qticket, owner; empty: priority, changelog
+    expect(screen.getByTestId("ticket-field-app_code")).toBeTruthy();
+    expect(screen.getByTestId("ticket-field-slack")).toBeTruthy();
+    expect(screen.queryByTestId("ticket-field-qticket")).toBeNull();
     const toggle = screen.getByTestId("ticket-fields-toggle");
-    expect(toggle.textContent).toContain("Show more (2)");
+    expect(toggle.textContent).toContain("Show more (4)");
     await fireEvent.click(toggle);
-    expect(screen.getByTestId("ticket-field-changelog")).toBeTruthy();
+    for (const d of defs) expect(screen.getByTestId(`ticket-field-${d.key}`)).toBeTruthy();
+    expect(screen.getByTestId("ticket-field-add-priority").textContent).toContain("Add");
     expect(screen.getByTestId("ticket-fields-toggle").textContent).toContain("Show less");
   });
 
-  test("no toggle when everything fits", () => {
-    renderFields({ fields: defs.slice(0, 2) });
+  test("nothing filled: no rows, and the toggle reads Add custom fields", async () => {
+    renderFields({ values: {} });
+    expect(screen.queryByTestId("ticket-fields-list")).toBeNull();
+    expect(screen.getByTestId("ticket-fields-toggle").textContent).toContain("Add custom fields (6)");
+    await fireEvent.click(screen.getByTestId("ticket-fields-toggle"));
+    expect(screen.getByTestId("ticket-field-add-app_code")).toBeTruthy();
+  });
+
+  test("the toggle sits below the rows it folds", () => {
+    const { container } = renderFields();
+    const list = container.querySelector("[data-testid=ticket-fields-list]")!;
+    const toggle = screen.getByTestId("ticket-fields-toggle");
+    expect(list.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("no toggle when every field is filled and fits", () => {
+    renderFields({ fields: defs.slice(0, 2), values: { app_code: "a", slack: "b" } });
     expect(screen.queryByTestId("ticket-fields-toggle")).toBeNull();
   });
 });
@@ -113,19 +136,31 @@ describe("TicketFields — editing in place", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  test("the empty slot opens the editor and saves on blur", async () => {
-    const { onSave } = renderFields({ initialVisible: 10 });
-    await fireEvent.click(screen.getByTestId("ticket-field-add-changelog"));
-    const input = screen.getByTestId("ticket-field-input-changelog") as HTMLInputElement;
+  test("blur saves too", async () => {
+    const { onSave } = renderFields();
+    await fireEvent.click(screen.getByTestId("ticket-field-edit-app_code"));
+    const input = screen.getByTestId("ticket-field-input-app_code") as HTMLInputElement;
     await fireEvent.input(input, { target: { value: "v1.2 ships the fix" } });
     await fireEvent.blur(input);
     await tick();
-    expect(onSave).toHaveBeenCalledWith("changelog", "v1.2 ships the fix");
+    expect(onSave).toHaveBeenCalledWith("app_code", "v1.2 ships the fix");
+  });
+
+  test("a field stays listed while its draft is cleared, and leaves once saved empty", async () => {
+    const { onSave } = renderFields();
+    await fireEvent.click(screen.getByTestId("ticket-field-edit-slack"));
+    const input = screen.getByTestId("ticket-field-input-slack") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "" } });
+    expect(screen.getByTestId("ticket-field-input-slack")).toBeTruthy();
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await tick();
+    expect(onSave).toHaveBeenCalledWith("slack", "");
+    expect(screen.queryByTestId("ticket-field-slack")).toBeNull();
   });
 
   test("a select field saves the picked option", async () => {
-    const { onSave } = renderFields();
-    await fireEvent.click(screen.getByTestId("ticket-field-add-priority"));
+    const { onSave } = renderFields({ values: { ...values, priority: "Low" }, initialVisible: 10 });
+    await fireEvent.click(screen.getByTestId("ticket-field-edit-priority"));
     const sel = screen.getByTestId("ticket-field-input-priority") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "High" } });
     await tick();
@@ -151,5 +186,18 @@ describe("TicketFields — editing in place", () => {
     await fireEvent.keyDown(input, { key: "Enter" });
     await tick();
     expect((screen.getByTestId("ticket-field-input-app_code") as HTMLInputElement).value).toBe("will fail");
+  });
+});
+
+describe("TicketFields — filling an empty field from the open list", () => {
+  test("+ Add on the label row opens the editor and saves", async () => {
+    const { onSave } = renderFields();
+    await fireEvent.click(screen.getByTestId("ticket-fields-toggle"));
+    await fireEvent.click(screen.getByTestId("ticket-field-add-changelog"));
+    const input = screen.getByTestId("ticket-field-input-changelog") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "v1.2 ships the fix" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await tick();
+    expect(onSave).toHaveBeenCalledWith("changelog", "v1.2 ships the fix");
   });
 });
