@@ -28,6 +28,9 @@ function makeStatus(over: Partial<LoginTTYStatus> = {}): LoginTTYStatus {
     defaultTtlS: 300,
     extendS: 300,
     maxTtlS: 1800,
+    loginChoices: [],
+    loginNote: "",
+    accountStore: "",
     ...over,
   };
 }
@@ -121,7 +124,7 @@ describe("ReconnectPanel", () => {
     render(ReconnectPanel, { props: { base: "/tools/agents", type: "claude", name: "main" } });
     const btn = await screen.findByRole("button", { name: /reconnect/i });
     await fireEvent.click(btn);
-    expect(logintty.apiLoginTTYStart).toHaveBeenCalledWith("/tools/agents", "claude", "main");
+    expect(logintty.apiLoginTTYStart).toHaveBeenCalledWith("/tools/agents", "claude", "main", "");
   });
 
   it("no Reconnect button for unsupported types even when disconnected", async () => {
@@ -178,5 +181,31 @@ describe("ReconnectPanel", () => {
     await fireEvent.click(screen.getByText("Connection"));
     await fireEvent.click(await screen.findByTestId("panel-usage-recheck"));
     expect(await screen.findByText("wait 2m")).toBeTruthy();
+  });
+
+  it("omp: not connected opens the login picker, warns for anthropic, passes the choice to start", async () => {
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
+      makeStatus({
+        account: { connected: false, email: "", plan: "", org: "", authMethod: "", expiresAt: "" },
+        loginChoices: [
+          { id: "openai-codex-device", label: "ChatGPT device", warning: "", default: true },
+          { id: "anthropic", label: "Claude", warning: "policy risk", default: false },
+        ],
+        loginNote: "one account per instance",
+        accountStore: "profile wick-omp",
+      }),
+    );
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
+    vi.mocked(logintty.apiLoginTTYStart).mockResolvedValue(null);
+    render(ReconnectPanel, { props: { base: "", type: "omp", name: "omp" } });
+    const picker = await screen.findByTestId("panel-login-choice");
+    expect(picker).toBeTruthy();
+    expect(screen.getByTestId("panel-account-store").textContent).toContain("wick-omp");
+    expect(screen.queryByTestId("panel-login-warning")).toBeNull();
+    const select = picker.querySelector("select") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "anthropic" } });
+    expect((await screen.findByTestId("panel-login-warning")).textContent).toContain("policy risk");
+    await fireEvent.click(screen.getByText("Reconnect"));
+    expect(vi.mocked(logintty.apiLoginTTYStart)).toHaveBeenCalledWith("", "omp", "omp", "anthropic");
   });
 });

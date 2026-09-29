@@ -26,6 +26,14 @@
   import UsageCacheChip from "$lib/components/UsageCacheChip.svelte";
   import { apiLoginTTYUsageRefresh } from "$lib/logintty.js";
   import { pickWindows, connectionKey, resetHint, fmtSecsShort } from "$lib/usagerings.js";
+  import {
+    ACCOUNT_ISOLATED,
+    TYPE_INFO,
+    typeLabel,
+    suggestName,
+    accountStorePreview,
+    validOMPProfile,
+  } from "$lib/accounts.js";
 
   const HOOK_EVENT = "PreToolUse";
 
@@ -62,6 +70,30 @@
   let formAirouterModels = $state<Record<string, string>>({});
   let formAirouterKey = $state("");
   let formAirouterRawConfig = $state("");
+  // omp/opencode account store: shown read-only, editable only after the
+  // operator explicitly asks to override it.
+  let formStoreOverride = $state(false);
+  let formStoreValue = $state("");
+  const formIsolated = $derived(ACCOUNT_ISOLATED.has(formType));
+  const formStoreError = $derived.by(() => {
+    if (!formIsolated || !formStoreOverride || formStoreValue.trim() === "") return "";
+    if (formType === "omp" && !validOMPProfile(formStoreValue.trim())) return "Lowercase letters, digits, '.', '_' or '-' (max 64)";
+    if (formType === "opencode" && !formStoreValue.trim().startsWith("/")) return "Must be an absolute path";
+    return "";
+  });
+
+  // A new omp/opencode instance gets a free name suggested (`omp`, `omp_2`,
+  // …) so adding a second account is one click; other types keep an
+  // empty name to type.
+  function onTypeChange(): void {
+    formAirouterModels = {};
+    formStoreOverride = false;
+    formStoreValue = "";
+    if (ACCOUNT_ISOLATED.has(formType)) {
+      const taken = (data?.Providers ?? []).filter((p) => p.Instance.Type === formType).map((p) => p.Instance.Name);
+      formName = suggestName(formType, taken);
+    }
+  }
 
   // The AI router picker in the create form offers the built-in routers.
   // A fresh instance has no detail payload to source them from, so list the
@@ -363,14 +395,19 @@
     formAirouterModels = {};
     formAirouterKey = "";
     formAirouterRawConfig = "";
+    formStoreOverride = false;
+    formStoreValue = "";
     addOpen = true;
   }
 
   async function doCreate(e: SubmitEvent): Promise<void> {
     e.preventDefault();
-    if (!formType || !formName.trim() || formNameError) {
+    if (!formType || !formName.trim() || formNameError || formStoreError) {
       return;
     }
+    const createdType = formType;
+    const createdName = formName.trim();
+    const storeOverride = formIsolated && formStoreOverride ? formStoreValue.trim() : "";
     setBusy("create", true);
     try {
       await apiCreateProvider({
@@ -384,10 +421,18 @@
         airouter_models: formAirouterModels,
         airouter_api_key: formAirouterKey,
         airouter_raw_config: formAirouterRawConfig,
+        omp_profile: createdType === "omp" ? storeOverride : "",
+        opencode_data_dir: createdType === "opencode" ? storeOverride : "",
       });
-      toastOk(`Created ${formName.trim()}`);
+      toastOk(`Created ${createdName}`);
       addOpen = false;
       await load(true);
+      // One instance = one account: the next step is always to log that
+      // account in, so go straight to the detail page's Connection panel
+      // (it opens with the login picker expanded).
+      if (ACCOUNT_ISOLATED.has(createdType)) {
+        onNavigate(createdType, createdName);
+      }
     } catch (err) {
       toastError(err instanceof Error ? err.message : "Create failed");
     } finally {
@@ -639,7 +684,17 @@
                 <div class="flex items-center gap-2">
                   <p class="text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
                   <span class={`rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
+                  {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
+                    <span data-testid="one-account-badge" class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">1 instance = 1 account</span>
+                  {/if}
                 </div>
+                {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
+                  <!-- Several omp/opencode instances differ only by account,
+                       so the account is part of the card's identity. -->
+                  <p data-testid="card-account" class="text-xs mt-0.5 font-mono truncate {conn?.connected ? 'text-black-800 dark:text-black-600' : 'text-neg-400'}">
+                    {conn?.connected ? (conn.email || conn.plan || "logged in") : "not logged in — open Detail to log in"}
+                  </p>
+                {/if}
                 {#if p.Instance.Disabled}
                   <p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">disabled</p>
                 {:else if !p.PathFound}
@@ -1008,12 +1063,38 @@
       <form onsubmit={doCreate} class="space-y-4">
         <div>
           <label for="add-provider-type" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Type <span class="text-red-500">*</span></label>
-          <select id="add-provider-type" bind:value={formType} onchange={() => { formAirouterModels = {}; }} required class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100">
+          <select id="add-provider-type" bind:value={formType} onchange={onTypeChange} required class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100">
             {#each data?.SupportedKeys ?? [] as k (k)}
-              <option value={k}>{k}</option>
+              <option value={k}>{TYPE_INFO[k] ? typeLabel(k) : k}</option>
             {/each}
           </select>
         </div>
+        {#if formIsolated}
+          <div data-testid="add-account-store" class="rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-3 py-2 space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-black-800 dark:text-black-600">{formType === "omp" ? "omp profile" : "Data dir"}</span>
+              <span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">1 instance = 1 account</span>
+            </div>
+            {#if formStoreOverride}
+              <input
+                type="text"
+                bind:value={formStoreValue}
+                placeholder={formType === "omp" ? "wick-work" : "/abs/path/to/data"}
+                class="w-full rounded-lg border bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm font-mono text-black-900 dark:text-white-100 {formStoreError ? 'border-red-400 dark:border-red-600' : 'border-white-400 dark:border-navy-600'}"
+              />
+              {#if formStoreError}<p class="text-[11px] text-red-600 dark:text-red-400">{formStoreError}</p>{/if}
+            {:else}
+              <p class="font-mono text-xs text-black-900 dark:text-white-100 truncate">{accountStorePreview(formType, formName.trim())}</p>
+            {/if}
+            <p class="text-[11px] text-black-700 dark:text-black-600">
+              Pinned when created — renaming the instance keeps this account.
+              <button type="button" class="text-link-400 hover:underline" onclick={() => { formStoreOverride = !formStoreOverride; }}>{formStoreOverride ? "Use default" : "Override"}</button>
+            </p>
+            {#if formType === "opencode"}
+              <p class="text-[11px] text-black-700 dark:text-black-600">Claude Pro/Max subscriptions are not supported by opencode.</p>
+            {/if}
+          </div>
+        {/if}
         <div>
           <label for="add-provider-name" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Name <span class="text-red-500">*</span></label>
           <input
@@ -1056,7 +1137,7 @@
         />
         <div class="flex justify-end gap-3 pt-2">
           <button type="button" onclick={() => { addOpen = false; }} class="rounded-lg border border-white-400 dark:border-navy-600 px-4 py-2 text-sm text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">Cancel</button>
-          <button type="submit" disabled={busy["create"] || !!formNameError} class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 disabled:opacity-50">{busy["create"] ? "Creating…" : "Create"}</button>
+          <button type="submit" disabled={busy["create"] || !!formNameError || !!formStoreError} class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 disabled:opacity-50">{busy["create"] ? "Creating…" : "Create"}</button>
         </div>
       </form>
     </div>
@@ -1066,7 +1147,9 @@
 <ConfirmDialog
   open={confirmDelete !== null}
   title={`Delete ${confirmDelete?.Instance.Name ?? ""}?`}
-  body="This will remove the provider instance. Built-in providers cannot be deleted."
+  body={confirmDelete && ACCOUNT_ISOLATED.has(confirmDelete.Instance.Type)
+    ? "This removes the provider instance only. Its login stays on disk (omp profile under ~/.omp/profiles, or the opencode data dir under <wick data>/providers/opencode) — delete that folder yourself if you no longer need the account. Built-in providers cannot be deleted."
+    : "This will remove the provider instance. Built-in providers cannot be deleted."}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => { if (confirmDelete) { doDelete(confirmDelete); } }}

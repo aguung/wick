@@ -27,7 +27,28 @@ export type LoginTTYStatus = {
   defaultTtlS: number;
   extendS: number;
   maxTtlS: number;
+  /* Picker shown before Login for omp/opencode (which OAuth provider to
+     log in to). Empty = no picker. */
+  loginChoices: LoginChoice[];
+  /* Caveat beside the picker (opencode: Claude subscriptions unsupported). */
+  loginNote: string;
+  /* Where this instance's single account lives: omp profile / opencode
+     data dir. Empty for types wick does not pin. */
+  accountStore: string;
 };
+
+export type LoginChoice = {
+  id: string;
+  label: string;
+  warning: string;
+  default: boolean;
+};
+
+/* defaultLoginChoice is the picker's initial value: the entry the server
+   flags as default, else the first, else "". */
+export function defaultLoginChoice(choices: LoginChoice[]): string {
+  return (choices.find((c) => c.default) ?? choices[0])?.id ?? "";
+}
 
 export type UsageWindow = {
   key: string;
@@ -86,6 +107,9 @@ interface WireLoginStatus {
   default_ttl_s?: number;
   extend_s?: number;
   max_ttl_s?: number;
+  login_choices?: { id?: string; label?: string; warning?: string; default?: boolean }[] | null;
+  login_note?: string;
+  account_store?: string;
 }
 
 interface WireUsage {
@@ -128,6 +152,14 @@ export function normalizeLoginStatus(w: WireLoginStatus): LoginTTYStatus {
     defaultTtlS: w.default_ttl_s ?? 300,
     extendS: w.extend_s ?? 300,
     maxTtlS: w.max_ttl_s ?? 1800,
+    loginChoices: (w.login_choices ?? []).map((c) => ({
+      id: c.id ?? "",
+      label: c.label ?? c.id ?? "",
+      warning: c.warning ?? "",
+      default: c.default ?? false,
+    })),
+    loginNote: w.login_note ?? "",
+    accountStore: w.account_store ?? "",
   };
 }
 
@@ -184,8 +216,16 @@ export async function apiLoginTTYUsageRefresh(
   return { accepted: r?.accepted ?? false, checking: r?.checking ?? false, waitS: r?.wait_s ?? 0 };
 }
 
-export async function apiLoginTTYStart(base: string, type: string, name: string): Promise<LoginTTYSession | null> {
-  const r = await post<{ session?: WireLoginSession }>(`${ttyPath(base, type, name)}/start`);
+export async function apiLoginTTYStart(
+  base: string,
+  type: string,
+  name: string,
+  loginProvider = "",
+): Promise<LoginTTYSession | null> {
+  // omp/opencode: the OAuth provider picked in the panel. The server checks
+  // it against its own allowlist; it never reaches argv unvalidated.
+  const q = loginProvider ? `?login_provider=${encodeURIComponent(loginProvider)}` : "";
+  const r = await post<{ session?: WireLoginSession }>(`${ttyPath(base, type, name)}/start${q}`);
   return mapSession(r?.session);
 }
 

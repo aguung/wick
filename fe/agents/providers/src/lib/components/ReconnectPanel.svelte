@@ -7,6 +7,7 @@
     apiLoginTTYUsage,
     apiLoginTTYStart,
     apiLoginTTYUsageRefresh,
+    defaultLoginChoice,
     usageLabel,
     fmtResetsIn,
     prettyPlan,
@@ -31,6 +32,9 @@
   /* Collapsed by default — the header row is the summary; details
      (account rows + usage) render only when expanded. */
   let expanded = $state(false);
+  /* omp/opencode: which OAuth provider the next login targets. */
+  let loginChoice = $state("");
+  let choice = $derived((status?.loginChoices ?? []).find((c) => c.id === loginChoice) ?? null);
 
   let connected = $derived(status?.account.connected ?? false);
   /* Reconnect shows while collapsed ONLY when a login is actually
@@ -80,12 +84,18 @@
   onMount(async () => {
     await refresh();
     loading = false;
+    loginChoice = defaultLoginChoice(status?.loginChoices ?? []);
+    // A fresh omp/opencode instance needs a provider picked before Login,
+    // so open the details (where the picker lives) instead of hiding it.
+    if (status && (status.loginChoices ?? []).length > 0 && !status.account.connected) {
+      expanded = true;
+    }
   });
 
   async function reconnect() {
     starting = true;
     try {
-      const s = await apiLoginTTYStart(base, type, name);
+      const s = await apiLoginTTYStart(base, type, name, loginChoice);
       if (s) {
         session = s;
         showTerminal = true;
@@ -237,12 +247,44 @@
         {#if status.account.connected && status.account.expiresAt}
           <p class="text-[11px] text-black-700 dark:text-black-600">Token expires {fmtExpiry(status.account.expiresAt)}</p>
         {/if}
+        {#if status.accountStore}
+          <div class="flex items-baseline justify-between gap-4 text-xs">
+            <span class="shrink-0 text-black-800 dark:text-black-600">Account store</span>
+            <span data-testid="panel-account-store" class="min-w-0 truncate text-right font-mono text-black-900 dark:text-white-100">{status.accountStore}</span>
+          </div>
+          <p class="text-[11px] text-black-700 dark:text-black-600">1 instance = 1 account. Add another instance for another account.</p>
+        {/if}
         {#if !status.supported}
           <p class="text-[11px] text-black-700 dark:text-black-600">Reconnect via terminal is not available for this provider type yet.</p>
         {/if}
       </div>
 
+      {#if status.supported && (status.loginChoices ?? []).length > 0}
+        <div class="space-y-2" data-testid="panel-login-choice">
+          <label for="login-choice-{type}-{name}" class="block text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">LOG IN WITH</label>
+          <select
+            id="login-choice-{type}-{name}"
+            bind:value={loginChoice}
+            class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2 text-sm text-black-900 dark:text-white-100"
+          >
+            {#each status.loginChoices as c (c.id)}
+              <option value={c.id}>{c.label}</option>
+            {/each}
+          </select>
+          {#if choice?.warning}
+            <p data-testid="panel-login-warning" class="rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">{choice.warning}</p>
+          {/if}
+          {#if status.loginNote}
+            <p class="text-[11px] text-black-700 dark:text-black-600">{status.loginNote}</p>
+          {/if}
+          <p class="text-[11px] text-black-700 dark:text-black-600">Browser flows redirect to localhost, which this host never receives: when the page fails to load, copy its full URL from the address bar and paste it into the login terminal.</p>
+        </div>
+      {/if}
+
       <!-- USAGE — one block per window: name + %, bar, resets-in -->
+      {#if usage && !usage.supported && type === "opencode"}
+        <p class="text-[11px] text-black-700 dark:text-black-600">Usage not available — opencode has no usage command.</p>
+      {/if}
       {#if usage?.supported}
         {#if usage.windows.length > 0}
           <div class="space-y-3 pt-1">

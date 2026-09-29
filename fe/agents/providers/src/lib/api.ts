@@ -498,10 +498,20 @@ export async function apiCreateProvider(fields: {
   airouter_models?: Record<string, string>;
   airouter_api_key?: string;
   airouter_raw_config?: string;
+  omp_profile?: string;
+  opencode_data_dir?: string;
 }): Promise<void> {
   const form = new URLSearchParams();
   form.set("type", fields.type);
   form.set("name", fields.name);
+  // Account-store override (omp/opencode). Empty = server default, pinned
+  // on first save.
+  if (fields.omp_profile) {
+    form.set("omp_profile", fields.omp_profile);
+  }
+  if (fields.opencode_data_dir) {
+    form.set("opencode_data_dir", fields.opencode_data_dir);
+  }
   if (fields.binary) {
     form.set("binary", fields.binary);
   }
