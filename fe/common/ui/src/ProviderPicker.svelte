@@ -5,6 +5,7 @@
      <select> was (project defaults, settings). Value is "type/name" or
      "type/name::modelID". */
   import type { ComposerModelOption, ComposerSelectOption } from "./composer-types.js";
+  import { matchModelFilter } from "./modelFilter.js";
 
   type Props = {
     options: ComposerSelectOption[];
@@ -80,19 +81,10 @@
     return entry ? `${optionValue}::${entry}` : optionValue;
   }
 
-  // Filter the drilled instance's models by the search box. Same tiny grammar
-  // as elsewhere: contains by default, `-`/`!` prefix excludes.
+  // Filter the drilled instance's models by the search box — the shared
+  // grammar (modelFilter.ts): AND terms, `a|b` either, `-`/`!` excludes.
   function modelMatches(m: { id: string; label: string }, q: string): boolean {
-    const hay = `${m.id} ${m.label}`.toLowerCase();
-    for (const raw of q.toLowerCase().split(/\s+/)) {
-      const t = raw.trim();
-      if (t === "" || t === "-" || t === "!") continue;
-      const exclude = t.startsWith("-") || t.startsWith("!");
-      const needle = exclude ? t.slice(1) : t;
-      const hit = hay.includes(needle);
-      if (exclude ? hit : !hit) return false;
-    }
-    return true;
+    return matchModelFilter(`${m.id} ${m.label}`, q);
   }
   // The list to render: a live set's expansion when one is open (level 4),
   // else the drilled option's models — loaded ones preferred over the static

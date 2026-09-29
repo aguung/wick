@@ -1445,26 +1445,18 @@ func startNewSession(c *tool.Ctx) {
 	c.Redirect(c.Base()+"/sessions/"+id, http.StatusSeeOther)
 }
 
-// renderCompose re-renders the new-session SPA shell after a failed
-// startNewSession submit. The SPA owns compose state client-side, so
-// message/errMsg are accepted for call-site compatibility only.
-func renderCompose(c *tool.Ctx, _, _ string) {
-	scoped := c.Query("project")
-	if scoped != "" {
-		if _, ok := globalMgr.Registry().Project(scoped); !ok {
-			scoped = ""
-		}
+// renderCompose reports a failed startNewSession submit. The composer posts
+// with fetch and navigates to res.url on any 2xx, so re-rendering the
+// new-session shell here (what this used to do) read as success: the page
+// reloaded to an empty "New session" and the error was gone. A plain-text
+// 422 instead lands in the composer's catch, which toasts the body
+// (fe/agents/new-session createSession). The composer keeps its own text,
+// so message is unused.
+func renderCompose(c *tool.Ctx, _, errMsg string) {
+	if errMsg == "" {
+		errMsg = "Failed to create session."
 	}
-	if scoped == "" {
-		scoped = pinnedProjectID(c)
-	}
-	layout := sidebarVMScoped(c, "new", "", scoped)
-	layout.FullBleed = true
-	c.HTML(view.NewSessionSPA(view.NewSessionSPAVM{
-		Layout:   layout,
-		Base:     c.Base(),
-		AssetURL: spaAssetURL("new-session"),
-	}))
+	c.Error(http.StatusUnprocessableEntity, errMsg)
 }
 
 // ── Overview ──────────────────────────────────────────────────────────
@@ -2593,6 +2585,13 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 	}
 
 	// Level 3: the instance's model choices (live sets stay as expandable rows).
+	// An omp/opencode live list is warmed first, so the drill-in shows the
+	// CLI's models even on a cold cache (render paths only peek).
+	if provider.LiveModelsEnabled(ins) && ins.ModelSelect {
+		ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
+		_, _, _ = provider.CachedCLIModels(ctx, ins, false)
+		cancel()
+	}
 	out := toDTO(modelChoicesFor(ins))
 	if out == nil {
 		out = []modelDTO{}

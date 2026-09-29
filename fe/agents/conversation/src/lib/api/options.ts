@@ -98,5 +98,7 @@ export async function createSessionInProject(
   if (preset) fd.append("preset", preset);
   const res = await fetch(`${base}/`, { method: "POST", body: fd, credentials: "same-origin" });
   if (res.ok || res.redirected) return res.url;
-  throw new Error(`create session failed: ${res.status}`);
+  // The server answers a refused start with a plain-text reason; show it.
+  const body = (await res.text().catch(() => "")).trim();
+  throw new Error(body || `create session failed: ${res.status}`);
 }

@@ -290,6 +290,9 @@ func saveProviderDetail(c *tool.Ctx) {
 		if t == provider.TypeOpencode {
 			keys = append(keys, "opencode_model", "opencode_allow_hosted")
 		}
+		if provider.SupportsServerMode(t) {
+			keys = append(keys, "server_mode", "server_idle_minutes", "load_external_skills")
+		}
 		for _, k := range keys {
 			if _, present := c.R.Form[k]; !present {
 				continue
@@ -480,7 +483,20 @@ func saveProviderInstance(c *tool.Ctx) {
 		return
 	}
 	applyAIRouterForm(&ins, c)
-	if mode := strings.TrimSpace(c.Form("storage_mode")); mode != "" {
+	// A new omp/opencode instance offers every model its CLI lists; the
+	// operator narrows or turns that off in Detail afterwards.
+	if t == provider.TypeOMP || t == provider.TypeOpencode {
+		if _, err := provider.Find(t, name); err != nil {
+			ins.LiveModels = true
+			if t == provider.TypeOpencode {
+				if ins.OpencodeConfig == nil {
+					ins.OpencodeConfig = &provider.OpencodeConfig{}
+				}
+				ins.OpencodeConfig.AllowHosted = true
+			}
+		}
+	}
+	if mode :=strings.TrimSpace(c.Form("storage_mode")); mode != "" {
 		ins.Storage = &provider.StorageConfig{
 			Mode:            mode,
 			SyncPath:        strings.TrimSpace(c.Form("storage_path")),

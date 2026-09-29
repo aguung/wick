@@ -467,3 +467,60 @@ describe("ProviderDetail - opencode MCP + hosted model settings", () => {
     expect(screen.getByTestId("opencode-model-missing")).toBeTruthy();
   });
 });
+
+describe("ProviderDetail - omp/opencode live model list", () => {
+  function liveDetail(live: boolean) {
+    const d = makeDetail();
+    d.Instance = { ...d.Instance, Type: "opencode", Name: "oc" };
+    d.ConfigFields = [
+      { Key: "live_models", Value: live ? "true" : "false", Type: "bool", Options: "", IsSecret: false, Description: "live", Required: false },
+      { Key: "live_model_filter", Value: "gpt", Type: "text", Options: "", IsSecret: false, Description: "filter", Required: false },
+      { Key: "live_model_default", Value: "", Type: "text", Options: "", IsSecret: false, Description: "default", Required: false },
+      { Key: "model_select", Value: "true", Type: "bool", Options: "", IsSecret: false, Description: "", Required: false },
+      { Key: "models", Value: "[]", Type: "kvlist", Options: "id|desc", IsSecret: false, Description: "", Required: false },
+    ];
+    return d;
+  }
+
+  it("live mode shows the CLI list panel instead of the manual list; toggle saves live_models", async () => {
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(liveDetail(true));
+    vi.mocked(api.apiGetCLIModels).mockResolvedValue({ models: [{ id: "openai/gpt-5.5" }, { id: "google/gemini-3" }], offered: [], hostedAllowed: false, fetchedAt: "" });
+    render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    expect(await screen.findByTestId("live-models-panel")).toBeTruthy();
+    expect(screen.queryByText("+ Add model")).toBeNull();
+    // live keys never leak into the generic Configuration rows
+    expect(screen.queryByLabelText("live_model_filter")).toBeNull();
+    await fireEvent.click(screen.getByTestId("model-source-manual"));
+    expect(api.apiSaveConfigKey).toHaveBeenCalledWith("", "opencode", "oc", "live_models", "false");
+  });
+
+  it("manual mode keeps the curated list", async () => {
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(liveDetail(false));
+    render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    expect(await screen.findByTestId("model-source-toggle")).toBeTruthy();
+    expect(screen.queryByTestId("live-models-panel")).toBeNull();
+    expect(screen.getByText("+ Add model")).toBeTruthy();
+  });
+});
+
+describe("ProviderDetail - server mode + Load Claude/Codex skills toggles", () => {
+  it("renders both as switches; server mode off shows the run-per-turn note", async () => {
+    const d = makeDetail();
+    d.Instance = { ...d.Instance, Type: "opencode", Name: "oc" };
+    d.ConfigFields = [
+      { Key: "server_mode", Value: "true", Type: "bool", Options: "", IsSecret: false, Description: "server", Required: false },
+      { Key: "load_external_skills", Value: "false", Type: "bool", Options: "", IsSecret: false, Description: "skills", Required: false },
+    ];
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(d);
+    render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    await fireEvent.click(await screen.findByText("Configuration"));
+    const server = await screen.findByTestId("server-mode-toggle");
+    expect(server.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("load-skills-toggle").getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("field-label-load_external_skills").textContent).toBe("Load Claude/Codex skills");
+    expect(screen.queryByTestId("run-per-turn-note")).toBeNull();
+    await fireEvent.click(server);
+    expect(server.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("run-per-turn-note")).toBeTruthy();
+  });
+});

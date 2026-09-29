@@ -244,9 +244,26 @@ type ProviderInstance struct {
 
 	// OpencodeModel is the provider/model an opencode instance always runs
 	// (sent as --model). OpencodeAllowHosted permits the "opencode/…"
-	// hosted models (opencode Zen); off by default.
+	// hosted models (opencode Zen); nil (never set) = on, so every model the
+	// CLI lists is offered until the operator turns it off.
 	OpencodeModel       string `json:"opencode_model,omitempty"`
-	OpencodeAllowHosted bool   `json:"opencode_allow_hosted,omitempty"`
+	OpencodeAllowHosted *bool  `json:"opencode_allow_hosted,omitempty"`
+
+	// LiveModels makes an omp/opencode instance offer the models its CLI
+	// lists (`omp models` / `opencode models`) instead of the curated
+	// Models, narrowed by LiveModelFilter (modelfilter grammar). LiveModelDefault
+	// pins the default among them; empty or gone = the first match.
+	// nil (never set) = on; an explicit false is kept.
+	LiveModels       *bool  `json:"live_models,omitempty"`
+	LiveModelFilter  string `json:"live_model_filter,omitempty"`
+	LiveModelDefault string `json:"live_model_default,omitempty"`
+
+	// Server mode (opencode; omp later): RunPerTurn opts out of the shared
+	// CLI server, ServerIdleMinutes is its idle-kill window (0 = default),
+	// LoadExternalSkills lets the CLI scan ~/.claude/skills & co.
+	RunPerTurn         bool `json:"run_per_turn,omitempty"`
+	ServerIdleMinutes  int  `json:"server_idle_minutes,omitempty"`
+	LoadExternalSkills bool `json:"load_external_skills,omitempty"`
 
 	// MaxConcurrent caps how many parallel spawns this instance may
 	// have running at once. 0 = unlimited (follows the global pool cap).

@@ -1558,3 +1558,44 @@ export async function apiGetConnections(): Promise<ProviderConnection[]> {
   );
   return normalizeConnections(r);
 }
+
+/* ── omp/opencode live CLI model list ─────────────────────────────────── */
+
+export interface CLIModel {
+  id: string;
+  desc?: string;
+}
+
+/** GET /api/providers/{type}/{name}/cli-models — the CLI's own model list,
+    cached server-side ~10 min (refresh=true re-runs the CLI). `models` is
+    everything listed; `offered` is what the picker gets with the SAVED
+    filter (default first). `error` = a failed refresh over a stale list. */
+export interface CLIModelsResponse {
+  models: CLIModel[];
+  offered: CLIModel[];
+  default?: string;
+  hostedAllowed: boolean;
+  fetchedAt: string;
+  error?: string;
+}
+
+export async function apiGetCLIModels(base: string, type: string, name: string, refresh = false): Promise<CLIModelsResponse> {
+  const r = await get<{ models?: CLIModel[]; offered?: CLIModel[]; default?: string; hosted_allowed?: boolean; fetched_at?: string; error?: string }>(
+    `${base}/api/providers/${encodeURIComponent(type)}/${encodeURIComponent(name)}/cli-models${refresh ? "?refresh=1" : ""}`,
+  );
+  return {
+    models: r.models ?? [],
+    offered: r.offered ?? [],
+    default: r.default,
+    hostedAllowed: r.hosted_allowed ?? true,
+    fetchedAt: r.fetched_at ?? "",
+    error: r.error,
+  };
+}
+
+/** Hosted opencode models (opencode/…, opencode-go/…) — mirrors
+    provider.IsOpencodeHostedModel. */
+export function isOpencodeHostedModel(id: string): boolean {
+  const p = id.split("/")[0];
+  return p === "opencode" || p === "opencode-go";
+}

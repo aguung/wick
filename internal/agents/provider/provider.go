@@ -85,6 +85,24 @@ type Instance struct {
 	ModelSelect bool
 	Models      []ModelEntry
 
+	// LiveModels (omp/opencode only): offer the CLI's own model list,
+	// cached ~10 min and narrowed by LiveModelFilter, in place of Models.
+	// LiveModelDefault pins the default; empty/absent = first match. See
+	// climodels_live.go.
+	LiveModels       bool
+	LiveModelFilter  string
+	LiveModelDefault string
+
+	// Server mode (opencode today; omp later): turns run on one shared
+	// CLI server per instance instead of one process per turn. RunPerTurn
+	// is the opt-out (zero value = server mode ON). ServerIdleMinutes is
+	// the idle-kill window, <= 0 = the provider default — never "off".
+	// LoadExternalSkills lets the CLI scan the host's Claude/Codex skill
+	// dirs (~/.claude/skills, ~/.agents); off by default.
+	RunPerTurn         bool
+	ServerIdleMinutes  int
+	LoadExternalSkills bool
+
 	// Hooks holds the user's enable/disable intent per hook event
 	// (PreToolUse, SessionStart, …). Spawners read this on every
 	// Spawn to decide whether to install / remove the per-workspace
@@ -984,9 +1002,14 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 			}
 			applyAccountConfig(&ins, raw.OMPProfile, raw.OpencodeDataDir)
 			ins.ExtraMCPServers = raw.ExtraMCPServers
+			ins.LiveModels, ins.LiveModelFilter, ins.LiveModelDefault = boolOr(raw.LiveModels, true), raw.LiveModelFilter, raw.LiveModelDefault
+			ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills = raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills
+			if t == TypeOpencode && ins.OpencodeConfig == nil {
+				ins.OpencodeConfig = &OpencodeConfig{}
+			}
 			if ins.OpencodeConfig != nil {
 				ins.OpencodeConfig.Model = raw.OpencodeModel
-				ins.OpencodeConfig.AllowHosted = raw.OpencodeAllowHosted
+				ins.OpencodeConfig.AllowHosted = boolOr(raw.OpencodeAllowHosted, true)
 			}
 			if t == TypeWick {
 				ins.WickModels = wickModelsFromUser(raw.WickModels)
@@ -1062,9 +1085,11 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 	// instance onto a different (logged-out) account.
 	raw.OMPProfile, raw.OpencodeDataDir = accountConfigToUser(ins)
 	raw.ExtraMCPServers = ins.ExtraMCPServers
+	raw.LiveModels, raw.LiveModelFilter, raw.LiveModelDefault = boolPtr(ins.LiveModels), ins.LiveModelFilter, ins.LiveModelDefault
+	raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills = ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills
 	if ins.OpencodeConfig != nil {
 		raw.OpencodeModel = ins.OpencodeConfig.Model
-		raw.OpencodeAllowHosted = ins.OpencodeConfig.AllowHosted
+		raw.OpencodeAllowHosted = boolPtr(ins.OpencodeConfig.AllowHosted)
 	}
 	if ins.Type == TypeWick {
 		raw.WickModels = wickModelsToUser(ins.WickModels)
@@ -1300,3 +1325,15 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// boolOr reads an optional stored flag: nil (never set) is def.
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// boolPtr stores a flag explicitly, so an operator's "off" survives a
+// default that is "on".
+func boolPtr(b bool) *bool { return &b }

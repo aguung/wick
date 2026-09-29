@@ -96,3 +96,4 @@ export {
 export { rankPathHits, scorePath, subsequence, withAncestorDirs } from "./file-search.js";
 export type { PathHit } from "./file-search.js";
 export { formatSize, formatRelTime } from "./file-meta.js";
+export { matchModelFilter, MODEL_FILTER_HELP } from "./modelFilter.js";

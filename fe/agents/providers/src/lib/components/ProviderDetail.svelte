@@ -22,6 +22,7 @@
   import { UsageReport } from "@wick-fe/common-ui";
   import ReconnectPanel from "$lib/components/ReconnectPanel.svelte";
   import ManagedBinaryPanel from "$lib/components/ManagedBinaryPanel.svelte";
+  import LiveModelsPanel from "$lib/components/LiveModelsPanel.svelte";
 
 
   type Props = {
@@ -238,8 +239,21 @@
   // model_select + models render together in their own "Model selection"
   // card, so exclude them from the generic Configuration / value-list
   // sections (else they'd appear twice).
-  const MODEL_KEYS = new Set(["model_select", "models"]);
+  // live_models / live_model_filter / live_model_default (omp/opencode's
+  // "live from CLI" list) render in the same card.
+  const MODEL_KEYS = new Set(["model_select", "models", "live_models", "live_model_filter", "live_model_default"]);
   const isModelField = (f: ConfigFieldDTO) => MODEL_KEYS.has(f.Key);
+  // Shared-CLI-server settings (opencode today, omp next): generic keys, so
+  // one label + test id per key covers every provider that has them.
+  const FIELD_LABELS: Record<string, string> = {
+    server_mode: "Server mode",
+    server_idle_minutes: "Server idle (minutes)",
+    load_external_skills: "Load Claude/Codex skills",
+  };
+  const SWITCH_TESTIDS: Record<string, string> = {
+    server_mode: "server-mode-toggle",
+    load_external_skills: "load-skills-toggle",
+  };
 
   let simpleFields = $derived(data ? data.ConfigFields.filter((f) => isSimpleField(f) && !isModelField(f)) : []);
   let valueListFields = $derived(data ? data.ConfigFields.filter((f) => isValueListEditor(f) && !isModelField(f) && fieldVisible(f)) : []);
@@ -251,6 +265,14 @@
   // The two model-picker fields, for the dedicated card.
   const modelSelectField = $derived(data?.ConfigFields.find((f) => f.Key === "model_select"));
   const modelsField = $derived(data?.ConfigFields.find((f) => f.Key === "models"));
+  // Present only for omp/opencode: the CLI can list its own models.
+  const liveModelsField = $derived(data?.ConfigFields.find((f) => f.Key === "live_models"));
+  const liveMode = $derived(!!liveModelsField && fieldValues["live_models"] === "true");
+
+  function saveModelKey(key: string, value: string) {
+    fieldValues[key] = value;
+    void apiSaveConfigKey(base, type, name, key, value).then(() => load(true)).catch((e) => toastError(e instanceof Error ? e.message : String(e)));
+  }
   // Per-type seed models (from the backend), shown as the effective default
   // and offered as a one-click starting point when the list is empty.
   const defaultModels = $derived(data?.DefaultModels ?? []);
@@ -865,6 +887,7 @@
               <div>
                 <div class="flex items-center gap-2 mb-1.5">
                   <span class="font-mono text-xs font-semibold text-black-900 dark:text-white-100">{f.Key}</span>
+                  {#if FIELD_LABELS[f.Key]}<span data-testid={`field-label-${f.Key}`} class="text-xs text-black-700 dark:text-black-600">{FIELD_LABELS[f.Key]}</span>{/if}
                   {#if f.Required && f.Value === ""}
                     <span class="rounded bg-red-100 dark:bg-red-900 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:text-red-300">missing</span>
                   {:else if f.Required}
@@ -911,6 +934,7 @@
                     type="button"
                     role="switch"
                     aria-label={f.Key}
+                    data-testid={SWITCH_TESTIDS[f.Key] ?? `config-switch-${f.Key}`}
                     aria-checked={fieldValues[f.Key] === "true"}
                     onclick={() => (fieldValues[f.Key] = fieldValues[f.Key] === "true" ? "false" : "true")}
                     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors {fieldValues[f.Key] === 'true' ? 'bg-green-500' : 'bg-white-400 dark:bg-navy-600'}"
@@ -931,6 +955,9 @@
                   <p data-testid="opencode-hosted-warning" class="mt-1.5 rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">
                     Hosted opencode models are ON: every prompt, file and tool output of sessions on this instance is sent to opencode's servers.
                   </p>
+                {/if}
+                {#if f.Key === "server_mode" && fieldValues[f.Key] !== "true"}
+                  <p data-testid="run-per-turn-note" class="mt-1.5 text-[11px] text-black-700 dark:text-black-600">Server mode is off: every turn starts its own opencode run process (slower, more memory per turn).</p>
                 {/if}
                 {#if f.Key === "opencode_model" && !(fieldValues[f.Key] ?? "").trim()}
                   <p data-testid="opencode-model-missing" class="mt-1.5 text-[11px] text-neg-400">No model set — spawns on this instance are refused until you pick one (or a session pins one).</p>
@@ -978,9 +1005,38 @@
             </span>
           </label>
 
+          <!-- omp/opencode: the list is either what the CLI lists (live,
+               filtered) or hand-curated. The live default also drives the
+               spawn's --model when a session picked none. -->
+          {#if liveModelsField}
+            <div class="inline-flex rounded-lg border border-white-400 dark:border-navy-600 p-0.5" role="radiogroup" aria-label="Model list source" data-testid="model-source-toggle">
+              {#each [{ v: "true", l: "Live from CLI" }, { v: "false", l: "Manual" }] as o (o.v)}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={(fieldValues["live_models"] === "true") === (o.v === "true")}
+                  data-testid={`model-source-${o.v === "true" ? "live" : "manual"}`}
+                  onclick={() => saveModelKey("live_models", o.v)}
+                  class="rounded-md px-3 py-1 text-xs font-medium transition-colors {(fieldValues['live_models'] === 'true') === (o.v === 'true') ? 'bg-green-600 text-white-100' : 'text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800'}"
+                >{o.l}</button>
+              {/each}
+            </div>
+          {/if}
+          {#if liveMode}
+            <LiveModelsPanel
+              {base}
+              {type}
+              {name}
+              filter={fieldValues["live_model_filter"] ?? ""}
+              pin={fieldValues["live_model_default"] ?? ""}
+              onSaveFilter={(v) => saveModelKey("live_model_filter", v)}
+              onSavePin={(v) => saveModelKey("live_model_default", v)}
+            />
+          {/if}
+
           <!-- The models list is part of the same control, not a second
                section: one heading, one description, no `models` key label. -->
-          {#if fieldValues["model_select"] === "true" && modelsField}
+          {#if !liveMode && fieldValues["model_select"] === "true" && modelsField}
             {@const f = modelsField}
             {@const empty = (editorRows[f.Key] ?? []).length === 0}
             <div>

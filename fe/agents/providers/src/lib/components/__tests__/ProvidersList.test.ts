@@ -4,10 +4,15 @@ import ProvidersList from "../ProvidersList.svelte";
 import { expectCardRhythm } from "./cardRhythm.js";
 import * as api from "$lib/api.js";
 import * as tty from "$lib/logintty.js";
+import * as mb from "$lib/managedbin.js";
 import type { ProvidersListResponse, ProviderConnection } from "$lib/types.js";
 
 vi.mock("$lib/api.js");
 vi.mock("$lib/logintty.js");
+vi.mock("$lib/managedbin.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("$lib/managedbin.js")>()),
+  apiManagedList: vi.fn(async () => ({ types: [], isAdmin: true })),
+}));
 vi.mock("@wick-fe/common-stores", () => ({
   toastOk: vi.fn(),
   toastError: vi.fn(),
@@ -466,5 +471,46 @@ describe("ProvidersList - card rhythm", () => {
     const { container } = render(ProvidersList, { props: { onNavigate: vi.fn(), onOpenSession: vi.fn(), base: "" } });
     await screen.findByText("claude/claude");
     expectCardRhythm(container);
+  });
+});
+
+describe("ProvidersList managed binary indicator", () => {
+  function withOmp(): ProvidersListResponse {
+    const d = makeData();
+    d.Providers.push({
+      ...d.Providers[0],
+      Instance: { ...d.Providers[0].Instance, Type: "omp", Name: "omp", Binary: "" },
+      Path: "/data/providers/bin/omp/versions/18.4.3/omp",
+    });
+    return d;
+  }
+  const omp = (over: Record<string, unknown> = {}) =>
+    mb.normalizeManaged({ type: "omp", enabled: true, current: "18.4.3", latest: { tag: "v18.4.4", version: "18.4.4" }, update_available: true, ...over });
+
+  it("shows the active version + update badge, no action buttons; click opens Detail", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withOmp());
+    vi.mocked(mb.apiManagedList).mockResolvedValue({ types: [omp()], isAdmin: true });
+    const onNavigate = vi.fn();
+    render(ProvidersList, { props: { base: "", onNavigate } });
+    const ind = await screen.findByTestId("card-managed-binary");
+    expect(ind.dataset.state).toBe("installed");
+    expect(ind.textContent).toContain("v18.4.3");
+    expect(screen.getByTestId("card-managed-update").textContent).toBe("update available v18.4.4");
+    expect(screen.queryByTestId("managed-binary-panel")).toBeNull();
+    await fireEvent.click(ind);
+    expect(onNavigate).toHaveBeenCalledWith("omp", "omp");
+  });
+
+  it("not installed / running download", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withOmp());
+    vi.mocked(mb.apiManagedList).mockResolvedValue({
+      types: [omp({ current: "", update_available: false, job: { phase: "download", done: 45, total: 100, tag: "v18.4.4", version: "18.4.4" } })],
+      isAdmin: true,
+    });
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    const ind = await screen.findByTestId("card-managed-binary");
+    expect(ind.dataset.state).toBe("missing");
+    expect(screen.getByTestId("card-managed-job").textContent).toBe("Downloading v18.4.4… 45%");
+    expect(screen.queryByTestId("card-managed-update")).toBeNull();
   });
 });

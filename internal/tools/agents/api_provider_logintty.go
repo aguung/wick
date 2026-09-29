@@ -442,8 +442,8 @@ func accountStoreLabel(ins provider.Instance) string {
 
 // apiProviderCLIModels asks an omp/opencode instance's CLI for the models
 // its logged-in account can use (`omp models --json` / `opencode models`),
-// for the model picker's refresh button. Read-only: nothing is saved — the
-// SPA puts the chosen ids into the instance's model list itself.
+// for the Model selection card (live list preview + Refresh). Read-only:
+// the live filter/default are saved as ordinary config keys.
 func apiProviderCLIModels(c *tool.Ctx) {
 	if notReady(c) || !requireApprovedUser(c) {
 		return
@@ -457,8 +457,9 @@ func apiProviderCLIModels(c *tool.Ctx) {
 	}
 	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
 	defer cancel()
-	seeds, err := provider.ListCLIModels(ctx, ins)
-	if err != nil {
+	// Served from the per-instance cache (~10 min); ?refresh=1 re-execs.
+	seeds, fetchedAt, err := provider.CachedCLIModels(ctx, ins, c.Query("refresh") == "1")
+	if err != nil && len(seeds) == 0 {
 		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -466,9 +467,30 @@ func apiProviderCLIModels(c *tool.Ctx) {
 		ID   string `json:"id"`
 		Desc string `json:"desc,omitempty"`
 	}
-	out := make([]model, 0, len(seeds))
-	for _, s := range seeds {
-		out = append(out, model{ID: s.ID, Desc: s.Desc})
+	toDTO := func(ms []provider.ModelSeed) []model {
+		out := make([]model, 0, len(ms))
+		for _, s := range ms {
+			out = append(out, model{ID: s.ID, Desc: s.Desc})
+		}
+		return out
 	}
-	c.JSON(http.StatusOK, map[string]any{"models": out})
+	// models = everything the CLI lists (the FE previews an unsaved filter
+	// over it); offered = what the picker gets with the SAVED filter, the
+	// effective default first. hosted_allowed tells the FE whether
+	// opencode/… entries count.
+	offered := provider.LiveDefaultFirst(provider.FilterLiveModels(ins, seeds), ins.LiveModelDefault)
+	resp := map[string]any{
+		"models":         toDTO(seeds),
+		"offered":        toDTO(offered),
+		"hosted_allowed": ins.Type != provider.TypeOpencode || provider.OpencodeHostedAllowed(ins),
+		"fetched_at":     fetchedAt.UTC().Format(time.RFC3339),
+	}
+	if len(offered) > 0 {
+		resp["default"] = offered[0].ID
+	}
+	if err != nil {
+		// Refresh failed; the last good list is still served.
+		resp["error"] = err.Error()
+	}
+	c.JSON(http.StatusOK, resp)
 }

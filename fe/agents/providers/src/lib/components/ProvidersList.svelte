@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ConfirmDialog, Select } from "@wick-fe/common-ui";
+  import { ConfirmDialog, Modal, Select } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import AIRouterConfig from "$lib/components/AIRouterConfig.svelte";
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
@@ -1117,11 +1117,11 @@
   {/if}
 </div>
 
-{#if addOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="w-full max-w-lg rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-6 shadow-xl mx-4">
-      <h2 class="mb-4 text-base font-semibold text-black-900 dark:text-white-100">New Provider Instance</h2>
-      <form onsubmit={doCreate} class="space-y-4">
+<!-- Shared Modal: the body scrolls inside a 90vh cap and the footer stays
+     pinned, so Create is reachable however tall the form grows (the managed
+     binary panel alone adds a card). -->
+<Modal open={addOpen} title="New Provider Instance" size="lg" closeOnBackdrop={false} onClose={() => { addOpen = false; }}>
+      <form id="add-provider-form" onsubmit={doCreate} class="space-y-4">
         <div>
           <label for="add-provider-type" class="block text-xs font-medium text-black-800 dark:text-black-600 mb-1">Type <span class="text-red-500">*</span></label>
           <Select
@@ -1217,14 +1217,12 @@
           bind:rawConfig={formAirouterRawConfig}
           routers={airouterRouters}
         />
-        <div class="flex justify-end gap-3 pt-2">
-          <button type="button" onclick={() => { addOpen = false; }} class="rounded-lg border border-white-400 dark:border-navy-600 px-4 py-2 text-sm text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">Cancel</button>
-          <button type="submit" disabled={busy["create"] || !!formNameError || !!formStoreError} class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 disabled:opacity-50">{busy["create"] ? "Creating…" : "Create"}</button>
-        </div>
       </form>
-    </div>
-  </div>
-{/if}
+  {#snippet footer()}
+    <button type="button" onclick={() => { addOpen = false; }} class="rounded-lg border border-white-400 dark:border-navy-600 px-4 py-2 text-sm text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-800">Cancel</button>
+    <button type="submit" form="add-provider-form" disabled={busy["create"] || !!formNameError || !!formStoreError} class="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white-100 hover:bg-green-600 disabled:opacity-50">{busy["create"] ? "Creating…" : "Create"}</button>
+  {/snippet}
+</Modal>
 
 <ConfirmDialog
   open={confirmDelete !== null}

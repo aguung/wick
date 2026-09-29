@@ -14,6 +14,7 @@
   import CapabilityChips from "./CapabilityChips.svelte";
   import CapabilityModal from "./CapabilityModal.svelte";
   import type { ComposerCommand, ComposerSelect, ComposerSelectOption, ComposerModelOption } from "./composer-types.js";
+  import { matchModelFilter } from "./modelFilter.js";
 
   type Props = {
     onSend: (msg: { text: string; files: File[] }) => void;
@@ -647,16 +648,7 @@
     return modelCache[modelDrillOpt.value] ?? modelDrillOpt.models ?? [];
   });
   function modelRowMatches(m: ComposerModelOption, q: string): boolean {
-    const hay = `${m.id} ${m.label}`.toLowerCase();
-    for (const raw of q.toLowerCase().split(/\s+/)) {
-      const t = raw.trim();
-      if (t === "" || t === "-" || t === "!") continue;
-      const exclude = t.startsWith("-") || t.startsWith("!");
-      const needle = exclude ? t.slice(1) : t;
-      const hit = hay.includes(needle);
-      if (exclude ? hit : !hit) return false;
-    }
-    return true;
+    return matchModelFilter(`${m.id} ${m.label}`, q);
   }
   const drillModels = $derived.by(() => {
     const q = modelDrillSearch.trim();
@@ -940,9 +932,11 @@
   function isActive(s: ComposerSelect | undefined): boolean {
     return !!s && !!s.value;
   }
-  // Provider brand from the "type/name" value: claude / codex / gemini / other.
-  function provType(value: string): "claude" | "codex" | "gemini" | "wick" | "other" {
+  // Provider brand from the "type/name" value: claude / codex / gemini / opencode / omp / other.
+  function provType(value: string): "claude" | "codex" | "gemini" | "opencode" | "omp" | "wick" | "other" {
     const t = (value.split("/")[0] || "").toLowerCase();
+    if (t === "opencode") return "opencode";
+    if (t === "omp") return "omp";
     if (t.includes("claude")) return "claude";
     if (t.includes("codex") || t.includes("openai")) return "codex";
     if (t.includes("gemini")) return "gemini";
@@ -991,7 +985,7 @@
 
 {#snippet provIcon(value: string, cls: string)}
   {@const t = provType(value)}
-  {#if t === "claude" || t === "gemini" || t === "wick"}
+  {#if t === "claude" || t === "gemini" || t === "opencode" || t === "omp" || t === "wick"}
     <!-- Multicolor brand marks served statically from /public/img/providers (embedded). -->
     <img
       src={`/public/img/providers/${t}.svg`}

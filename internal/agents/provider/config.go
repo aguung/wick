@@ -38,11 +38,31 @@ type AccountCLIConfig struct {
 	ExtraMCPServers string `wick:"key=extra_mcp_servers;textarea;desc=Extra MCP servers for this instance, JSON in mcpServers shape — e.g. {\"github\": {\"type\": \"http\", \"url\": \"https://…\", \"headers\": {\"Authorization\": \"Bearer ${GITHUB_TOKEN}\"}}}. Merged next to wick's own server (the name \"wick\" is reserved). Secrets must be ${VAR} references to the Env above, never plaintext. MCP from the host (~/.claude.json, ~/.cursor, project opencode.json, …) is NOT loaded — only wick + these."`
 }
 
+// LiveCLIModelConfig is the omp/opencode "live from CLI" model list: the
+// picker offers what the CLI itself lists, narrowed by a filter. Rendered by
+// the FE inside the Model selection card, not as generic rows.
+type LiveCLIModelConfig struct {
+	LiveModels       bool   `wick:"bool;key=live_models;group=Model selection;desc=Offer the models this instance's CLI lists (refreshed every ~10 min) instead of the manual list."`
+	LiveModelFilter  string `wick:"key=live_model_filter;group=Model selection;desc=Filter over the CLI's models: space-separated terms all must match, a|b = either, !term or -term excludes. e.g. claude|gpt !mini. Empty = all."`
+	LiveModelDefault string `wick:"key=live_model_default;group=Model selection;desc=Default model among the filtered list. Empty or no longer listed = the first match."`
+}
+
 // OpencodeModelConfig is the opencode-only model/hosting section.
 type OpencodeModelConfig struct {
 	Model       string `wick:"key=opencode_model;desc=provider/model this instance runs (sent as --model), e.g. openai/gpt-5.5. Required: without it opencode silently uses its hosted default model."`
-	AllowHosted string `wick:"key=opencode_allow_hosted;dropdown=false|true;desc=Allow opencode/… hosted models (opencode Zen). They send the whole conversation to opencode's servers — keep off unless that is intended."`
+	AllowHosted string `wick:"key=opencode_allow_hosted;dropdown=false|true;desc=Allow opencode/… hosted models (opencode Zen). On by default so every model the CLI lists is offered; they send the whole conversation to opencode's servers — turn off to keep to your own providers."`
 }
+
+// ServerModeConfig is the shared-CLI-server section (opencode today, omp
+// next). Generic keys so one FE toggle serves every provider that has it.
+type ServerModeConfig struct {
+	ServerMode         bool `wick:"bool;key=server_mode;desc=Run turns on one shared CLI server per instance (fast: ~2 s per turn, one ~500 MB process shared by all sessions). Off = one process per turn (the old path: ~6 s and up to ~800 MB each). A change applies from the next turn; a server no longer needed stops once no turn is running."`
+	ServerIdleMinutes  int  `wick:"key=server_idle_minutes;desc=Minutes the shared server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = 10; it cannot be turned off."`
+	LoadExternalSkills bool `wick:"bool;key=load_external_skills;desc=Load Claude/Codex skills: let the CLI scan the host's ~/.claude/skills and ~/.agents skill dirs. Off = only the instance's own skills."`
+}
+
+// SupportsServerMode reports whether t has the shared-server mode.
+func SupportsServerMode(t Type) bool { return t == TypeOpencode }
 
 // SeedInstanceConfig returns populated entity.Config rows for an Instance.
 func SeedInstanceConfig(ins Instance) []pkgentity.Config {
@@ -59,6 +79,11 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 	})
 	if ins.Type == TypeOMP || ins.Type == TypeOpencode {
 		rows = append(rows, pkgentity.StructToConfigs(AccountCLIConfig{ExtraMCPServers: ins.ExtraMCPServers})...)
+		rows = append(rows, pkgentity.StructToConfigs(LiveCLIModelConfig{
+			LiveModels:       ins.LiveModels,
+			LiveModelFilter:  ins.LiveModelFilter,
+			LiveModelDefault: ins.LiveModelDefault,
+		})...)
 	}
 	if ins.Type == TypeOpencode {
 		oc := OpencodeModelConfig{AllowHosted: "false"}
@@ -69,6 +94,13 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 			}
 		}
 		rows = append(rows, pkgentity.StructToConfigs(oc)...)
+	}
+	if SupportsServerMode(ins.Type) {
+		rows = append(rows, pkgentity.StructToConfigs(ServerModeConfig{
+			ServerMode:         !ins.RunPerTurn,
+			ServerIdleMinutes:  ins.ServerIdleMinutes,
+			LoadExternalSkills: ins.LoadExternalSkills,
+		})...)
 	}
 	// CLI model picker — claude/codex/gemini only (wick uses WickModels).
 	if ins.Type != TypeWick {
@@ -108,10 +140,23 @@ func ApplyInstanceConfigKey(ins *Instance, key, value string) {
 		ins.Models = kvListToModels(value)
 	case "extra_mcp_servers":
 		ins.ExtraMCPServers = strings.TrimSpace(value)
+	case "live_models":
+		ins.LiveModels = value == "true" || value == "on"
+	case "live_model_filter":
+		ins.LiveModelFilter = strings.TrimSpace(value)
+	case "live_model_default":
+		ins.LiveModelDefault = strings.TrimSpace(value)
 	case "opencode_model":
 		ensureOpencodeConfig(ins).Model = strings.TrimSpace(value)
 	case "opencode_allow_hosted":
 		ensureOpencodeConfig(ins).AllowHosted = value == "true" || value == "on"
+	case "server_idle_minutes":
+		n, _ := strconv.Atoi(strings.TrimSpace(value))
+		ins.ServerIdleMinutes = n
+	case "server_mode":
+		ins.RunPerTurn = !(value == "true" || value == "on")
+	case "load_external_skills":
+		ins.LoadExternalSkills = value == "true" || value == "on"
 	}
 }
 
@@ -132,6 +177,12 @@ func ValidateInstanceConfigKey(key, value string) error {
 		v := strings.TrimSpace(value)
 		if v != "" && !strings.Contains(v, "/") {
 			return fmt.Errorf("opencode model must be provider/model, got %q", v)
+		}
+	case "server_idle_minutes":
+		if v := strings.TrimSpace(value); v != "" {
+			if n, err := strconv.Atoi(v); err != nil || n < 0 {
+				return fmt.Errorf("opencode server idle minutes must be a whole number of minutes, got %q", v)
+			}
 		}
 	}
 	return nil
