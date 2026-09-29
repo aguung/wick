@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TraceNote from "./TraceNote.svelte";
   import type { ConversationTurn, ThreadBlock, TurnEvent, TurnEventPayload } from "../types/agents.js";
   import { renderMarkdown, linkifyText } from "../markdown.js";
   import { turnTime, parseEventTime } from "../timeFormat.js";
@@ -596,17 +597,8 @@
           {#if traceOpen}
             <div class="flex flex-col gap-1 mt-0.5" data-trace-blocks>
               {#each nonTodoBlocks as block}
-                {#if block.kind === "thinking"}
-                  <div data-thinking-block class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 overflow-hidden text-xs px-3 py-2 italic text-black-600 dark:text-black-700 whitespace-pre-wrap break-words">
-                    {block.text}
-                  </div>
-                {:else if block.kind === "text"}
-                  <!-- Narration segment streamed before a tool call — same card
-                       as thinking but upright and a step darker, so "what the
-                       agent said" reads apart from "what it thought". -->
-                  <div data-text-block class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 overflow-hidden text-xs px-3 py-2 text-black-800 dark:text-black-500 whitespace-pre-wrap break-words">
-                    {block.text}
-                  </div>
+                {#if block.kind === "thinking" || block.kind === "text"}
+                  <TraceNote kind={block.kind} text={block.text} />
                 {:else if block.kind === "raw"}
                   <details class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 overflow-hidden text-xs">
                     <summary class="cursor-pointer px-3 py-2 text-black-600 dark:text-black-700 select-none">Raw event</summary>
