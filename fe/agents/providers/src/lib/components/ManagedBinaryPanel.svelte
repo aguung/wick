@@ -1,31 +1,42 @@
 <script lang="ts">
   /* ManagedBinaryPanel — the "Binary" section for one wick-managed type
-     (omp, opencode): active version, host, newest release, Install/Update
-     (latest or a picked version), live job progress, installed versions
-     with rollback/remove, and how many sessions still run an old file.
+     (omp, opencode). Summary on top: active version, host, newest release
+     and what to do about it (Download vX, then Activate vX). Below, one
+     version list = cached GitHub releases + downloaded versions, each row
+     with its own status and action: Download (fetch + verify + store only,
+     `current` untouched), Activate (instant switch, sha256 re-checked),
+     Remove. A first install activates on its own — nothing to switch from.
+     Progress is the server job, so it survives a reload; while it runs
+     every action for the type is disabled and shows the job's progress.
      Nothing downloads unless an admin clicks; the server re-checks
      everything (sha256, --version, in-use) regardless of what this shows. */
   import { onDestroy, onMount } from "svelte";
-  import { Button, Select } from "@wick-fe/common-ui";
-  import { toastError, toastOk } from "@wick-fe/common-stores";
+  import { Button, ProgressBar } from "@wick-fe/common-ui";
+  import { toastError, toastOk, toastWarn } from "@wick-fe/common-stores";
   import {
     apiManagedList,
-    apiManagedInstall,
+    apiManagedDownload,
     apiManagedActivate,
     apiManagedRemove,
     apiManagedCheck,
     apiManagedVerify,
-    apiManagedReleases,
+    CheckTooSoonError,
     isRunning,
     jobLabel,
+    jobPct,
+    jobShort,
+    jobVersion,
+    latestState,
     sessionsNote,
+    versionRows,
     type ManagedBinary,
+    type ManagedJob,
   } from "$lib/managedbin.js";
 
   type Props = {
     base: string;
     type: string;
-    /* Compact = inside the Add form: status + Install only. */
+    /* Compact = inside the Add form: status + first download only. */
     compact?: boolean;
     onChange?: (m: ManagedBinary | null) => void;
   };
@@ -35,8 +46,6 @@
   let isAdmin = $state(false);
   let loading = $state(true);
   let busy = $state("");
-  let pickTag = $state("");
-  let releases = $state<{ tag: string; prerelease: boolean }[]>([]);
   let verifyOut = $state<{ output: string; error: string } | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -60,9 +69,9 @@
       onChange?.(data);
       if (prevRunning && data && !isRunning(data.job) && data.job) {
         if (data.job.phase === "error") toastError(`${type}: ${data.job.error}`);
-        else toastOk(`${type}: ${data.job.message || "installed"}`);
+        else toastOk(`${type}: ${data.job.message || "done"}`);
       }
-    } catch (e) {
+    } catch {
       data = null;
     } finally {
       loading = false;
@@ -85,32 +94,33 @@
     try {
       await f();
     } catch (e) {
-      toastError(errText(e));
+      if (e instanceof CheckTooSoonError) toastWarn(e.message);
+      else toastError(errText(e));
     } finally {
       busy = "";
       await load();
     }
   }
 
-  const install = (tag = "") => act("install", () => apiManagedInstall(base, type, tag));
+  // A 409 already_running is not an error: adopt the job in flight so its
+  // progress shows right away, then keep polling it.
+  const download = (tag = "") =>
+    act("dl-" + (tag || "latest"), async () => {
+      const r = await apiManagedDownload(base, type, tag);
+      if (data && r.job) data.job = r.job as ManagedJob;
+    });
   const activate = (v: string) => act("act-" + v, async () => { await apiManagedActivate(base, type, v); toastOk(`${type} v${v} is now active`); });
   const remove = (v: string) => act("rm-" + v, async () => { await apiManagedRemove(base, type, v); toastOk(`Removed ${type} v${v}`); });
   const check = () => act("check", () => apiManagedCheck(base, type));
   const verify = () => act("verify", async () => { verifyOut = await apiManagedVerify(base, type); });
 
-  async function loadReleases(): Promise<void> {
-    if (releases.length > 0) return;
-    try {
-      releases = await apiManagedReleases(base, type);
-    } catch (e) {
-      toastError(errText(e));
-    }
-  }
-
-  const running = $derived(isRunning(data?.job ?? null));
+  const job = $derived(data && isRunning(data.job) ? data.job : null);
+  const jobV = $derived(job ? jobVersion(job) : "");
+  const locked = $derived(!!job || busy !== "");
   const note = $derived(data ? sessionsNote(data) : "");
-  const failed = $derived(data?.lastJob?.phase === "error" && !running ? data.lastJob : null);
-  const installedTags = $derived(new Set((data?.installed ?? []).map((i) => i.tag)));
+  const failed = $derived(data?.lastJob?.phase === "error" && !job ? data.lastJob : null);
+  const rows = $derived(data ? versionRows(data) : []);
+  const latestAct = $derived(data ? latestState(data) : "");
 </script>
 
 <div data-testid="managed-binary-panel" data-type={type} class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 {compact ? 'p-3' : 'p-5'} space-y-3">
@@ -137,10 +147,10 @@
         <span data-testid="managed-not-installed" class="text-neg-400 font-medium">Binary not installed</span>
       {/if}
       {#if data.latest}
-        <span class="text-black-800 dark:text-black-600">Latest on GitHub <span class="font-mono">{data.latest}</span></span>
+        <span class="text-black-800 dark:text-black-600" title={data.latestCheckedAt ? `checked ${new Date(data.latestCheckedAt).toLocaleString()}` : ""}>Latest on GitHub <span class="font-mono">{data.latest}</span></span>
       {/if}
       {#if data.updateAvailable}
-        <span data-testid="managed-update-available" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available</span>
+        <span data-testid="managed-update-available" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available {data.latest}</span>
       {/if}
       {#if note}
         <span data-testid="managed-sessions-old" class="text-black-800 dark:text-black-600">{note}</span>
@@ -149,50 +159,30 @@
     {#if data.currentPath && !compact}
       <p class="font-mono text-[11px] text-black-700 dark:text-black-600 break-all">{data.currentPath}</p>
     {/if}
+    {#if data.latestErr && !compact}
+      <p data-testid="managed-latest-err" class="text-[11px] text-black-700 dark:text-black-600">Last GitHub check failed: {data.latestErr}</p>
+    {/if}
 
-    {#if running && data.job}
-      <div data-testid="managed-job" class="space-y-1">
-        <p class="text-xs text-black-900 dark:text-white-100">{data.job.tag || "latest"} · {jobLabel(data.job)}</p>
-        {#if data.job.phase === "download" && data.job.total > 0}
-          <div class="h-2 w-full rounded-full bg-white-300 dark:bg-navy-600 overflow-hidden">
-            <div class="h-full rounded-full bg-green-500" style={`width: ${Math.min(100, (data.job.done / data.job.total) * 100)}%`}></div>
-          </div>
-        {/if}
-      </div>
+    {#if job}
+      <ProgressBar class="max-w-md" testid="managed-job" pct={jobPct(job)} label={jobLabel(job)} />
     {:else if failed}
-      <p data-testid="managed-job-error" class="rounded-lg border border-neg-400 px-3 py-2 text-xs text-neg-400">Last install failed ({failed.tag || "latest"}): {failed.error}. The active version was not changed.</p>
+      <p data-testid="managed-job-error" class="rounded-lg border border-neg-400 px-3 py-2 text-xs text-neg-400">Last download failed ({failed.tag || "latest"}): {failed.error}. The active version was not changed.</p>
     {/if}
 
     {#if isAdmin && data.enabled}
       <div class="flex flex-wrap items-center gap-2">
         {#if !data.current}
-          <Button variant="primary" disabled={running || busy !== ""} onclick={() => install()}>Download from GitHub</Button>
-        {:else if data.updateAvailable}
-          <Button variant="primary" disabled={running || busy !== ""} onclick={() => install()}>Update to {data.latest}</Button>
+          <Button variant="primary" testid="managed-download-first" disabled={locked} onclick={() => download()}>{job ? jobShort(job) : "Download from GitHub"}</Button>
+        {:else if latestAct === "download"}
+          <Button variant="primary" testid="managed-download-latest" disabled={locked} onclick={() => download(data!.latest)}>{job ? jobShort(job) : `Download ${data.latest}`}</Button>
+        {:else if latestAct === "activate"}
+          <Button variant="primary" testid="managed-activate-latest" disabled={locked} onclick={() => activate(data!.latestVersion)}>{job ? jobShort(job) : `Activate ${data.latest}`}</Button>
         {/if}
         {#if !compact}
-          <Button variant="secondary" disabled={busy !== ""} onclick={check}>{busy === "check" ? "Checking…" : "Check for update"}</Button>
+          <Button variant="secondary" testid="managed-check" disabled={locked} onclick={check}>{busy === "check" ? "Checking…" : "Check for update"}</Button>
           {#if data.current}
-            <Button variant="secondary" disabled={busy !== ""} onclick={verify}>Re-check --version</Button>
+            <Button variant="secondary" disabled={locked} onclick={verify}>Re-check --version</Button>
           {/if}
-          <div class="flex items-center gap-2" data-testid="managed-pick-version">
-            <div role="presentation" onfocusin={() => void loadReleases()} onmouseenter={() => void loadReleases()}>
-              <Select
-                class="w-48"
-                size="sm"
-                ariaLabel="Pick a version"
-                placeholder="Pick a version…"
-                value={pickTag}
-                options={releases.map((r) => ({
-                  label: r.tag,
-                  value: r.tag,
-                  ...(installedTags.has(r.tag) ? { badge: "installed" } : r.prerelease ? { badge: "pre" } : {}),
-                }))}
-                onChange={(v) => { pickTag = v; }}
-              />
-            </div>
-            <Button variant="secondary" disabled={!pickTag || running || busy !== ""} onclick={() => install(pickTag)}>Install</Button>
-          </div>
         {/if}
       </div>
     {/if}
@@ -203,33 +193,58 @@
       </p>
     {/if}
 
-    {#if !compact && data.installed.length > 0}
+    {#if !compact && rows.length > 0}
       <div class="space-y-1">
-        <p class="text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">INSTALLED VERSIONS</p>
-        <ul class="divide-y divide-white-300 dark:divide-navy-600 text-xs">
-          {#each data.installed as v (v.version)}
-            <li data-testid="managed-version-row" class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
-              <span class="font-mono font-medium text-black-900 dark:text-white-100">v{v.version}</span>
-              {#if v.current}
-                <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-1.5 py-0.5 text-[11px] font-medium text-pos-400">active</span>
-              {/if}
-              <span class="text-black-700 dark:text-black-600">{v.installedAt ? new Date(v.installedAt).toLocaleString() : ""}</span>
-              <span class="font-mono text-black-700 dark:text-black-600" title={v.sha256}>sha256 {v.sha256.slice(0, 12)}</span>
-              {#if v.inUse > 0}
-                <span class="text-black-800 dark:text-black-600">{v.inUse} running</span>
-              {/if}
-              {#if isAdmin}
-                <span class="ml-auto flex gap-2">
-                  {#if !v.current}
-                    <Button variant="secondary" disabled={busy !== "" || running} onclick={() => activate(v.version)}>Use this version</Button>
+        <p class="text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">VERSIONS</p>
+        <ul data-testid="managed-version-list" class="divide-y divide-white-300 dark:divide-navy-600 text-xs">
+          {#each rows as r (r.version)}
+            {@const rowJob = job && jobV === r.version ? job : null}
+            <li data-testid="managed-version-row" data-version={r.version} data-status={r.status} class="py-2 space-y-1.5">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class="font-mono font-medium text-black-900 dark:text-white-100">v{r.version}</span>
+                {#if r.status === "active"}
+                  <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-1.5 py-0.5 text-[11px] font-medium text-pos-400">active</span>
+                {:else if r.status === "downloaded"}
+                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">downloaded</span>
+                {:else}
+                  <span class="text-[11px] text-black-700 dark:text-black-600">not downloaded</span>
+                {/if}
+                {#if r.latest}
+                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">latest</span>
+                {/if}
+                {#if r.prerelease}
+                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">pre</span>
+                {/if}
+                {#if r.installed}
+                  <span class="text-black-700 dark:text-black-600">{r.installed.installedAt ? new Date(r.installed.installedAt).toLocaleString() : ""}</span>
+                  <span class="font-mono text-black-700 dark:text-black-600" title={r.installed.sha256}>sha256 {r.installed.sha256.slice(0, 12)}</span>
+                  {#if r.installed.inUse > 0}
+                    <span data-testid="managed-row-inuse" class="text-black-800 dark:text-black-600">{r.installed.inUse} {r.installed.inUse === 1 ? "session" : "sessions"} still using it</span>
                   {/if}
-                  <Button
-                    variant="secondary"
-                    disabled={!v.removable || busy !== "" || running}
-                    title={v.current ? "The active version cannot be removed" : v.inUse > 0 ? "Still used by a running session" : ""}
-                    onclick={() => remove(v.version)}
-                  >Remove</Button>
-                </span>
+                {:else if r.published}
+                  <span class="text-black-700 dark:text-black-600">{new Date(r.published).toLocaleDateString()}</span>
+                {/if}
+                {#if isAdmin && data.enabled}
+                  <span class="ml-auto flex gap-2">
+                    {#if r.status === "not_downloaded"}
+                      <Button variant="secondary" testid="managed-row-download" disabled={locked} onclick={() => download(r.tag)}>{rowJob ? jobShort(rowJob) : "Download"}</Button>
+                    {:else}
+                      {#if r.status === "downloaded"}
+                        <Button variant="secondary" testid="managed-row-activate" disabled={locked} onclick={() => activate(r.version)}>Activate</Button>
+                      {/if}
+                      <Button
+                        variant="secondary"
+                        testid="managed-row-remove"
+                        disabled={!r.installed?.removable || locked}
+                        title={r.status === "active" ? "The active version cannot be removed" : (r.installed?.inUse ?? 0) > 0 ? "Still used by a running session" : ""}
+                        onclick={() => remove(r.version)}
+                      >Remove</Button>
+                    {/if}
+                  </span>
+                {/if}
+              </div>
+              {#if rowJob}
+                <ProgressBar class="max-w-md" testid="managed-row-progress" pct={jobPct(rowJob)} label={jobLabel(rowJob)} />
               {/if}
             </li>
           {/each}

@@ -4,7 +4,7 @@
   import AIRouterConfig from "$lib/components/AIRouterConfig.svelte";
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
   import ManagedBinaryPanel from "$lib/components/ManagedBinaryPanel.svelte";
-  import { apiManagedList } from "$lib/managedbin.js";
+  import { apiManagedList, isRunning, jobShort, type ManagedBinary } from "$lib/managedbin.js";
   import { UsageReport } from "@wick-fe/common-ui";
   import {
     apiGetProviders,
@@ -57,15 +57,26 @@
   // its own endpoint after the list paints: the account read is local but
   // the usage probe is a remote call, and the cards must not wait on it.
   let connections = $state<Record<string, ProviderConnection>>({});
-  // Types whose binary wick can install/update itself (omp, opencode).
-  let managedTypes = $state<string[]>([]);
+  // Types whose binary wick can install/update itself (omp, opencode),
+  // with their status — the cards only INDICATE it (version, update
+  // available, a running download); every action lives on Detail. Read
+  // from the server's release cache, so this never waits on GitHub.
+  let managedByType = $state<Record<string, ManagedBinary>>({});
+  const managedTypes = $derived(Object.keys(managedByType));
+  let managedTimer: ReturnType<typeof setTimeout> | null = null;
   async function loadManagedTypes(): Promise<void> {
     try {
-      managedTypes = (await apiManagedList(base)).types.filter((t) => t.enabled).map((t) => t.type);
+      const out: Record<string, ManagedBinary> = {};
+      for (const t of (await apiManagedList(base)).types) if (t.enabled) out[t.type] = t;
+      managedByType = out;
     } catch {
-      managedTypes = [];
+      managedByType = {};
     }
+    // Follow a running download so the card's progress stays live.
+    if (managedTimer) clearTimeout(managedTimer);
+    if (Object.values(managedByType).some((m) => isRunning(m.job))) managedTimer = setTimeout(() => void loadManagedTypes(), 2000);
   }
+  $effect(() => () => { if (managedTimer) clearTimeout(managedTimer); });
   let confirmDelete = $state<ProviderStatusDTO | null>(null);
   let busy = $state<Record<string, boolean>>({});
   let mcpOpen = $state(false);
@@ -693,6 +704,7 @@
           {@const hc = p.Hooks[HOOK_EVENT]}
           {@const intent = p.HookEnabled[HOOK_EVENT] === true}
           {@const conn = connections[connectionKey(p.Instance.Type, p.Instance.Name)]}
+          {@const mbin = !p.Instance.Binary ? managedByType[p.Instance.Type] : undefined}
           <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-3">
             <div class="flex items-start justify-between gap-3">
               <div>
@@ -750,12 +762,39 @@
                       <span data-testid="card-binary-source" class="ml-1 rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 font-sans text-[11px] font-medium text-black-800 dark:text-black-600">{sourceLabel(p.Source)}</span>
                     {/if}
                   </dd>
-                {:else if ACCOUNT_ISOLATED.has(p.Instance.Type)}
+                {:else if ACCOUNT_ISOLATED.has(p.Instance.Type) && !mbin}
                   <dd data-testid="card-binary-missing" class="text-neg-400">binary not installed — open Detail to download it, or set a path</dd>
                 {:else}
                   <dd class="text-black-600 dark:text-black-700">—</dd>
                 {/if}
               </div>
+              {#if mbin}
+                <div class="flex gap-2">
+                  <dt class="w-20 text-black-700 dark:text-black-600">binary</dt>
+                  <dd>
+                    <button
+                      type="button"
+                      data-testid="card-managed-binary"
+                      data-state={mbin.current ? "installed" : "missing"}
+                      title="Manage versions on Detail"
+                      onclick={() => onNavigate(p.Instance.Type, p.Instance.Name)}
+                      class="inline-flex flex-wrap items-center gap-1.5 text-left hover:underline"
+                    >
+                      {#if mbin.current}
+                        <span class="font-mono text-black-900 dark:text-white-100">v{mbin.current}</span>
+                        <span class="text-black-700 dark:text-black-600">managed by wick</span>
+                      {:else}
+                        <span class="text-neg-400">binary not installed — open Detail to download it</span>
+                      {/if}
+                      {#if isRunning(mbin.job) && mbin.job}
+                        <span data-testid="card-managed-job" class="text-black-800 dark:text-black-600">{jobShort(mbin.job)}</span>
+                      {:else if mbin.updateAvailable}
+                        <span data-testid="card-managed-update" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available {mbin.latest}</span>
+                      {/if}
+                    </button>
+                  </dd>
+                </div>
+              {/if}
               {#if p.VersionErr}
                 <div class="flex gap-2">
                   <dt class="w-20 text-black-700 dark:text-black-600">error</dt>
