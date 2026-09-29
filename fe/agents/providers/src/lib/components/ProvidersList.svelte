@@ -631,17 +631,6 @@
     {/if}
     {/if}
 
-    {#if managedTypes.length > 0}
-      <section data-testid="managed-binaries-section" class="space-y-3">
-        <h2 class="text-sm font-semibold text-black-900 dark:text-white-100">Binaries managed by wick</h2>
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {#each managedTypes as mt (mt)}
-            <ManagedBinaryPanel {base} type={mt} />
-          {/each}
-        </div>
-      </section>
-    {/if}
-
     {#if data.Providers.length === 0}
       <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 px-6 py-12 text-center text-sm text-black-700 dark:text-black-600">
         No providers detected. Run Rescan all to discover installed AI providers.
@@ -762,7 +751,7 @@
                     {/if}
                   </dd>
                 {:else if ACCOUNT_ISOLATED.has(p.Instance.Type)}
-                  <dd data-testid="card-binary-missing" class="text-neg-400">binary not installed — install it under "Binaries managed by wick" or set a path</dd>
+                  <dd data-testid="card-binary-missing" class="text-neg-400">binary not installed — open Detail to download it, or set a path</dd>
                 {:else}
                   <dd class="text-black-600 dark:text-black-700">—</dd>
                 {/if}

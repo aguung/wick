@@ -282,7 +282,7 @@ An instance without a Binary path runs `current`; a Binary path always wins (man
 
 ### Install / update
 
-**Providers → Binaries managed by wick → Download from GitHub / Update to vX / Pick a version → Install.** Nothing downloads unless an admin clicks; the page only flags "update available" (the newest-release answer is cached for an hour, **Check for update** refreshes it). The job runs in the background (the UI polls: download %, verify, running `--version`, switching) and a `reload` waits for it.
+**Add the omp/opencode instance first. The list only flags the state (binary missing / update available); Download from GitHub, Pick a version → Install, Update, rollback and remove live in the instance Detail under Binary.** Nothing downloads unless an admin clicks; the page only flags "update available" (the newest-release answer is cached for an hour, **Check for update** refreshes it). The job runs in the background (the UI polls: download %, verify, running `--version`, switching) and a `reload` waits for it.
 
 The order is fixed:
 
