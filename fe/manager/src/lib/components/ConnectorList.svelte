@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, ConfirmDialog, KebabMenu, Modal, TextInput } from "@wick-fe/common-ui";
+  import { Button, ConfirmDialog, KebabMenu, Modal, ProgressBar, TextInput } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import { push } from "$lib/router.js";
   import {
@@ -631,18 +631,7 @@
           {#if updateProgress}
             {@const indeterminate = updateProgress.phase === "downloading" && updateProgress.pct < 0}
             {@const pct = updateProgress.phase === "downloading" && updateProgress.pct >= 0 ? updateProgress.pct : updateProgress.phase === "done" ? 100 : updateProgress.phase === "downloading" ? 0 : 100}
-            <div class="mt-2 max-w-xs">
-              <div class="flex items-center justify-between text-[11px] font-medium text-black-800 dark:text-black-600">
-                <span>{phaseLabel}</span>
-              </div>
-              <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-white-300 dark:bg-navy-600">
-                {#if indeterminate}
-                  <div class="h-full w-1/3 animate-pulse rounded-full bg-green-500"></div>
-                {:else}
-                  <div class="h-full rounded-full bg-green-500 transition-all duration-200" style={`width:${pct}%`}></div>
-                {/if}
-              </div>
-            </div>
+            <ProgressBar class="mt-2 max-w-xs" pct={indeterminate ? -1 : pct} label={phaseLabel} />
           {/if}
         </div>
       </div>
