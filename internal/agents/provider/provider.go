@@ -39,6 +39,12 @@ const (
 	TypeClaude Type = "claude"
 	TypeCodex  Type = "codex"
 	TypeGemini Type = "gemini"
+	// TypeOMP is oh-my-pi (`omp`). One instance = one `--profile`, so
+	// each instance holds exactly one account. See accounts.go.
+	TypeOMP Type = "omp"
+	// TypeOpencode is sst's opencode (`opencode`). One instance = one data
+	// dir (XDG_DATA_HOME), which is where opencode keeps auth.json.
+	TypeOpencode Type = "opencode"
 	// TypeWick is the built-in in-process provider (adk-go engine, no
 	// external CLI). Single-instance: exactly one "wick/wick" — model
 	// multiplicity lives in Instance.WickModels. See
@@ -49,7 +55,7 @@ const (
 // SupportedTypes returns all CLI types the agents module knows how to
 // spawn. Order is the UI display order.
 func SupportedTypes() []Type {
-	return []Type{TypeClaude, TypeCodex, TypeGemini, TypeWick}
+	return []Type{TypeClaude, TypeCodex, TypeGemini, TypeOMP, TypeOpencode, TypeWick}
 }
 
 // InProcess reports whether this provider type runs inside the wick
@@ -106,6 +112,12 @@ type Instance struct {
 
 	// CodexConfig holds codex-specific spawn options. nil for non-codex instances.
 	CodexConfig *CodexConfig
+
+	// OMPConfig / OpencodeConfig pin the account store of an omp /
+	// opencode instance. nil for other types. Always non-nil after Load
+	// for those two types, with the value resolved (see accounts.go).
+	OMPConfig      *OMPConfig
+	OpencodeConfig *OpencodeConfig
 
 	// UseAIRouter routes this instance's CLI through an embedded AI router
 	// proxy (9router / OmniRoute / …) instead of the provider's own
@@ -607,7 +619,14 @@ func Rename(t Type, oldName, newName string) error {
 	// Not persisted yet — auto-seeded default (Name == type) only lives
 	// in memory. Materialize it under the new name so the rename sticks.
 	if oldName == string(t) {
-		*list = append(*list, userconfig.ProviderInstance{Name: newName})
+		seeded := userconfig.ProviderInstance{Name: newName}
+		// Keep the account the seeded default was already using.
+		if t.accountIsolated() {
+			ins := Instance{Type: t, Name: oldName}
+			applyAccountConfig(&ins, "", "")
+			seeded.OMPProfile, seeded.OpencodeDataDir = accountConfigToUser(ins)
+		}
+		*list = append(*list, seeded)
 		if err := userconfig.Save(AppName(), cfg); err != nil {
 			return err
 		}
@@ -895,7 +914,15 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 	for _, t := range SupportedTypes() {
 		list := readList(c, t)
 		if len(list) == 0 {
-			out = append(out, Instance{Type: t, Name: string(t)})
+			// omp/opencode are opt-in CLIs: only offer the default row
+			// when the binary is actually installed, so a host without
+			// them does not grow two broken cards.
+			if t.accountIsolated() && !binaryOnPath(string(t)) {
+				continue
+			}
+			ins := Instance{Type: t, Name: string(t)}
+			applyAccountConfig(&ins, "", "")
+			out = append(out, ins)
 			continue
 		}
 		for _, raw := range list {
@@ -924,6 +951,7 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 					SandboxMode: CodexSandboxMode(raw.SandboxMode),
 				}
 			}
+			applyAccountConfig(&ins, raw.OMPProfile, raw.OpencodeDataDir)
 			if t == TypeWick {
 				ins.WickModels = wickModelsFromUser(raw.WickModels)
 				ins.WickConfig = wickConfigFromUser(raw.WickConfig)
@@ -942,6 +970,10 @@ func readList(c userconfig.ProvidersConfig, t Type) []userconfig.ProviderInstanc
 		return c.Codex
 	case TypeGemini:
 		return c.Gemini
+	case TypeOMP:
+		return c.OMP
+	case TypeOpencode:
+		return c.Opencode
 	case TypeWick:
 		return c.Wick
 	}
@@ -956,6 +988,10 @@ func pickList(c *userconfig.ProvidersConfig, t Type) *[]userconfig.ProviderInsta
 		return &c.Codex
 	case TypeGemini:
 		return &c.Gemini
+	case TypeOMP:
+		return &c.OMP
+	case TypeOpencode:
+		return &c.Opencode
 	case TypeWick:
 		return &c.Wick
 	}
@@ -985,6 +1021,10 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 	if ins.CodexConfig != nil {
 		raw.SandboxMode = string(ins.CodexConfig.SandboxMode)
 	}
+	// Persist the RESOLVED account store, never the empty "use default":
+	// the default derives from the name, and a rename must not move the
+	// instance onto a different (logged-out) account.
+	raw.OMPProfile, raw.OpencodeDataDir = accountConfigToUser(ins)
 	if ins.Type == TypeWick {
 		raw.WickModels = wickModelsToUser(ins.WickModels)
 		raw.WickConfig = wickConfigToUser(ins.WickConfig)

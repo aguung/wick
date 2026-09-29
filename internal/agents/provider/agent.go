@@ -991,82 +991,49 @@ func (a *Agent) run(ctx context.Context) {
 			return
 		}
 
-		ev, err := a.parser.Parse(line)
+		// A line may carry several events (opencode reports a finished
+		// tool as call + result in one frame); ParseLine yields them in
+		// order and each runs through the same handling below.
+		evs, err := event.ParseLine(a.parser, line)
 		if err != nil {
 			// One bad line shouldn't tank the agent. Log+continue is
 			// the policy the design specifies; we surface as Error
 			// event so the store + UI still see it.
-			ev = event.AgentEvent{Type: event.Error, ErrorMsg: err.Error(), Raw: line}
+			evs = []event.AgentEvent{{Type: event.Error, ErrorMsg: err.Error(), Raw: line}}
 		}
+		for _, ev := range evs {
 
-		// A tool boundary ends the current assistant message: text that comes
-		// after it is a NEW message and needs a paragraph break, or the two
-		// sentences arrive glued to each other on every surface. Done here,
-		// on the one path all providers feed and all channels read, rather
-		// than per channel.
-		switch ev.Type {
-		case event.ToolUse, event.ToolResult:
-			joiner.toolRan()
-		case event.Done, event.Error:
-			joiner.turnEnded()
-		}
-		if ev.Type == event.TextDelta {
-			ev.Text = joiner.breakBefore(ev.Text) + ev.Text
-		}
+			// A tool boundary ends the current assistant message: text that comes
+			// after it is a NEW message and needs a paragraph break, or the two
+			// sentences arrive glued to each other on every surface. Done here,
+			// on the one path all providers feed and all channels read, rather
+			// than per channel.
+			switch ev.Type {
+			case event.ToolUse, event.ToolResult:
+				joiner.toolRan()
+			case event.Done, event.Error:
+				joiner.turnEnded()
+			}
+			if ev.Type == event.TextDelta {
+				ev.Text = joiner.breakBefore(ev.Text) + ev.Text
+			}
 
-		switch ev.Type {
-		case event.ToolUse:
-			// Tool about to execute — stdout will be silent. Stop the
-			// idle timer until the result comes back.
-			if !toolInFlight {
-				if !idle.Stop() {
-					select {
-					case <-idle.C:
-					default:
+			switch ev.Type {
+			case event.ToolUse:
+				// Tool about to execute — stdout will be silent. Stop the
+				// idle timer until the result comes back.
+				if !toolInFlight {
+					if !idle.Stop() {
+						select {
+						case <-idle.C:
+						default:
+						}
 					}
+					toolInFlight = true
 				}
-				toolInFlight = true
-			}
-		case event.ToolResult:
-			// Tool finished — restart idle timer from now.
-			toolInFlight = false
-			if !idle.Stop() {
-				select {
-				case <-idle.C:
-				default:
-				}
-			}
-			idle.Reset(a.cfg.IdleTimeout)
-			select {
-			case a.activityCh <- struct{}{}:
-			default:
-			}
-		case event.Done, event.Error:
-			// Turn ended (normally or via error) — always reset
-			// toolInFlight so a crash mid-tool doesn't leave the idle
-			// timer stopped forever.
-			toolInFlight = false
-			if !idle.Stop() {
-				select {
-				case <-idle.C:
-				default:
-				}
-			}
-			idle.Reset(a.cfg.IdleTimeout)
-			select {
-			case a.activityCh <- struct{}{}:
-			default:
-			}
-			// RespawnOnSend (codex) turn finished. Mark the turn idle and
-			// drain any message that arrived mid-turn, respawning exactly
-			// once. This is what prevents codex spam from stacking
-			// subprocesses past MaxConcurrent.
-			a.drainPending()
-		default:
-			// For every other line reset the idle timer only when no
-			// tool is in flight — tool execution keeps stdout silent
-			// and we must not accidentally restart the timer mid-tool.
-			if !toolInFlight {
+			case event.ToolResult:
+				// Tool finished — restart idle timer from now.
+				toolInFlight = false
 				if !idle.Stop() {
 					select {
 					case <-idle.C:
@@ -1078,27 +1045,65 @@ func (a *Agent) run(ctx context.Context) {
 				case a.activityCh <- struct{}{}:
 				default:
 				}
+			case event.Done, event.Error:
+				// Turn ended (normally or via error) — always reset
+				// toolInFlight so a crash mid-tool doesn't leave the idle
+				// timer stopped forever.
+				toolInFlight = false
+				if !idle.Stop() {
+					select {
+					case <-idle.C:
+					default:
+					}
+				}
+				idle.Reset(a.cfg.IdleTimeout)
+				select {
+				case a.activityCh <- struct{}{}:
+				default:
+				}
+				// RespawnOnSend (codex) turn finished. Mark the turn idle and
+				// drain any message that arrived mid-turn, respawning exactly
+				// once. This is what prevents codex spam from stacking
+				// subprocesses past MaxConcurrent.
+				a.drainPending()
+			default:
+				// For every other line reset the idle timer only when no
+				// tool is in flight — tool execution keeps stdout silent
+				// and we must not accidentally restart the timer mid-tool.
+				if !toolInFlight {
+					if !idle.Stop() {
+						select {
+						case <-idle.C:
+						default:
+						}
+					}
+					idle.Reset(a.cfg.IdleTimeout)
+					select {
+					case a.activityCh <- struct{}{}:
+					default:
+					}
+				}
 			}
-		}
 
-		if ev.Type == event.SessionStart && ev.SessionID != "" {
-			a.mu.Lock()
-			a.resumeID = ev.SessionID
-			a.mu.Unlock()
-		}
-		// Persist BEFORE flipping the state machine so anything wired
-		// to lifecycle-idle (e.g. push notification dispatch) reads a
-		// conversation.jsonl that already has the just-finished
-		// assistant turn. Previous order fired state.Apply (which
-		// triggers the lifecycle hook synchronously) before store.Apply
-		// wrote the JSONL, so the notification body preview lagged by
-		// one turn.
-		if a.store != nil {
-			_, _ = a.store.Apply(ev)
-		}
-		a.state.Apply(ev)
-		if a.onEvent != nil {
-			a.onEvent(ev)
+			if ev.Type == event.SessionStart && ev.SessionID != "" {
+				a.mu.Lock()
+				a.resumeID = ev.SessionID
+				a.mu.Unlock()
+			}
+			// Persist BEFORE flipping the state machine so anything wired
+			// to lifecycle-idle (e.g. push notification dispatch) reads a
+			// conversation.jsonl that already has the just-finished
+			// assistant turn. Previous order fired state.Apply (which
+			// triggers the lifecycle hook synchronously) before store.Apply
+			// wrote the JSONL, so the notification body preview lagged by
+			// one turn.
+			if a.store != nil {
+				_, _ = a.store.Apply(ev)
+			}
+			a.state.Apply(ev)
+			if a.onEvent != nil {
+				a.onEvent(ev)
+			}
 		}
 	}
 

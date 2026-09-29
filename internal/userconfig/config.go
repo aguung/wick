@@ -125,6 +125,9 @@ type ProvidersConfig struct {
 	Claude []ProviderInstance `json:"claude,omitempty"`
 	Codex  []ProviderInstance `json:"codex,omitempty"`
 	Gemini []ProviderInstance `json:"gemini,omitempty"`
+	// OMP / Opencode: one entry per account (omp profile / opencode data dir).
+	OMP      []ProviderInstance `json:"omp,omitempty"`
+	Opencode []ProviderInstance `json:"opencode,omitempty"`
 
 	// Wick is the built-in in-process provider. Single-instance by
 	// design: the list never holds more than the one "wick" entry —
@@ -219,6 +222,16 @@ type ProviderInstance struct {
 	// "workspace-write", or "danger-full-access". Empty = danger-full-access.
 	// Only meaningful for codex instances; ignored by claude/gemini.
 	SandboxMode string `json:"sandbox_mode,omitempty"`
+
+	// OMPProfile is the `omp --profile` this instance owns. Written once
+	// when the instance is first saved and never re-derived, so a rename
+	// keeps the logged-in account. Only meaningful for omp instances.
+	OMPProfile string `json:"omp_profile,omitempty"`
+
+	// OpencodeDataDir is the XDG data home an opencode instance runs
+	// under (opencode keeps auth.json in <dir>/opencode). Pinned like
+	// OMPProfile. Only meaningful for opencode instances.
+	OpencodeDataDir string `json:"opencode_data_dir,omitempty"`
 
 	// MaxConcurrent caps how many parallel spawns this instance may
 	// have running at once. 0 = unlimited (follows the global pool cap).
