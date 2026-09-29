@@ -2704,6 +2704,7 @@
           projectId={activeProjectId ?? undefined}
           ticket={notesInfo?.ticket ?? null}
           statuses={notesInfo?.statuses}
+          fields={notesInfo?.ticket_fields}
           noteCount={(notesInfo?.notes ?? []).length}
           notes={notesInfo?.notes}
           users={notesInfo?.users}
@@ -2895,6 +2896,7 @@
               projectId={activeProjectId ?? undefined}
               ticket={notesInfo?.ticket ?? null}
               statuses={notesInfo?.statuses}
+              fields={notesInfo?.ticket_fields}
               noteCount={(notesInfo?.notes ?? []).length}
               notes={notesInfo?.notes}
               users={notesInfo?.users}

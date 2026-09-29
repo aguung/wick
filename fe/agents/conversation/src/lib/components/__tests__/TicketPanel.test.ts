@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, fireEvent } from "@testing-library/svelte";
 import TicketPanel from "../TicketPanel.svelte";
 import type { Note } from "../../types/agents.js";
 
@@ -18,6 +18,14 @@ beforeEach(() => {
     ),
   );
 });
+
+/* The shared client sends JSON bodies as bytes; read them back as JSON. */
+function jsonBody(init: RequestInit | undefined): unknown {
+  const b = init?.body;
+  if (b == null) return undefined;
+  const text = typeof b === "string" ? b : new TextDecoder().decode(b as ArrayBufferView as Uint8Array);
+  return JSON.parse(text);
+}
 
 const note = (over: Partial<Note> = {}): Note => ({
   id: "n1",
@@ -88,9 +96,32 @@ describe("TicketPanel — the ticket's description", () => {
     expect(screen.getByTestId("ticket-body")).toBeTruthy();
   });
 
-  test("no description means no empty section", () => {
+  // No empty section — but an invitation to write one, like "Write a note".
+  test("no description shows a slot to write it, not an empty section", () => {
     renderPanel();
     expect(screen.queryByTestId("ticket-body")).toBeNull();
+    expect(screen.getByTestId("ticket-body-add").textContent).toContain("Describe what the ticket asks");
+  });
+
+  test("the slot opens an editor, and Save PATCHes the body", async () => {
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    renderPanel();
+    await fireEvent.click(screen.getByTestId("ticket-body-add"));
+    const ta = screen.getByTestId("ticket-body-input") as HTMLTextAreaElement;
+    await fireEvent.input(ta, { target: { value: "Kalender dokter terlepas setelah pilih tanggal" } });
+    await fireEvent.click(screen.getByTestId("ticket-body-save"));
+    await vi.waitFor(() => {
+      const call = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PATCH");
+      expect(call).toBeTruthy();
+      expect(String(call![0])).toContain("/api/tickets/T-1");
+      expect(jsonBody(call![1] as RequestInit)).toEqual({ body: "Kalender dokter terlepas setelah pilih tanggal" });
+    });
+  });
+
+  test("an existing description can be edited", async () => {
+    renderPanel({ ticket: { id: "T-1", title: "Fix retries", status: "open", body: "Webhook 401s on retry" } });
+    await fireEvent.click(screen.getByTestId("ticket-body-edit"));
+    expect((screen.getByTestId("ticket-body-input") as HTMLTextAreaElement).value).toBe("Webhook 401s on retry");
   });
 
   // Folded past a few lines: a long description would push the notes off the
@@ -118,5 +149,38 @@ describe("TicketPanel — the ticket's description", () => {
     expect(screen.queryByText("Open tab →")).toBeNull();
     renderPanel({ onOpenNotes: () => {} });
     expect(screen.getAllByText("Open tab →").length).toBe(1);
+  });
+});
+
+describe("TicketPanel — additional info", () => {
+  test("the project's fields show under Additional info", () => {
+    renderPanel({
+      ticket: { id: "T-1", title: "Fix retries", status: "open", fields: { app_code: "locot-uv3" } },
+      fields: [{ key: "app_code", label: "App Code", type: "text" }],
+    });
+    expect(screen.getByTestId("ticket-fields").textContent).toContain("Additional info");
+    expect(screen.getByText("locot-uv3")).toBeTruthy();
+  });
+
+  test("no field definitions means no section", () => {
+    renderPanel({ ticket: { id: "T-1", title: "Fix retries", status: "open", fields: { stray: "x" } } });
+    expect(screen.queryByTestId("ticket-fields")).toBeNull();
+  });
+
+  test("saving a field PATCHes only that key", async () => {
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    renderPanel({
+      ticket: { id: "T-1", title: "Fix retries", status: "open", fields: { app_code: "old", other: "keep" } },
+      fields: [{ key: "app_code", label: "App Code", type: "text" }],
+    });
+    await fireEvent.click(screen.getByTestId("ticket-field-edit-app_code"));
+    const input = screen.getByTestId("ticket-field-input-app_code") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "new" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await vi.waitFor(() => {
+      const call = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PATCH");
+      expect(call).toBeTruthy();
+      expect(jsonBody(call![1] as RequestInit)).toEqual({ fields: { app_code: "new" } });
+    });
   });
 });
