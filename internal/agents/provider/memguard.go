@@ -2,6 +2,8 @@ package provider
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
@@ -110,11 +112,27 @@ func (g *MemGuard) wraps() bool {
 	return memscopeBackend() != memscope.BackendNone
 }
 
+// wrapsManaged covers the gap OnPath-only leaves for wick-managed
+// binaries: the PATH shim sits in front of a name looked up on PATH, but a
+// managed binary is spawned by absolute path under <data dir>/providers/bin
+// and would bypass it. So when the guard is on and applies on the path,
+// wick wraps managed binaries itself.
+func (g *MemGuard) wrapsManaged(bin string) bool {
+	if g == nil || g.Mode == config.MemGuardOff || g.Mode == "" || !g.Scopes.OnPath {
+		return false
+	}
+	root := ManagedBinRoot()
+	if root == "" || !strings.HasPrefix(filepath.Clean(bin), filepath.Clean(root)+string(filepath.Separator)) {
+		return false
+	}
+	return memscopeBackend() != memscope.BackendNone
+}
+
 // Wrap returns the binary, argv, and scope unit name to use for a spawn.
 // An empty unit name means the spawn was not wrapped, and the caller must
 // exec exactly what it passed in.
 func (g *MemGuard) Wrap(bin string, args []string, providerName string, seq int) (string, []string, string) {
-	if !g.wraps() {
+	if !g.wraps() && !g.wrapsManaged(bin) {
 		return bin, args, ""
 	}
 	l := log.With().Str("component", "memguard").Logger()
