@@ -37,6 +37,13 @@ type OpencodeConfig struct {
 	// DataDir is the XDG_DATA_HOME opencode runs under. Never empty after
 	// Load (unless the wick data dir itself cannot be resolved).
 	DataDir string
+	// Model is the provider/model every spawn passes as --model unless the
+	// session pinned another. opencode without --model silently falls back
+	// to its hosted default, so wick never spawns without one.
+	Model string
+	// AllowHosted permits "opencode/…" (hosted opencode Zen) models, which
+	// send the conversation to opencode's servers. Off by default.
+	AllowHosted bool
 }
 
 // accountIsolated reports whether instances of t each own one account
@@ -111,7 +118,25 @@ func OpencodeEnv(ins Instance) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("opencode data dir %s: %w", dir, err)
 	}
-	return []string{"XDG_DATA_HOME=" + dir}, nil
+	return opencodeStoreEnv(dir), nil
+}
+
+// opencodeStoreEnv is the env pinning opencode to one instance:
+//
+//   - XDG_DATA_HOME → auth.json, sessions (core/src/global.ts xdgData);
+//   - XDG_CONFIG_HOME → the "global" config dir, so the host user's
+//     ~/.config/opencode (its MCP servers, providers, plugins) is never
+//     merged into a wick spawn (config/config.ts merges Global.Path.config
+//     as the global layer). Child tools inherit it too: a CLI that keeps
+//     its config under XDG_CONFIG_HOME (gh, …) sees the instance dir;
+//   - OPENCODE_DISABLE_AUTOUPDATE → a wick-managed binary never replaces
+//     itself (cli/upgrade.ts; its sha256 would stop matching state.json).
+func opencodeStoreEnv(dir string) []string {
+	return []string{
+		"XDG_DATA_HOME=" + dir,
+		"XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
+		"OPENCODE_DISABLE_AUTOUPDATE=true",
+	}
 }
 
 // OpencodeAuthFile is where opencode keeps ins's credentials.
@@ -165,7 +190,7 @@ func binaryOnPath(bin string) bool {
 // pinned by wick, and a stray value would split login from spawn.
 var accountEnvKeys = map[Type][]string{
 	TypeOMP:      {"OMP_PROFILE", "PI_PROFILE"},
-	TypeOpencode: {"XDG_DATA_HOME"},
+	TypeOpencode: {"XDG_DATA_HOME", "XDG_CONFIG_HOME", "OPENCODE_DISABLE_AUTOUPDATE"},
 }
 
 // AccountEnv is ins.Env with the instance's account store made explicit:
@@ -198,7 +223,7 @@ func AccountEnv(ins Instance) []string {
 		out = append(out, "OMP_PROFILE="+OMPProfile(ins))
 	case TypeOpencode:
 		if d, err := OpencodeDataDir(ins); err == nil {
-			out = append(out, "XDG_DATA_HOME="+d)
+			out = append(out, opencodeStoreEnv(d)...)
 		}
 	}
 	// The binary the probes must exec: the same one spawn resolves

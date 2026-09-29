@@ -31,9 +31,13 @@ var homeDir = os.UserHomeDir
 
 // buildArgs is the argv minus the prompt (which goes on stdin).
 // --profile leads: omp resolves the profile before any other flag.
-func buildArgs(ins provider.Instance, opt provider.SpawnOptions, soulPath string, extra []string) []string {
+func buildArgs(ins provider.Instance, opt provider.SpawnOptions, soulPath, overlayPath string, extra []string) []string {
 	args := provider.OMPProfileArgs(ins)
 	args = append(args, "-p", "--mode", "json", "--no-title", "--auto-approve")
+	if overlayPath != "" {
+		// Settings overlay that keeps host MCP out (see isolationOverlay).
+		args = append(args, "--config", overlayPath)
+	}
 	if opt.Workspace != "" {
 		args = append(args, "--cwd", opt.Workspace)
 	}
@@ -74,6 +78,41 @@ func writeSoul(opt provider.SpawnOptions) string {
 	return p
 }
 
+// writeOverlay writes the isolation overlay under the per-session dir and
+// returns its path ("" when there is nowhere to put it).
+func writeOverlay(opt provider.SpawnOptions) string {
+	dir := opt.SessionDir
+	if dir == "" {
+		dir = opt.Workspace
+	}
+	if dir == "" {
+		return ""
+	}
+	d := filepath.Join(dir, ".omp")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		return ""
+	}
+	p := filepath.Join(d, "wick-settings.yml")
+	if err := os.WriteFile(p, isolationOverlay(), 0o644); err != nil {
+		log.Warn().Err(err).Str("path", p).Msg("agents.spawn: omp write settings overlay failed")
+		return ""
+	}
+	return p
+}
+
+// extraMCPEntries converts the instance's extra MCP servers to omp's shape.
+func extraMCPEntries(ins provider.Instance) (map[string]map[string]any, error) {
+	parsed, err := provider.ParseExtraMCP(ins.ExtraMCPServers)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[string]any, len(parsed))
+	for name, s := range parsed {
+		out[name] = s.OMPEntry()
+	}
+	return out, nil
+}
+
 // envValue returns the last KEY=value for key in env, else "".
 func envValue(env []string, key string) string {
 	v := ""
@@ -106,29 +145,40 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		return nil, fmt.Errorf("omp instance %s: profile %q is not a valid omp profile name", ins.Name, profile)
 	}
 
+	// The profile's mcp.json holds wick's per-session entry (placeholders,
+	// values in env) plus the instance's extra servers — and nothing else
+	// wick put there before.
+	extras, err := extraMCPEntries(ins)
+	if err != nil {
+		return nil, fmt.Errorf("omp instance %s: %w", ins.Name, err)
+	}
 	var mcpVars []string
-	if endpoint := mcpEndpointFromEnv(); endpoint != "" && s.MCPToken != "" {
-		home, _ := homeDir()
+	endpoint := mcpEndpointFromEnv()
+	withWick := endpoint != "" && s.MCPToken != ""
+	if home, _ := homeDir(); home != "" {
 		cfgDir := envValue(opt.ExtraEnv, "PI_CONFIG_DIR")
 		if cfgDir == "" {
 			cfgDir = os.Getenv("PI_CONFIG_DIR")
 		}
-		if home != "" {
-			if err := ensureMCPConfig(profileAgentDir(home, cfgDir, profile)); err != nil {
-				log.Warn().Err(err).Str("profile", profile).Msg("agents.spawn: omp mcp.json not updated — wick tools unavailable")
-			} else {
-				mcpVars = mcpEnv(endpoint, s.MCPToken)
-			}
+		if err := ensureMCPConfig(profileAgentDir(home, cfgDir, profile), withWick, extras); err != nil {
+			log.Warn().Err(err).Str("profile", profile).Msg("agents.spawn: omp mcp.json not updated — wick tools unavailable")
+		} else if withWick {
+			mcpVars = mcpEnv(endpoint, s.MCPToken)
 		}
 	}
 
-	args := buildArgs(ins, opt, writeSoul(opt), s.ExtraArgs)
+	args := buildArgs(ins, opt, writeSoul(opt), writeOverlay(opt), s.ExtraArgs)
 
 	execBin, execArgs, scopeUnit := opt.MemGuard.Wrap(bin, args, "omp", opt.SpawnSeq)
 	cmd := safeexec.CommandContext(ctx, execBin, execArgs...)
 	cmd.Dir = opt.Workspace
 	cmd.Env = append(envscrub.ScrubOSEnv(), opt.ExtraEnv...)
 	cmd.Env = append(cmd.Env, mcpVars...)
+	// omp turns ~/.claude on as an MCP/config source whenever
+	// CLAUDE_CONFIG_DIR is set (capability/index.ts isUserSourceEnabled),
+	// and PI_CONFIG_FILES adds config overlays — neither may leak in from
+	// wick's own environment.
+	cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR=", "PI_CONFIG_FILES=")
 	hideConsole(cmd)
 	procgroup.Apply(cmd)
 

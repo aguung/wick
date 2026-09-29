@@ -222,9 +222,35 @@ func oneShotArgs(ins agentprovider.Instance, prompt string) (env, args []string,
 		if err != nil {
 			return nil, nil, err
 		}
-		env = append(env, `OPENCODE_CONFIG_CONTENT={"permission":"allow","share":"disabled"}`)
+		env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=",
+			`OPENCODE_CONFIG_CONTENT={"permission":"allow","share":"disabled"}`)
 		args = append([]string{"run", "--auto"}, ins.ExtraArgs...)
+		// Same rule as the chat spawner: never let opencode pick its hosted
+		// default. An explicit instance model (or --model in its args) is
+		// required, and opencode/… hosted models need the opt-in.
+		if !hasModelArg(ins.ExtraArgs) {
+			m := ""
+			if ins.OpencodeConfig != nil {
+				m = strings.TrimSpace(ins.OpencodeConfig.Model)
+			}
+			if m == "" {
+				return nil, nil, fmt.Errorf("opencode instance %s: set opencode_model (provider/model) — refusing to use opencode's hosted default", ins.Name)
+			}
+			if strings.HasPrefix(m, "opencode/") && !ins.OpencodeConfig.AllowHosted {
+				return nil, nil, fmt.Errorf("opencode instance %s: %s is opencode's hosted service; enable opencode_allow_hosted to use it", ins.Name, m)
+			}
+			args = append(args, "--model", m)
+		}
 		return env, append(args, "--", prompt), nil
 	}
 	return nil, nil, nil
+}
+
+func hasModelArg(args []string) bool {
+	for _, a := range args {
+		if a == "--model" || a == "-m" || strings.HasPrefix(a, "--model=") {
+			return true
+		}
+	}
+	return false
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -55,10 +56,16 @@ func profileAgentDir(home, configDir, profile string) string {
 	return filepath.Join(home, configDir, "profiles", profile, "agent")
 }
 
-// ensureMCPConfig merges wick's entry into <agentDir>/mcp.json, keeping
-// every other server the operator configured. No write when the entry is
-// already current.
-func ensureMCPConfig(agentDir string) error {
+// managedSidecar lists the server names wick wrote into a profile's
+// mcp.json, so an extra server removed from the instance setting is also
+// removed from the file (operator-added entries are never touched).
+const managedSidecar = "wick-mcp-managed.json"
+
+// ensureMCPConfig merges wick's entry (when withWick) and the instance's
+// extra servers into <agentDir>/mcp.json, keeping every server the
+// operator added by hand. Entries wick wrote earlier but no longer wants
+// are dropped. No write when nothing changed.
+func ensureMCPConfig(agentDir string, withWick bool, extras map[string]map[string]any) error {
 	path := filepath.Join(agentDir, "mcp.json")
 	doc := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
@@ -71,24 +78,85 @@ func ensureMCPConfig(agentDir string) error {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	want := wickServerEntry()
-	if cur, ok := servers[mcpServerName]; ok {
-		a, _ := json.Marshal(cur)
-		b, _ := json.Marshal(want)
-		if string(a) == string(b) {
+	before, _ := json.Marshal(servers)
+
+	var prev []string
+	if b, err := os.ReadFile(filepath.Join(agentDir, managedSidecar)); err == nil {
+		_ = json.Unmarshal(b, &prev)
+	}
+	for _, name := range prev {
+		if _, keep := extras[name]; !keep && name != mcpServerName {
+			delete(servers, name)
+		}
+	}
+	managed := []string{}
+	if withWick {
+		servers[mcpServerName] = wickServerEntry()
+		managed = append(managed, mcpServerName)
+	} else if contains(prev, mcpServerName) {
+		delete(servers, mcpServerName)
+	}
+	for name, e := range extras {
+		if name == mcpServerName {
+			continue // reserved; ParseExtraMCP already refuses it
+		}
+		servers[name] = e
+		managed = append(managed, name)
+	}
+	sort.Strings(managed)
+	after, _ := json.Marshal(servers)
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		return err
+	}
+	if sb, err := json.Marshal(managed); err == nil {
+		_ = os.WriteFile(filepath.Join(agentDir, managedSidecar), sb, 0o600)
+	}
+	if string(before) == string(after) {
+		if _, err := os.Stat(path); err == nil {
 			return nil
 		}
 	}
-	servers[mcpServerName] = want
 	doc["mcpServers"] = servers
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(agentDir, 0o700); err != nil {
-		return err
-	}
 	return os.WriteFile(path, append(out, '\n'), 0o600)
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+// isolationOverlay is the per-spawn `--config` overlay (omp settings
+// layer that outranks project and global config — config/settings.ts
+// getProvenance). It keeps the host's MCP out of a wick spawn:
+//
+//   - mcp.enableProjectConfig=false drops every project-level MCP source
+//     (.omp/mcp.json, .claude/.mcp.json, .cursor/, .vscode/, opencode.json,
+//     root mcp.json …) — mcp/settings.ts, docs/mcp-config.md.
+//   - enabledProviders=[] keeps foreign USER-level configs (~/.claude.json,
+//     ~/.cursor, ~/.codex, …) at their opt-in default of off, even when the
+//     host's own omp config opted in — capability/index.ts
+//     FOREIGN_USER_PROVIDERS / isUserSourceEnabled. disabledProviders is
+//     deliberately NOT used: it would also switch off those providers'
+//     skills and context files.
+//   - startup.checkUpdate=false: no update check (modes/settings.ts); print
+//     mode never runs it anyway (main.ts only checks in interactive mode).
+//
+// JSON is valid YAML, which is what omp reads.
+func isolationOverlay() []byte {
+	b, _ := json.MarshalIndent(map[string]any{
+		"mcp":              map[string]any{"enableProjectConfig": false},
+		"enabledProviders": []string{},
+		"startup":          map[string]any{"checkUpdate": false},
+	}, "", "  ")
+	return b
 }
 
 // mcpEnv is the per-spawn env carrying the values the placeholders expand to.

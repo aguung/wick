@@ -237,6 +237,17 @@ type ProviderInstance struct {
 	// OMPProfile. Only meaningful for opencode instances.
 	OpencodeDataDir string `json:"opencode_data_dir,omitempty"`
 
+	// ExtraMCPServers is the omp/opencode "extra MCP servers" setting: a
+	// JSON mcpServers object merged next to wick's own server on every
+	// spawn. Secrets are ${VAR} references into Env, never plaintext.
+	ExtraMCPServers string `json:"extra_mcp_servers,omitempty"`
+
+	// OpencodeModel is the provider/model an opencode instance always runs
+	// (sent as --model). OpencodeAllowHosted permits the "opencode/…"
+	// hosted models (opencode Zen); off by default.
+	OpencodeModel       string `json:"opencode_model,omitempty"`
+	OpencodeAllowHosted bool   `json:"opencode_allow_hosted,omitempty"`
+
 	// MaxConcurrent caps how many parallel spawns this instance may
 	// have running at once. 0 = unlimited (follows the global pool cap).
 	MaxConcurrent int `json:"max_concurrent,omitempty"`

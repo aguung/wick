@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,17 @@ type CLIModelConfig struct {
 	Models      string `wick:"key=models;kvlist=id|desc;group=Model selection;visible_when=model_select:true;desc=Models the picker offers (id/alias + short description). Empty = this provider's built-in defaults."`
 }
 
+// AccountCLIConfig is the omp/opencode-only section: extra MCP servers.
+type AccountCLIConfig struct {
+	ExtraMCPServers string `wick:"key=extra_mcp_servers;textarea;desc=Extra MCP servers for this instance, JSON in mcpServers shape — e.g. {\"github\": {\"type\": \"http\", \"url\": \"https://…\", \"headers\": {\"Authorization\": \"Bearer ${GITHUB_TOKEN}\"}}}. Merged next to wick's own server (the name \"wick\" is reserved). Secrets must be ${VAR} references to the Env above, never plaintext. MCP from the host (~/.claude.json, ~/.cursor, project opencode.json, …) is NOT loaded — only wick + these."`
+}
+
+// OpencodeModelConfig is the opencode-only model/hosting section.
+type OpencodeModelConfig struct {
+	Model       string `wick:"key=opencode_model;desc=provider/model this instance runs (sent as --model), e.g. openai/gpt-5.5. Required: without it opencode silently uses its hosted default model."`
+	AllowHosted string `wick:"key=opencode_allow_hosted;dropdown=false|true;desc=Allow opencode/… hosted models (opencode Zen). They send the whole conversation to opencode's servers — keep off unless that is intended."`
+}
+
 // SeedInstanceConfig returns populated entity.Config rows for an Instance.
 func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 	sendMode := ins.SendMode
@@ -45,6 +57,19 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 		MaxConcurrent: ins.MaxConcurrent,
 		SendMode:      sendMode,
 	})
+	if ins.Type == TypeOMP || ins.Type == TypeOpencode {
+		rows = append(rows, pkgentity.StructToConfigs(AccountCLIConfig{ExtraMCPServers: ins.ExtraMCPServers})...)
+	}
+	if ins.Type == TypeOpencode {
+		oc := OpencodeModelConfig{AllowHosted: "false"}
+		if ins.OpencodeConfig != nil {
+			oc.Model = ins.OpencodeConfig.Model
+			if ins.OpencodeConfig.AllowHosted {
+				oc.AllowHosted = "true"
+			}
+		}
+		rows = append(rows, pkgentity.StructToConfigs(oc)...)
+	}
 	// CLI model picker — claude/codex/gemini only (wick uses WickModels).
 	if ins.Type != TypeWick {
 		rows = append(rows, pkgentity.StructToConfigs(CLIModelConfig{
@@ -81,7 +106,35 @@ func ApplyInstanceConfigKey(ins *Instance, key, value string) {
 		ins.ModelSelect = value == "true" || value == "on"
 	case "models":
 		ins.Models = kvListToModels(value)
+	case "extra_mcp_servers":
+		ins.ExtraMCPServers = strings.TrimSpace(value)
+	case "opencode_model":
+		ensureOpencodeConfig(ins).Model = strings.TrimSpace(value)
+	case "opencode_allow_hosted":
+		ensureOpencodeConfig(ins).AllowHosted = value == "true" || value == "on"
 	}
+}
+
+func ensureOpencodeConfig(ins *Instance) *OpencodeConfig {
+	if ins.OpencodeConfig == nil {
+		ins.OpencodeConfig = &OpencodeConfig{}
+	}
+	return ins.OpencodeConfig
+}
+
+// ValidateInstanceConfigKey rejects a value before it is saved; "" = fine.
+func ValidateInstanceConfigKey(key, value string) error {
+	switch key {
+	case "extra_mcp_servers":
+		_, err := ParseExtraMCP(value)
+		return err
+	case "opencode_model":
+		v := strings.TrimSpace(value)
+		if v != "" && !strings.Contains(v, "/") {
+			return fmt.Errorf("opencode model must be provider/model, got %q", v)
+		}
+	}
+	return nil
 }
 
 // modelsToKVList encodes []ModelEntry → JSON [{"id":"opus","desc":"…"}, ...]

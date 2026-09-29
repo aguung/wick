@@ -26,11 +26,13 @@ type Spawner struct {
 
 // buildArgs is the argv minus the prompt (piped on stdin — run.ts reads a
 // non-TTY stdin as the message).
-func buildArgs(opt provider.SpawnOptions, extra []string) []string {
+func buildArgs(opt provider.SpawnOptions, extra []string, model string, modelInArgs bool) []string {
 	args := []string{"run", "--format", "json", "--thinking", "--auto"}
 	args = append(args, extra...)
 	args = append(args, opt.ExtraArgs...)
-	args = append(args, provider.ModelArgs(opt, args)...)
+	if model != "" && !modelInArgs {
+		args = append(args, "--model", model)
+	}
 	if opt.ResumeID != "" {
 		args = append(args, "--session", opt.ResumeID)
 	}
@@ -61,13 +63,25 @@ func writeSoul(opt provider.SpawnOptions) string {
 
 // spawnEnv is the env wick adds for one spawn: the instance's data dir,
 // the inline config, and the MCP values its placeholders expand to.
-func spawnEnv(ins provider.Instance, soulPath, endpoint, token string) ([]string, error) {
+func spawnEnv(ins provider.Instance, soulPath, endpoint, token string, disable []string) ([]string, error) {
 	env, err := provider.OpencodeEnv(ins)
 	if err != nil {
 		return nil, err
 	}
+	parsed, err := provider.ParseExtraMCP(ins.ExtraMCPServers)
+	if err != nil {
+		return nil, err
+	}
+	extras := make(map[string]map[string]any, len(parsed))
+	for name, s := range parsed {
+		extras[name] = s.OpencodeEntry()
+	}
 	mcp := mcpEnv(endpoint, token)
-	env = append(env, configEnvVar+"="+configContent(mcp != nil, soulPath))
+	// Blank the host's extra config sources (config/config.ts): wick's
+	// inline layer is the only addition allowed, and OPENCODE_AUTO_SHARE
+	// must not publish anything.
+	env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=")
+	env = append(env, configEnvVar+"="+configContent(mcp != nil, soulPath, extras, disable))
 	return append(env, mcp...), nil
 }
 
@@ -87,12 +101,17 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if opt.Instance != nil {
 		ins = *opt.Instance
 	}
-	added, err := spawnEnv(ins, writeSoul(opt), mcpEndpointFromEnv(), s.MCPToken)
+	model, inArgs, err := resolveModel(ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
+	if err != nil {
+		return nil, err
+	}
+	home, _ := os.UserHomeDir()
+	added, err := spawnEnv(ins, writeSoul(opt), mcpEndpointFromEnv(), s.MCPToken, foreignMCPNames(opt.Workspace, home))
 	if err != nil {
 		return nil, fmt.Errorf("opencode instance %s: %w", ins.Name, err)
 	}
 
-	args := buildArgs(opt, s.ExtraArgs)
+	args := buildArgs(opt, s.ExtraArgs, model, inArgs)
 	execBin, execArgs, scopeUnit := opt.MemGuard.Wrap(bin, args, "opencode", opt.SpawnSeq)
 	cmd := safeexec.CommandContext(ctx, execBin, execArgs...)
 	cmd.Dir = opt.Workspace

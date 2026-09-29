@@ -283,6 +283,24 @@ func saveProviderDetail(c *tool.Ctx) {
 		c.Error(http.StatusBadRequest, msg)
 		return
 	}
+	// omp/opencode: extra MCP servers + opencode model/hosting. Validated
+	// here so a bad JSON (or a plaintext secret) never reaches the file.
+	if t == provider.TypeOMP || t == provider.TypeOpencode {
+		keys := []string{"extra_mcp_servers"}
+		if t == provider.TypeOpencode {
+			keys = append(keys, "opencode_model", "opencode_allow_hosted")
+		}
+		for _, k := range keys {
+			if _, present := c.R.Form[k]; !present {
+				continue
+			}
+			if err := provider.ValidateInstanceConfigKey(k, c.Form(k)); err != nil {
+				c.Error(http.StatusBadRequest, err.Error())
+				return
+			}
+			provider.ApplyInstanceConfigKey(&ins, k, c.Form(k))
+		}
+	}
 	if t == provider.TypeCodex {
 		if ins.CodexConfig == nil {
 			ins.CodexConfig = &provider.CodexConfig{}
@@ -326,6 +344,10 @@ func saveProviderConfigKey(c *tool.Ctx) {
 	ins, err := provider.Find(t, name)
 	if err != nil {
 		c.JSON(http.StatusNotFound, map[string]string{"error": "provider not found"})
+		return
+	}
+	if err := provider.ValidateInstanceConfigKey(key, c.Form("value")); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	provider.ApplyInstanceConfigKey(&ins, key, c.Form("value"))

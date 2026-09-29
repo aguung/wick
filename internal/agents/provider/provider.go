@@ -120,6 +120,10 @@ type Instance struct {
 	OMPConfig      *OMPConfig
 	OpencodeConfig *OpencodeConfig
 
+	// ExtraMCPServers (omp/opencode) is the raw "extra MCP servers" JSON,
+	// validated by ParseExtraMCP. See extramcp.go.
+	ExtraMCPServers string
+
 	// UseAIRouter routes this instance's CLI through an embedded AI router
 	// proxy (9router / OmniRoute / …) instead of the provider's own
 	// upstream. Only claude/codex.
@@ -974,6 +978,11 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 				}
 			}
 			applyAccountConfig(&ins, raw.OMPProfile, raw.OpencodeDataDir)
+			ins.ExtraMCPServers = raw.ExtraMCPServers
+			if ins.OpencodeConfig != nil {
+				ins.OpencodeConfig.Model = raw.OpencodeModel
+				ins.OpencodeConfig.AllowHosted = raw.OpencodeAllowHosted
+			}
 			if t == TypeWick {
 				ins.WickModels = wickModelsFromUser(raw.WickModels)
 				ins.WickConfig = wickConfigFromUser(raw.WickConfig)
@@ -1047,6 +1056,11 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 	// the default derives from the name, and a rename must not move the
 	// instance onto a different (logged-out) account.
 	raw.OMPProfile, raw.OpencodeDataDir = accountConfigToUser(ins)
+	raw.ExtraMCPServers = ins.ExtraMCPServers
+	if ins.OpencodeConfig != nil {
+		raw.OpencodeModel = ins.OpencodeConfig.Model
+		raw.OpencodeAllowHosted = ins.OpencodeConfig.AllowHosted
+	}
 	if ins.Type == TypeWick {
 		raw.WickModels = wickModelsToUser(ins.WickModels)
 		raw.WickConfig = wickConfigToUser(ins.WickConfig)

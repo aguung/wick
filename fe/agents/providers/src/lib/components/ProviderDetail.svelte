@@ -890,6 +890,14 @@
                     oninput={() => onSecretInput(f.Key)}
                     class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2.5 text-sm font-mono text-black-900 dark:text-white-100 placeholder:text-black-700 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 transition-colors"
                   />
+                {:else if f.Type === "textarea"}
+                  <textarea
+                    aria-label={f.Key}
+                    bind:value={fieldValues[f.Key]}
+                    rows="6"
+                    spellcheck="false"
+                    class="w-full rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-3 py-2.5 text-xs font-mono text-black-900 dark:text-white-100 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 dark:focus:ring-green-800 transition-colors"
+                  ></textarea>
                 {:else if f.Type === "number"}
                   <input
                     type="number"

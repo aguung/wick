@@ -36,23 +36,35 @@ func mcpEndpointFromEnv() string {
 //     only when there is an endpoint and a token.
 //   - instructions: the wick system prompt file, additive to AGENTS.md
 //     (docs rules.mdx "instructions").
-func configContent(withMCP bool, soulPath string) string {
+func configContent(withMCP bool, soulPath string, extras map[string]map[string]any, disable []string) string {
 	// share "disabled" makes opencode refuse every share request
 	// (src/share/session.ts:28), which also defeats a user/project config
 	// with share "auto" or OPENCODE_AUTO_SHARE — a wick session, with its
 	// system prompt and tool output, must never be published to opncd.ai.
 	cfg := map[string]any{"permission": "allow", "share": "disabled"}
+	mcp := map[string]any{}
+	// Servers declared by project/home config files: switched off in this
+	// last-merged layer, so only wick + the instance's extras connect.
+	for _, name := range disable {
+		mcp[name] = map[string]any{"enabled": false}
+	}
+	for name, e := range extras {
+		mcp[name] = e
+	}
 	if withMCP {
-		cfg["mcp"] = map[string]any{
-			mcpServerName: map[string]any{
-				"type":    "remote",
-				"url":     "{env:" + mcpURLEnvVar + "}",
-				"enabled": true,
-				"headers": map[string]any{
-					"Authorization": "Bearer {env:" + mcpTokenEnvVar + "}",
-				},
+		mcp[mcpServerName] = map[string]any{
+			"type":    "remote",
+			"url":     "{env:" + mcpURLEnvVar + "}",
+			"enabled": true,
+			"headers": map[string]any{
+				"Authorization": "Bearer {env:" + mcpTokenEnvVar + "}",
 			},
 		}
+	} else if _, clash := mcp[mcpServerName]; clash {
+		mcp[mcpServerName] = map[string]any{"enabled": false}
+	}
+	if len(mcp) > 0 {
+		cfg["mcp"] = mcp
 	}
 	if soulPath != "" {
 		cfg["instructions"] = []string{soulPath}
