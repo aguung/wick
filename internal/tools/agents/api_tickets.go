@@ -963,6 +963,26 @@ func notesProjectID(sc notes.Scope) string {
 }
 
 // apiNotesList handles GET /api/notes?ticket_id=…|session_id=…
+// noteTicketSummary is the ticket as the conversation rail shows it: what it
+// asks (body) and the values of the project's fields beside it. Fields is
+// never nil, so the rail can read a value without first asking whether the
+// map exists. Keys the project does not define (a mirror's bookkeeping, such
+// as a linked page id) travel too — the rail shows only defined fields, and
+// the ticket's own page already exposes the full set.
+func noteTicketSummary(tk ticket.Ticket) map[string]any {
+	fields := tk.Fields
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	return map[string]any{
+		"id":     tk.ID,
+		"title":  tk.Title,
+		"status": tk.Status,
+		"body":   tk.Body,
+		"fields": fields,
+	}
+}
+
 func apiNotesList(c *tool.Ctx) {
 	if notReady(c) {
 		return
@@ -1002,14 +1022,15 @@ func apiNotesList(c *tool.Ctx) {
 			// ticket ASKED FOR above the running record of what was found,
 			// and reading notes without the request they answer is half a
 			// conversation.
-			out["ticket"] = map[string]string{
-				"id": tk.ID, "title": tk.Title, "status": tk.Status, "body": tk.Body,
-			}
+			out["ticket"] = noteTicketSummary(tk)
 			// The rail's status select offers the project's own columns, so
 			// a board that renamed its stages does not present the built-in
-			// four as if they were valid.
+			// four as if they were valid. The field definitions travel the
+			// same way: the rail shows and edits the project's own fields,
+			// and a value is only meaningful next to its label and type.
 			if p, pok := globalMgr.Registry().Project(sc.ProjectID); pok {
 				out["statuses"] = p.Meta.Ticket.StatusList()
+				out["ticket_fields"] = p.Meta.Ticket.Fields
 			}
 		}
 	}

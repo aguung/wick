@@ -711,7 +711,10 @@ export type NotesResponse = {
   users?: Record<string, string>;
   me?: string;
   /** `body` is the ticket's description — the request the notes answer. */
-  ticket?: { id: string; title: string; status: string; body?: string };
+  ticket?: { id: string; title: string; status: string; body?: string; fields?: Record<string, string> | null };
+  /** The project's ticket field definitions — labels, types and options for
+      the values in `ticket.fields`, so the rail can show and edit them. */
+  ticket_fields?: TicketField[];
   /** Whether the project runs tickets at all. Absent on an older server,
       which is why it is optional rather than defaulted to false: the rail
       hides its Ticket tab on an explicit `false` and shows it otherwise. */

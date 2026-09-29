@@ -8,8 +8,9 @@
        moved to a different ticket or taken off tickets entirely.
      - On nothing: offers to create a ticket from this chat, or attach it to
        an existing one. */
-  import type { Note, TicketCard, TicketStatus } from "../types/agents.js";
+  import type { Note, TicketCard, TicketField, TicketStatus } from "../types/agents.js";
   import NotesPanel from "./NotesPanel.svelte";
+  import TicketFields from "./TicketFields.svelte";
   import { renderMarkdown } from "../markdown.js";
   import "../notesMarkdown.css";
   import {
@@ -31,7 +32,10 @@
     /* Ticket this session is attached to, when any. `body` is its markdown
        description — what was ASKED, which belongs beside the notes saying
        what was found. */
-    ticket?: { id: string; title: string; status: string; body?: string } | null;
+    ticket?: { id: string; title: string; status: string; body?: string; fields?: Record<string, string> | null } | null;
+    /* The project's ticket field definitions. The rail shows and edits the
+       ticket's values for these, in this order; none means no section. */
+    fields?: TicketField[];
     /* The project's board columns, so the rail offers the same choices as
        the board rather than the built-in four. */
     statuses?: TicketStatus[];
@@ -58,6 +62,7 @@
     projectId,
     ticket,
     statuses,
+    fields,
     noteCount = 0,
     notes,
     users,
@@ -189,6 +194,51 @@
   let bodyOpen = $state(false);
   const bodyLong = $derived(body.length > 240 || body.split("\n").length > 4);
 
+  /* ── edit the description in place ──
+     An empty description is an invitation, not an absence: the slot is
+     shown like "Write a note" so the request can be written where it is
+     read. Ctrl/Cmd+Enter saves, Escape leaves it untouched. */
+  let editingBody = $state(false);
+  let bodyDraft = $state("");
+  let savingBody = $state(false);
+
+  function startBody() {
+    bodyDraft = body;
+    editingBody = true;
+  }
+
+  function saveBody() {
+    if (!ticket || savingBody) return;
+    const next = bodyDraft.trim();
+    if (next === body) {
+      editingBody = false;
+      return;
+    }
+    savingBody = true;
+    Effect.runPromise(
+      updateTicket(base, ticket.id, { body: next }).pipe(Effect.provide(WickClientLayer)),
+    )
+      .then(() => {
+        editingBody = false;
+        onChanged?.();
+      })
+      .catch((e: unknown) => toastError(e instanceof Error ? e.message : "Failed to save the description"))
+      .finally(() => { savingBody = false; });
+  }
+
+  /* One field at a time: the server merges by key, so saving one never
+     touches the others. */
+  function saveField(key: string, value: string): Promise<void> {
+    if (!ticket) return Promise.resolve();
+    return Effect.runPromise(
+      updateTicket(base, ticket.id, { fields: { [key]: value } }).pipe(Effect.provide(WickClientLayer)),
+    ).then(() => { onChanged?.(); });
+  }
+
+  function focusOnMount(el: HTMLElement) {
+    el.focus();
+  }
+
   function startTitle() {
     if (!ticket) return;
     titleDraft = ticket.title;
@@ -264,7 +314,45 @@
         {/each}
       </select>
 
-      {#if body}
+      {#if editingBody}
+        <section
+          data-testid="ticket-body-editor"
+          class="mt-3 rounded-lg border border-white-300 bg-white-100 p-2.5 dark:border-navy-600 dark:bg-navy-700"
+        >
+          <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
+            What the ticket asks
+          </h4>
+          <textarea
+            use:focusOnMount
+            bind:value={bodyDraft}
+            rows="6"
+            disabled={savingBody}
+            data-testid="ticket-body-input"
+            aria-label="What the ticket asks"
+            placeholder="What is being asked, links, repro steps… (markdown)"
+            onkeydown={(e) => {
+              if (e.key === "Escape") { editingBody = false; }
+              else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveBody(); }
+            }}
+            class="mt-1.5 w-full resize-y rounded-lg border border-white-400 bg-white-100 px-2 py-1.5 text-xs text-black-900 outline-none focus:border-green-500 dark:border-navy-600 dark:bg-navy-800 dark:text-white-100"
+          ></textarea>
+          <div class="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="ticket-body-save"
+              disabled={savingBody}
+              onclick={saveBody}
+              class="rounded-lg bg-green-600 px-2.5 py-1 text-[11px] font-medium text-white-100 transition-colors hover:bg-green-700 disabled:opacity-40"
+            >{savingBody ? "Saving…" : "Save"}</button>
+            <button
+              type="button"
+              disabled={savingBody}
+              onclick={() => { editingBody = false; }}
+              class="text-[11px] text-black-700 hover:underline disabled:opacity-40 dark:text-black-600"
+            >Cancel</button>
+          </div>
+        </section>
+      {:else if body}
         <!-- What the ticket ASKS, above the record of what was found. -->
         <section
           data-testid="ticket-body"
@@ -274,6 +362,14 @@
             <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
               What the ticket asks
             </h4>
+            <span class="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="ticket-body-edit"
+              onclick={startBody}
+              title="Edit what the ticket asks"
+              class="shrink-0 text-[11px] font-medium text-black-700 hover:text-green-600 hover:underline dark:text-black-600 dark:hover:text-green-400"
+            >Edit</button>
             {#if bodyLong}
               <button
                 type="button"
@@ -282,6 +378,7 @@
                 onclick={() => { bodyOpen = !bodyOpen; }}
               >{bodyOpen ? "Show less" : "Show more"}</button>
             {/if}
+            </span>
           </div>
           <div class="relative">
             <div
@@ -295,6 +392,32 @@
                 class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-white-100 to-transparent dark:from-navy-700"
               ></div>
             {/if}
+          </div>
+        </section>
+      {:else}
+        <button
+          type="button"
+          data-testid="ticket-body-add"
+          onclick={startBody}
+          class="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-white-400 px-3 py-2 text-xs font-medium text-black-700 transition-colors hover:border-green-500 hover:text-green-600 dark:border-navy-600 dark:text-black-600 dark:hover:text-green-400"
+        >
+          <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <path d="M8 3.5v9M3.5 8h9" stroke-linecap="round"></path>
+          </svg>
+          Describe what the ticket asks
+        </button>
+      {/if}
+
+      {#if fields && fields.length > 0}
+        <section
+          data-testid="ticket-fields"
+          class="mt-3 rounded-lg border border-white-300 bg-white-100 p-2.5 dark:border-navy-600 dark:bg-navy-700"
+        >
+          <h4 class="text-[10px] font-semibold uppercase tracking-wide text-black-700 dark:text-black-600">
+            Additional info
+          </h4>
+          <div class="mt-1.5">
+            <TicketFields {fields} values={ticket.fields} onSave={saveField} />
           </div>
         </section>
       {/if}
