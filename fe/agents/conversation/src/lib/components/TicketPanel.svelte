@@ -267,6 +267,9 @@
       .finally(() => { actionBusy = ""; });
   }
   const isSyncLabel = (label: string) => /sync|refresh|pull|reload/i.test(label);
+  /* The header has room for a word, not a sentence: "Sync from Notion" reads
+     as "Sync" beside the status pill, and the full label is the tooltip. */
+  const shortLabel = (label: string) => (isSyncLabel(label) ? "Sync" : label.length > 14 ? label.slice(0, 13) + "…" : label);
 
   function startTitle() {
     if (!ticket) return;
@@ -307,8 +310,39 @@
           title="Open this ticket's page"
           class="rounded bg-white-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-black-800 transition-colors hover:text-green-600 dark:bg-navy-700 dark:text-black-600 dark:hover:text-green-400"
         >{ticket.id}</button>
-        <span class={"ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold " + pillFor(ticket.status)}>
-          {labelOf(ticket.status)}
+        <span class="ml-auto flex items-center gap-1.5">
+          {#if buttons && buttons.length > 0}
+            <!-- Custom buttons ("Sync from Notion") sit in the header, quiet
+                 until hovered: an action on the ticket, not content of it. -->
+            <span class="flex items-center gap-0.5" data-testid="ticket-buttons">
+              {#each buttons as b (b.id)}
+                <button
+                  type="button"
+                  data-testid="ticket-button-{b.id}"
+                  disabled={actionBusy !== ""}
+                  aria-busy={actionBusy === b.id}
+                  onclick={() => runButton(b)}
+                  title={b.label}
+                  aria-label={b.label}
+                  class="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-black-700 transition-colors hover:bg-white-100 hover:text-green-600 disabled:cursor-not-allowed disabled:opacity-60 dark:text-black-600 dark:hover:bg-navy-700 dark:hover:text-green-400"
+                >
+                  {#if isSyncLabel(b.label)}
+                    <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 {actionBusy === b.id ? 'animate-spin' : ''}" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                      <path d="M13 8a5 5 0 0 1-8.6 3.5M3 8a5 5 0 0 1 8.6-3.5M11.5 2v2.7H8.8M4.5 14v-2.7h2.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  {:else if actionBusy === b.id}
+                    <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                      <path d="M8 2a6 6 0 1 1-6 6" stroke-linecap="round"></path>
+                    </svg>
+                  {/if}
+                  <span>{actionBusy === b.id ? (isSyncLabel(b.label) ? "Syncing…" : "Working…") : shortLabel(b.label)}</span>
+                </button>
+              {/each}
+            </span>
+          {/if}
+          <span class={"rounded-full px-2 py-0.5 text-[10px] font-semibold " + pillFor(ticket.status)}>
+            {labelOf(ticket.status)}
+          </span>
         </span>
       </div>
 
@@ -329,32 +363,6 @@
         >{ticket.title}</button>
       {/if}
 
-      {#if buttons && buttons.length > 0}
-        <div class="mt-2 flex flex-wrap gap-1.5" data-testid="ticket-buttons">
-          {#each buttons as b (b.id)}
-            <button
-              type="button"
-              data-testid="ticket-button-{b.id}"
-              disabled={actionBusy !== ""}
-              aria-busy={actionBusy === b.id}
-              onclick={() => runButton(b)}
-              title={b.label}
-              class="inline-flex items-center gap-1.5 rounded-lg border border-white-400 bg-white-100 px-2.5 py-1 text-[11px] font-medium text-black-900 transition-colors hover:border-green-500 hover:text-green-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-navy-600 dark:bg-navy-700 dark:text-white-100 dark:hover:border-green-500 dark:hover:text-green-400"
-            >
-              {#if isSyncLabel(b.label)}
-                <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 {actionBusy === b.id ? 'animate-spin' : ''}" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-                  <path d="M13 8a5 5 0 0 1-8.6 3.5M3 8a5 5 0 0 1 8.6-3.5M11.5 2v2.7H8.8M4.5 14v-2.7h2.7" stroke-linecap="round" stroke-linejoin="round"></path>
-                </svg>
-              {:else if actionBusy === b.id}
-                <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-                  <path d="M8 2a6 6 0 1 1-6 6" stroke-linecap="round"></path>
-                </svg>
-              {/if}
-              {actionBusy === b.id ? (isSyncLabel(b.label) ? "Syncing…" : "Working…") : b.label}
-            </button>
-          {/each}
-        </div>
-      {/if}
 
       <label class="mt-3 block text-[10px] font-medium uppercase tracking-wide text-black-700 dark:text-black-600" for="rail-tkt-status">
         Status
@@ -427,8 +435,18 @@
             >Edit</button>
           </div>
           <div class="relative">
+            <!-- Clicking the folded text is a mouse shortcut to "Show more";
+                 the keyboard path is the toggle button below, which is a real
+                 focusable button — so the text itself stays a plain block. -->
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div
-              class="wick-note-md mt-1.5 break-words text-xs text-black-900 dark:text-white-100 {bodyLong && !bodyOpen ? 'max-h-24 overflow-hidden' : ''}"
+              class="wick-note-md mt-1.5 break-words text-xs text-black-900 dark:text-white-100 {bodyLong && !bodyOpen ? 'max-h-24 cursor-pointer overflow-hidden' : ''}"
+              data-testid="ticket-body-text"
+              onclick={(e) => {
+                // Folded text opens on a click anywhere in it — except on a
+                // link, which must still go where it points.
+                if (bodyLong && !bodyOpen && !(e.target as HTMLElement).closest("a")) bodyOpen = true;
+              }}
             >
               {@html renderMarkdown(body)}
             </div>
@@ -457,7 +475,7 @@
         </button>
       {/if}
 
-      {#if fields && fields.some((f) => (ticket.fields?.[f.key] ?? "").trim() !== "")}
+      {#if fields && fields.length > 0}
         <section
           data-testid="ticket-fields"
           class="mt-3 rounded-lg border border-white-300 bg-white-100 p-2.5 dark:border-navy-600 dark:bg-navy-700"

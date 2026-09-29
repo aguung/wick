@@ -67,18 +67,26 @@ describe("TicketFields — reading", () => {
     expect(screen.queryByText(/^\s*Add /)).toBeNull();
   });
 
-  test("two filled rows first, the rest behind Show more — counting filled ones only", async () => {
+  test("two filled rows at rest; Show more counts every other field, empty ones too", async () => {
     renderFields();
-    // filled, in project order: app_code, slack, qticket, owner
+    // filled, in project order: app_code, slack, qticket, owner; empty: priority, changelog
     expect(screen.getByTestId("ticket-field-app_code")).toBeTruthy();
     expect(screen.getByTestId("ticket-field-slack")).toBeTruthy();
     expect(screen.queryByTestId("ticket-field-qticket")).toBeNull();
     const toggle = screen.getByTestId("ticket-fields-toggle");
-    expect(toggle.textContent).toContain("Show more (2)");
+    expect(toggle.textContent).toContain("Show more (4)");
     await fireEvent.click(toggle);
-    expect(screen.getByTestId("ticket-field-qticket")).toBeTruthy();
-    expect(screen.getByTestId("ticket-field-owner")).toBeTruthy();
+    for (const d of defs) expect(screen.getByTestId(`ticket-field-${d.key}`)).toBeTruthy();
+    expect(screen.getByTestId("ticket-field-add-priority").textContent).toContain("Add");
     expect(screen.getByTestId("ticket-fields-toggle").textContent).toContain("Show less");
+  });
+
+  test("nothing filled: no rows, and the toggle reads Add custom fields", async () => {
+    renderFields({ values: {} });
+    expect(screen.queryByTestId("ticket-fields-list")).toBeNull();
+    expect(screen.getByTestId("ticket-fields-toggle").textContent).toContain("Add custom fields (6)");
+    await fireEvent.click(screen.getByTestId("ticket-fields-toggle"));
+    expect(screen.getByTestId("ticket-field-add-app_code")).toBeTruthy();
   });
 
   test("the toggle sits below the rows it folds", () => {
@@ -88,8 +96,8 @@ describe("TicketFields — reading", () => {
     expect(list.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  test("no toggle when the filled fields fit", () => {
-    renderFields({ values: { app_code: "a", slack: "b" } });
+  test("no toggle when every field is filled and fits", () => {
+    renderFields({ fields: defs.slice(0, 2), values: { app_code: "a", slack: "b" } });
     expect(screen.queryByTestId("ticket-fields-toggle")).toBeNull();
   });
 });
@@ -178,5 +186,18 @@ describe("TicketFields — editing in place", () => {
     await fireEvent.keyDown(input, { key: "Enter" });
     await tick();
     expect((screen.getByTestId("ticket-field-input-app_code") as HTMLInputElement).value).toBe("will fail");
+  });
+});
+
+describe("TicketFields — filling an empty field from the open list", () => {
+  test("+ Add on the label row opens the editor and saves", async () => {
+    const { onSave } = renderFields();
+    await fireEvent.click(screen.getByTestId("ticket-fields-toggle"));
+    await fireEvent.click(screen.getByTestId("ticket-field-add-changelog"));
+    const input = screen.getByTestId("ticket-field-input-changelog") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "v1.2 ships the fix" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await tick();
+    expect(onSave).toHaveBeenCalledWith("changelog", "v1.2 ships the fix");
   });
 });

@@ -5,15 +5,16 @@
      - Only fields the project DEFINES are shown, in the project's order.
        Values under keys nobody defined (a mirror's bookkeeping, a linked
        page id) have no label to show them under and are left alone.
-     - Only fields that HOLD a value are listed: an empty one says nothing
-       about the ticket, and a column of "Add …" slots pushed the values off
-       the panel. Two rows first, the rest behind Show more at the bottom —
-       the same fold as the description, so the notes below stay in view.
+     - At rest, only fields that HOLD a value, two of them: an empty field says
+       nothing about the ticket, and the notes below must stay in view.
+     - "Show more (n)" at the end opens EVERY field in project order — the
+       other filled ones and the empty ones, which get a small "+ Add" on
+       their label row. That is the one way in to filling a field, so it
+       counts all of them, not just the filled ones it hides.
      - A URL in a value is a link, with an explicit open-in-new-tab button,
        because a Slack thread or an upstream ticket is usually the next place
        to look.
-     - Clearing a value in place removes the row once saved; filling an
-       empty field is done on the ticket's own page. */
+     - Clearing a value in place removes the row from the resting view. */
   import type { TicketField } from "../types/agents.js";
   import { linkify, firstUrl } from "../linkify.js";
   import { toastError } from "@wick-fe/common-stores";
@@ -25,7 +26,7 @@
     /* Persists one field. Resolves when saved; rejects to keep the editor
        open with what was typed. */
     onSave: (key: string, value: string) => Promise<void>;
-    /* Rows shown before the fold. */
+    /* Filled rows shown before the fold. */
     initialVisible?: number;
   };
 
@@ -41,8 +42,10 @@
   /* The field being edited stays listed even while its draft is empty, so
      the input does not vanish from under the cursor mid-edit. */
   const filled = $derived(fields.filter((f) => valueOf(f.key).trim() !== "" || editing === f.key));
-  const hiddenCount = $derived(Math.max(0, filled.length - initialVisible));
-  const visible = $derived(showAll ? filled : filled.slice(0, initialVisible));
+  const visible = $derived(showAll ? fields : filled.slice(0, initialVisible));
+  /* Everything the resting view leaves out — hidden filled rows AND empty
+     fields — because opening the list is how an empty one gets filled. */
+  const hiddenCount = $derived(fields.length - filled.slice(0, initialVisible).length);
 
   let draft = $state("");
   let saving = $state(false);
@@ -87,6 +90,7 @@
   }
 </script>
 
+{#if visible.length > 0}
 <ul class="flex flex-col gap-2" data-testid="ticket-fields-list">
   {#each visible as f (f.key)}
     {@const value = valueOf(f.key)}
@@ -96,6 +100,20 @@
         <span class="text-[10px] font-medium uppercase tracking-wide text-black-700 dark:text-black-600">
           {f.label || f.key}{#if f.required}<span class="text-neg-400" aria-label="required"> *</span>{/if}
         </span>
+        {#if !value && editing !== f.key}
+          <button
+            type="button"
+            data-testid="ticket-field-add-{f.key}"
+            onclick={() => start(f)}
+            title="Add {f.label || f.key}"
+            class="ml-auto inline-flex items-center gap-0.5 rounded px-1 text-[11px] font-medium text-green-600 transition-colors hover:bg-white-200 dark:text-green-400 dark:hover:bg-navy-600"
+          >
+            <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M8 3.5v9M3.5 8h9" stroke-linecap="round"></path>
+            </svg>
+            Add
+          </button>
+        {/if}
         {#if value && editing !== f.key}
           <span class="ml-auto flex items-center gap-1">
             {#if url}
@@ -179,7 +197,14 @@
     </li>
   {/each}
 </ul>
+{/if}
 
-{#if hiddenCount > 0}
-  <FoldToggle open={showAll} hidden={hiddenCount} testid="ticket-fields-toggle" onclick={() => { showAll = !showAll; }} />
+{#if hiddenCount > 0 || showAll}
+  <FoldToggle
+    open={showAll}
+    hidden={hiddenCount}
+    label={filled.length === 0 ? "Add custom fields" : undefined}
+    testid="ticket-fields-toggle"
+    onclick={() => { showAll = !showAll; }}
+  />
 {/if}
