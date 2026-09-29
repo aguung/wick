@@ -222,7 +222,7 @@ func oneShotArgs(ins agentprovider.Instance, prompt string) (env, args []string,
 		if err != nil {
 			return nil, nil, err
 		}
-		env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=",
+		env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=false",
 			`OPENCODE_CONFIG_CONTENT={"permission":"allow","share":"disabled"}`)
 		args = append([]string{"run", "--auto"}, ins.ExtraArgs...)
 		// Same rule as the chat spawner: never let opencode pick its hosted

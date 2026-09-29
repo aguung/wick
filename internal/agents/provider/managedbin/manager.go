@@ -502,6 +502,9 @@ func (m *Manager) runVersion(ctx context.Context, typ, bin string) (raw, parsed 
 		"XDG_STATE_HOME=" + filepath.Join(scratch, "state"),
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 		"NO_COLOR=1", "TERM=dumb",
+		// A freshly downloaded CLI must not replace itself (opencode's
+		// cli/upgrade.ts honours this; harmless for the others).
+		"OPENCODE_DISABLE_AUTOUPDATE=true",
 	}
 	b, err := cmd.CombinedOutput()
 	raw = strings.TrimSpace(string(b))

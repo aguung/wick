@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -812,6 +813,10 @@ func Probe(ctx context.Context, ins Instance) Status {
 		args = contract.Args
 	}
 	cmd := safeexec.CommandContext(ctx, st.Path, args...)
+	if ins.Type == TypeOpencode {
+		// Never let a probe trigger opencode's self-update (cli/upgrade.ts).
+		cmd.Env = append(os.Environ(), "OPENCODE_DISABLE_AUTOUPDATE=true")
+	}
 	hideConsole(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

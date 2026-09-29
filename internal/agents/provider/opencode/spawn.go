@@ -80,7 +80,7 @@ func spawnEnv(ins provider.Instance, soulPath, endpoint, token string, disable [
 	// Blank the host's extra config sources (config/config.ts): wick's
 	// inline layer is the only addition allowed, and OPENCODE_AUTO_SHARE
 	// must not publish anything.
-	env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=")
+	env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=false")
 	env = append(env, configEnvVar+"="+configContent(mcp != nil, soulPath, extras, disable))
 	return append(env, mcp...), nil
 }

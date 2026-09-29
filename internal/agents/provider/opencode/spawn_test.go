@@ -49,7 +49,7 @@ func TestSpawnEnvIsolatesAndMerges(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"XDG_DATA_HOME=" + dir, "XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
-		"OPENCODE_DISABLE_AUTOUPDATE=true", "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=", "WICK_MCP_TOKEN=tok-secret"} {
+		"OPENCODE_DISABLE_AUTOUPDATE=true", "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=", "OPENCODE_AUTO_SHARE=false", "WICK_MCP_TOKEN=tok-secret"} {
 		if !slices.Contains(env, want) {
 			t.Errorf("env missing %q", want)
 		}

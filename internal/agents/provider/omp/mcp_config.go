@@ -146,8 +146,11 @@ func contains(xs []string, x string) bool {
 //     FOREIGN_USER_PROVIDERS / isUserSourceEnabled. disabledProviders is
 //     deliberately NOT used: it would also switch off those providers'
 //     skills and context files.
-//   - startup.checkUpdate=false: no update check (modes/settings.ts); print
-//     mode never runs it anyway (main.ts only checks in interactive mode).
+//   - startup.checkUpdate=false / marketplace.autoUpdate=off: no update
+//     check and no plugin self-update (modes/settings.ts). omp never
+//     replaces its own binary: `omp update` is manual, and print mode skips
+//     the version check entirely (main.ts checks only in interactive mode) —
+//     a managed binary's sha256 keeps matching state.json.
 //
 // JSON is valid YAML, which is what omp reads.
 func isolationOverlay() []byte {
@@ -155,6 +158,7 @@ func isolationOverlay() []byte {
 		"mcp":              map[string]any{"enableProjectConfig": false},
 		"enabledProviders": []string{},
 		"startup":          map[string]any{"checkUpdate": false},
+		"marketplace":      map[string]any{"autoUpdate": "off"},
 	}, "", "  ")
 	return b
 }
