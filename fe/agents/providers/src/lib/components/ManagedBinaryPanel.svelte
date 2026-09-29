@@ -11,7 +11,7 @@
      Nothing downloads unless an admin clicks; the server re-checks
      everything (sha256, --version, in-use) regardless of what this shows. */
   import { onDestroy, onMount } from "svelte";
-  import { Button, ProgressBar } from "@wick-fe/common-ui";
+  import { Button, ProgressBar, Select } from "@wick-fe/common-ui";
   import { toastError, toastOk, toastWarn } from "@wick-fe/common-stores";
   import {
     apiManagedList,
@@ -25,6 +25,7 @@
     jobLabel,
     jobPct,
     jobShort,
+    jobSummary,
     jobVersion,
     latestState,
     sessionsNote,
@@ -48,6 +49,10 @@
   let busy = $state("");
   let verifyOut = $state<{ output: string; error: string } | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /* The job that just finished, kept on screen for a few seconds: a fast
+     download otherwise went from "resolving" straight to nothing. */
+  let justDone = $state<ManagedJob | null>(null);
+  let justDoneTimer: ReturnType<typeof setTimeout> | null = null;
 
   function errText(e: unknown): string {
     const msg = e instanceof Error ? e.message : String(e);
@@ -69,7 +74,12 @@
       onChange?.(data);
       if (prevRunning && data && !isRunning(data.job) && data.job) {
         if (data.job.phase === "error") toastError(`${type}: ${data.job.error}`);
-        else toastOk(`${type}: ${data.job.message || "done"}`);
+        else {
+          justDone = data.job;
+          if (justDoneTimer) clearTimeout(justDoneTimer);
+          justDoneTimer = setTimeout(() => { justDone = null; }, 8000);
+          toastOk(`${type}: ${jobSummary(data.job)}`);
+        }
       }
     } catch {
       data = null;
@@ -83,11 +93,11 @@
   // as old processes finish).
   function schedule(): void {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void load(), isRunning(data?.job ?? null) ? 1000 : 15000);
+    timer = setTimeout(() => void load(), isRunning(data?.job ?? null) ? 500 : 15000);
   }
 
   onMount(() => void load());
-  onDestroy(() => { if (timer) clearTimeout(timer); });
+  onDestroy(() => { if (timer) clearTimeout(timer); if (justDoneTimer) clearTimeout(justDoneTimer); });
 
   async function act(key: string, f: () => Promise<unknown>): Promise<void> {
     busy = key;
@@ -120,6 +130,11 @@
   const note = $derived(data ? sessionsNote(data) : "");
   const failed = $derived(data?.lastJob?.phase === "error" && !job ? data.lastJob : null);
   const rows = $derived(data ? versionRows(data) : []);
+  const onDisk = $derived(rows.filter((r) => r.status !== "not_downloaded"));
+  const available = $derived(rows.filter((r) => r.status === "not_downloaded"));
+  let pickVer = $state("");
+  // A download started from the picker (not the latest/first-install button).
+  const pickJob = $derived(job && !onDisk.some((r) => r.version === jobV) && data?.current ? job : null);
   const latestAct = $derived(data ? latestState(data) : "");
 </script>
 
@@ -165,6 +180,8 @@
 
     {#if job}
       <ProgressBar class="max-w-md" testid="managed-job" pct={jobPct(job)} label={jobLabel(job)} />
+    {:else if justDone}
+      <ProgressBar class="max-w-md" testid="managed-job-done" pct={100} label={"✓ " + jobSummary(justDone)} />
     {:else if failed}
       <p data-testid="managed-job-error" class="rounded-lg border border-neg-400 px-3 py-2 text-xs text-neg-400">Last download failed ({failed.tag || "latest"}): {failed.error}. The active version was not changed.</p>
     {/if}
@@ -194,61 +211,93 @@
     {/if}
 
     {#if !compact && rows.length > 0}
-      <div class="space-y-1">
-        <p class="text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">VERSIONS</p>
-        <ul data-testid="managed-version-list" class="divide-y divide-white-300 dark:divide-navy-600 text-xs">
-          {#each rows as r (r.version)}
-            {@const rowJob = job && jobV === r.version ? job : null}
-            <li data-testid="managed-version-row" data-version={r.version} data-status={r.status} class="py-2 space-y-1.5">
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span class="font-mono font-medium text-black-900 dark:text-white-100">v{r.version}</span>
-                {#if r.status === "active"}
-                  <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-1.5 py-0.5 text-[11px] font-medium text-pos-400">active</span>
-                {:else if r.status === "downloaded"}
-                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">downloaded</span>
-                {:else}
-                  <span class="text-[11px] text-black-700 dark:text-black-600">not downloaded</span>
-                {/if}
-                {#if r.latest}
-                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">latest</span>
-                {/if}
-                {#if r.prerelease}
-                  <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">pre</span>
-                {/if}
-                {#if r.installed}
-                  <span class="text-black-700 dark:text-black-600">{r.installed.installedAt ? new Date(r.installed.installedAt).toLocaleString() : ""}</span>
-                  <span class="font-mono text-black-700 dark:text-black-600" title={r.installed.sha256}>sha256 {r.installed.sha256.slice(0, 12)}</span>
-                  {#if r.installed.inUse > 0}
-                    <span data-testid="managed-row-inuse" class="text-black-800 dark:text-black-600">{r.installed.inUse} {r.installed.inUse === 1 ? "session" : "sessions"} still using it</span>
-                  {/if}
-                {:else if r.published}
-                  <span class="text-black-700 dark:text-black-600">{new Date(r.published).toLocaleDateString()}</span>
-                {/if}
-                {#if isAdmin && data.enabled}
-                  <span class="ml-auto flex gap-2">
-                    {#if r.status === "not_downloaded"}
-                      <Button variant="secondary" testid="managed-row-download" disabled={locked} onclick={() => download(r.tag)}>{rowJob ? jobShort(rowJob) : "Download"}</Button>
-                    {:else}
-                      {#if r.status === "downloaded"}
-                        <Button variant="secondary" testid="managed-row-activate" disabled={locked} onclick={() => activate(r.version)}>Activate</Button>
+      <!-- Downloaded versions: a short table (active + the kept backups).
+           Every other release sits behind one searchable picker instead of
+           a row each — GitHub lists dozens and a long list buried the
+           versions that are actually on disk. -->
+      <div class="space-y-2">
+        <p class="text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">DOWNLOADED VERSIONS</p>
+        {#if onDisk.length === 0}
+          <p data-testid="managed-none-downloaded" class="text-xs text-black-700 dark:text-black-600">Nothing downloaded yet.</p>
+        {:else}
+          <div class="overflow-x-auto rounded-lg border border-white-300 dark:border-navy-600">
+            <table data-testid="managed-version-list" class="w-full text-xs">
+              <thead class="bg-white-200 dark:bg-navy-800 text-left text-[11px] text-black-700 dark:text-black-600">
+                <tr>
+                  <th class="px-3 py-2 font-medium">Version</th>
+                  <th class="px-3 py-2 font-medium">Status</th>
+                  <th class="px-3 py-2 font-medium">Downloaded</th>
+                  <th class="px-3 py-2 font-medium">sha256</th>
+                  <th class="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-white-300 dark:divide-navy-600">
+                {#each onDisk as r (r.version)}
+                  <tr data-testid="managed-version-row" data-version={r.version} data-status={r.status}>
+                    <td class="px-3 py-2 font-mono font-medium text-black-900 dark:text-white-100 whitespace-nowrap">
+                      v{r.version}
+                      {#if r.latest}<span class="ml-1 rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 font-sans text-[11px] font-medium text-black-800 dark:text-black-600">latest</span>{/if}
+                    </td>
+                    <td class="px-3 py-2 whitespace-nowrap">
+                      {#if r.status === "active"}
+                        <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-1.5 py-0.5 text-[11px] font-medium text-pos-400">active</span>
+                      {:else}
+                        <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">downloaded</span>
                       {/if}
-                      <Button
-                        variant="secondary"
-                        testid="managed-row-remove"
-                        disabled={!r.installed?.removable || locked}
-                        title={r.status === "active" ? "The active version cannot be removed" : (r.installed?.inUse ?? 0) > 0 ? "Still used by a running session" : ""}
-                        onclick={() => remove(r.version)}
-                      >Remove</Button>
-                    {/if}
-                  </span>
-                {/if}
-              </div>
-              {#if rowJob}
-                <ProgressBar class="max-w-md" testid="managed-row-progress" pct={jobPct(rowJob)} label={jobLabel(rowJob)} />
-              {/if}
-            </li>
-          {/each}
-        </ul>
+                      {#if (r.installed?.inUse ?? 0) > 0}
+                        <span data-testid="managed-row-inuse" class="ml-1 text-black-800 dark:text-black-600">{r.installed?.inUse} {r.installed?.inUse === 1 ? "session" : "sessions"} using it</span>
+                      {/if}
+                    </td>
+                    <td class="px-3 py-2 text-black-700 dark:text-black-600 whitespace-nowrap">{r.installed?.installedAt ? new Date(r.installed.installedAt).toLocaleString() : "—"}</td>
+                    <td class="px-3 py-2 font-mono text-black-700 dark:text-black-600" title={r.installed?.sha256}>{r.installed?.sha256.slice(0, 12)}</td>
+                    <td class="px-3 py-2">
+                      {#if isAdmin && data.enabled}
+                        <span class="flex justify-end gap-2">
+                          {#if r.status === "downloaded"}
+                            <Button variant="secondary" testid="managed-row-activate" disabled={locked} onclick={() => activate(r.version)}>Activate</Button>
+                          {/if}
+                          <Button
+                            variant="secondary"
+                            testid="managed-row-remove"
+                            disabled={!r.installed?.removable || locked}
+                            title={r.status === "active" ? "The active version cannot be removed" : (r.installed?.inUse ?? 0) > 0 ? "Still used by a running session" : ""}
+                            onclick={() => remove(r.version)}
+                          >Remove</Button>
+                        </span>
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+        {#if isAdmin && data.enabled && available.length > 0}
+          <div data-testid="managed-other-version" class="flex flex-wrap items-end gap-2 pt-1">
+            <div class="min-w-[16rem] flex-1 max-w-sm">
+              <label for="managed-pick-{type}" class="mb-1 block text-[11px] font-medium text-black-700 dark:text-black-600">Download another version</label>
+              <Select
+                id="managed-pick-{type}"
+                size="sm"
+                placeholder="Pick a release…"
+                searchable
+                value={pickVer}
+                options={available.map((r) => ({
+                  value: r.tag,
+                  label: `v${r.version}`,
+                  description: r.published ? `released ${new Date(r.published).toLocaleDateString()}` : undefined,
+                  badge: r.latest ? "latest" : r.prerelease ? "pre" : undefined,
+                }))}
+                onChange={(v) => { pickVer = v; }}
+                disabled={locked}
+              />
+            </div>
+            <Button variant="secondary" testid="managed-row-download" disabled={locked || !pickVer} onclick={() => { const t = pickVer; pickVer = ""; download(t); }}>
+              {pickJob ? jobShort(pickJob) : "Download"}
+            </Button>
+          </div>
+        {/if}
       </div>
     {/if}
   {/if}

@@ -48,7 +48,7 @@ const base = mb.normalizeManaged({
 
 const job = (over: Partial<mb.ManagedJob> = {}): mb.ManagedJob => ({
   id: "j", type: "omp", tag: "v18.4.4", version: "18.4.4", activate: false, phase: "download",
-  done: 45 << 20, total: 100 << 20, bytesPerSec: 0, message: "", error: "", ...over,
+  done: 45 << 20, total: 100 << 20, bytesPerSec: 0, message: "", error: "", startedAt: "", finishedAt: "", ...over,
 });
 
 function row(version: string): HTMLElement {
@@ -70,22 +70,23 @@ describe("ManagedBinaryPanel", () => {
     expect(screen.getByTestId("managed-download-latest").textContent).toBe("Download v18.4.4");
   });
 
-  it("one version list with a status + action per row", async () => {
+  it("table lists only downloaded versions; the rest sit behind one picker", async () => {
     vi.mocked(mb.apiManagedList).mockResolvedValue({ types: [base], isAdmin: true });
     render(ManagedBinaryPanel, { props: { base: "", type: "omp" } });
     await screen.findByTestId("managed-version-list");
     expect(screen.getAllByTestId("managed-version-row").map((r) => `${r.dataset.version}:${r.dataset.status}`)).toEqual([
-      "18.4.4:not_downloaded", "18.4.3:active", "18.4.2:downloaded", "18.4.1:downloaded",
+      "18.4.3:active", "18.4.2:downloaded", "18.4.1:downloaded",
     ]);
-    // not downloaded → Download only
-    expect(within(row("18.4.4")).getByTestId("managed-row-download")).toBeTruthy();
-    expect(within(row("18.4.4")).queryByTestId("managed-row-activate")).toBeNull();
+    // not downloaded → only in the picker, Download disabled until one is picked
+    const picker = screen.getByTestId("managed-other-version");
+    expect(within(picker).getByTestId("wick-select-trigger")).toBeTruthy();
+    expect((within(picker).getByTestId("managed-row-download") as HTMLButtonElement).disabled).toBe(true);
     // active → no Activate, Remove disabled
     expect(within(row("18.4.3")).queryByTestId("managed-row-activate")).toBeNull();
     expect((within(row("18.4.3")).getByTestId("managed-row-remove") as HTMLButtonElement).disabled).toBe(true);
     // in use → Remove disabled + note
     expect((within(row("18.4.2")).getByTestId("managed-row-remove") as HTMLButtonElement).disabled).toBe(true);
-    expect(within(row("18.4.2")).getByTestId("managed-row-inuse").textContent).toBe("2 sessions still using it");
+    expect(within(row("18.4.2")).getByTestId("managed-row-inuse").textContent).toBe("2 sessions using it");
     expect((within(row("18.4.1")).getByTestId("managed-row-remove") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -113,17 +114,15 @@ describe("ManagedBinaryPanel", () => {
     expect(mb.apiManagedActivate).toHaveBeenCalledWith("", "omp", "18.4.4");
   });
 
-  it("running job: progress in the summary AND on its row; every action disabled", async () => {
+  it("running job: progress in the summary and on the picker's button; every action disabled", async () => {
     vi.mocked(mb.apiManagedList).mockResolvedValue({ types: [{ ...base, job: job() }], isAdmin: true });
     render(ManagedBinaryPanel, { props: { base: "", type: "omp" } });
     const summary = await screen.findByTestId("managed-job");
     expect(summary.textContent).toContain("Downloading v18.4.4… 45%");
-    expect(summary.querySelector("[role=progressbar]")?.getAttribute("aria-valuenow")).toBe("45");
-    expect(within(row("18.4.4")).getByTestId("managed-row-progress")).toBeTruthy();
-    expect(within(row("18.4.4")).getByTestId("managed-row-download").textContent).toBe("Downloading v18.4.4… 45%");
+    expect(summary.querySelector("[role=progressbar]")?.getAttribute("aria-valuenow")).toBe("41"); // overall: 5 + 45% of the 80-point download band
+    expect(screen.getByTestId("managed-row-download").textContent?.trim()).toBe("Downloading v18.4.4… 45%");
     expect(screen.getByTestId("managed-download-latest").textContent).toBe("Downloading v18.4.4… 45%");
     for (const b of screen.getAllByRole("button")) expect((b as HTMLButtonElement).disabled).toBe(true);
-    expect(within(row("18.4.3")).queryByTestId("managed-row-progress")).toBeNull();
   });
 
   it("a second click that hits a running job follows it — no error toast", async () => {

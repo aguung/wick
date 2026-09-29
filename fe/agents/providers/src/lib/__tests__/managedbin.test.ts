@@ -3,6 +3,8 @@ import {
   normalizeManaged,
   jobLabel,
   jobPct,
+  downloadPct,
+  jobSummary,
   jobShort,
   sessionsNote,
   isRunning,
@@ -47,14 +49,31 @@ describe("managedbin client", () => {
   });
 
   it("labels job progress and its percentage", () => {
-    expect(jobLabel(m.job!)).toBe("Downloading v18.4.4… 25% (50 MB / 200 MB · 5.0 MB/s)");
+    // Label: step + byte-level download %. Bar: overall % weighted by phase,
+    // so it always carries a number (download band = 5..85).
+    expect(jobLabel(m.job!)).toBe("Step 2/5 · Downloading v18.4.4… 25% (50 MB / 200 MB · 5.0 MB/s)");
     expect(jobShort(m.job!)).toBe("Downloading v18.4.4… 25%");
+    expect(downloadPct(m.job!)).toBe(25);
+    expect(downloadPct({ ...m.job!, total: 0 })).toBe(-1);
     expect(jobPct(m.job!)).toBe(25);
-    expect(jobPct({ ...m.job!, phase: "resolve" })).toBe(-1);
-    expect(jobPct({ ...m.job!, total: 0 })).toBe(-1);
-    expect(jobPct({ ...m.job!, phase: "verify" })).toBe(100);
-    expect(jobLabel({ ...m.job!, phase: "verify" })).toBe("Verifying sha256 of v18.4.4…");
-    expect(jobLabel({ ...m.job!, phase: "save" })).toBe("Saving v18.4.4…");
+    expect(jobPct({ ...m.job!, phase: "resolve" })).toBe(2);
+    expect(jobPct({ ...m.job!, total: 0 })).toBe(5);
+    expect(jobPct({ ...m.job!, phase: "verify" })).toBe(88);
+    expect(jobPct({ ...m.job!, phase: "probe" })).toBe(93);
+    expect(jobPct({ ...m.job!, phase: "save" })).toBe(97);
+    expect(jobPct({ ...m.job!, phase: "done" })).toBe(100);
+    expect(jobLabel({ ...m.job!, phase: "resolve" })).toBe("Step 1/5 · Looking up v18.4.4 on GitHub…");
+    expect(jobShort({ ...m.job!, phase: "verify" })).toBe("Verifying sha256 of v18.4.4… (88%)");
+  });
+
+  it("summarises a finished job with size and duration", () => {
+    const done = { ...m.job!, phase: "done", message: "", activate: true,
+      startedAt: "2026-09-29T10:00:00Z", finishedAt: "2026-09-29T10:00:03.4Z" };
+    expect(jobSummary(done)).toBe("Installed v18.4.4 · 200 MB in 3.4s");
+    expect(jobSummary({ ...done, activate: false })).toBe("Downloaded v18.4.4 · 200 MB in 3.4s");
+    expect(jobSummary({ ...done, message: "already downloaded", startedAt: "", finishedAt: "" })).toBe("already downloaded");
+    expect(jobLabel({ ...m.job!, phase: "verify" })).toBe("Step 3/5 · Verifying sha256 of v18.4.4…");
+    expect(jobLabel({ ...m.job!, phase: "save" })).toBe("Step 5/5 · Saving v18.4.4…");
     expect(jobLabel({ ...m.job!, phase: "error", error: "sha256 mismatch" })).toBe("sha256 mismatch");
     expect(isRunning({ ...m.job!, phase: "done" })).toBe(false);
   });

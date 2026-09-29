@@ -19,6 +19,8 @@ export type ManagedJob = {
   bytesPerSec: number;
   message: string;
   error: string;
+  startedAt: string; // RFC3339, "" when unknown
+  finishedAt: string; // RFC3339, "" while running
 };
 
 export type InstalledVersion = {
@@ -58,6 +60,7 @@ export type ManagedRelease = { tag: string; version: string; prerelease: boolean
 type WireJob = Partial<{
   id: string; type: string; tag: string; version: string; activate: boolean; phase: string;
   done: number; total: number; bytes_per_sec: number; message: string; error: string;
+  started_at: string; finished_at: string;
 }>;
 
 type WireRelease = Partial<{ tag: string; version: string; prerelease: boolean; published_at: string }>;
@@ -81,7 +84,21 @@ function mapJob(w: WireJob | null | undefined): ManagedJob | null {
     id: w.id ?? "", type: w.type ?? "", tag: w.tag ?? "", version: w.version ?? "",
     activate: w.activate ?? false, phase: w.phase ?? "", done: w.done ?? 0, total: w.total ?? 0,
     bytesPerSec: w.bytes_per_sec ?? 0, message: w.message ?? "", error: w.error ?? "",
+    startedAt: w.started_at ?? "", finishedAt: w.finished_at ?? "",
   };
+}
+
+/* jobSummary is the line left on screen after a job ends successfully:
+   "Installed v1.18.33 · 58 MB in 3.4s". */
+export function jobSummary(j: ManagedJob): string {
+  const v = j.version ? `v${j.version}` : j.tag || "latest";
+  const verb = j.message ? j.message : j.activate ? `Installed ${v}` : `Downloaded ${v}`;
+  const parts = [verb];
+  if (j.total > 0 && !j.message) parts.push(mb(j.total));
+  const t0 = Date.parse(j.startedAt), t1 = Date.parse(j.finishedAt);
+  let out = parts.join(" · ");
+  if (!Number.isNaN(t0) && !Number.isNaN(t1) && t1 >= t0) out += ` in ${((t1 - t0) / 1000).toFixed(1)}s`;
+  return out;
 }
 
 export function normalizeManaged(w: WireManaged): ManagedBinary {
@@ -123,18 +140,40 @@ export function tagVersion(tag: string): string {
 
 const mb = (n: number) => `${Math.round(n / (1 << 20))} MB`;
 
-/* jobPct drives the ProgressBar: download % from bytes, -1
-   (indeterminate) while resolving or when the size is unknown, full once
-   the bytes are in and the checks run. */
+/* Overall progress, weighted by phase, so the bar always carries a number:
+   the download dominates (it is the only slow step), the checks after it
+   are short. A download of unknown size parks at the start of its band. */
+const PHASE_STEP: Record<string, number> = { resolve: 1, download: 2, verify: 3, probe: 4, save: 5, switching: 5 };
+export const JOB_STEPS = 5;
+
 export function jobPct(j: ManagedJob): number {
   switch (j.phase) {
     case "resolve":
-      return -1;
+      return 2;
     case "download":
-      return j.total > 0 ? Math.min(100, Math.floor((j.done / j.total) * 100)) : -1;
+      return j.total > 0 ? 5 + Math.floor(Math.min(1, j.done / j.total) * 80) : 5;
+    case "verify":
+      return 88;
+    case "probe":
+      return 93;
+    case "save":
+      return 97;
+    case "switching":
+      return 99;
     default:
       return 100;
   }
+}
+
+/* downloadPct is the byte-level percent of the download itself (the label
+   shows it; the bar shows the overall jobPct). -1 when the size is unknown. */
+export function downloadPct(j: ManagedJob): number {
+  return j.total > 0 ? Math.min(100, Math.floor((j.done / j.total) * 100)) : -1;
+}
+
+function stepPrefix(j: ManagedJob): string {
+  const n = PHASE_STEP[j.phase];
+  return n ? `Step ${n}/${JOB_STEPS} · ` : "";
 }
 
 /* jobLabel is the one-line progress text:
@@ -143,20 +182,20 @@ export function jobLabel(j: ManagedJob): string {
   const v = j.version ? `v${j.version}` : j.tag || "latest";
   switch (j.phase) {
     case "resolve":
-      return `Looking up ${v}…`;
+      return `${stepPrefix(j)}Looking up ${v} on GitHub…`;
     case "download": {
       const speed = j.bytesPerSec > 0 ? ` · ${(j.bytesPerSec / (1 << 20)).toFixed(1)} MB/s` : "";
-      if (j.total > 0) return `Downloading ${v}… ${jobPct(j)}% (${mb(j.done)} / ${mb(j.total)}${speed})`;
-      return `Downloading ${v}… ${mb(j.done)}${speed}`;
+      if (j.total > 0) return `${stepPrefix(j)}Downloading ${v}… ${downloadPct(j)}% (${mb(j.done)} / ${mb(j.total)}${speed})`;
+      return `${stepPrefix(j)}Downloading ${v}… ${mb(j.done)}${speed}`;
     }
     case "verify":
-      return `Verifying sha256 of ${v}…`;
+      return `${stepPrefix(j)}Verifying sha256 of ${v}…`;
     case "probe":
-      return `Checking ${v} --version…`;
+      return `${stepPrefix(j)}Checking ${v} --version…`;
     case "save":
-      return `Saving ${v}…`;
+      return `${stepPrefix(j)}Saving ${v}…`;
     case "switching":
-      return `Activating ${v}…`;
+      return `${stepPrefix(j)}Activating ${v}…`;
     case "done":
       return j.message || "Done";
     case "error":
@@ -169,10 +208,10 @@ export function jobLabel(j: ManagedJob): string {
 export function jobShort(j: ManagedJob): string {
   if (j.phase === "download") {
     const v = j.version ? `v${j.version}` : j.tag || "latest";
-    const p = jobPct(j);
+    const p = downloadPct(j);
     return p >= 0 ? `Downloading ${v}… ${p}%` : `Downloading ${v}…`;
   }
-  return jobLabel(j);
+  return `${jobLabel(j).replace(/^Step \d\/\d · /, "")} (${jobPct(j)}%)`;
 }
 
 /* jobVersion: the version a job is about, for matching it to a row

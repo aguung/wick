@@ -228,3 +228,13 @@ func TestParseCodexLoginSuccess(t *testing.T) {
 		t.Fatal("codex success line not recognized")
 	}
 }
+
+func TestLinkParserStopsAtTUIBoxBorder(t *testing.T) {
+	// opencode's `auth login` draws its prompt in a box; the border sits
+	// right after the URL with no space in between.
+	p := &LinkParser{}
+	links := linksOf(p.Feed([]byte("\u2502  Create an api key at https://opencode.ai/auth\u2502\r\n")))
+	if len(links) != 1 || links[0] != "https://opencode.ai/auth" {
+		t.Fatalf("links = %q", links)
+	}
+}

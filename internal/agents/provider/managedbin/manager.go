@@ -478,6 +478,20 @@ func (m *Manager) install(ctx context.Context, typ, tag string, j *JobInfo) erro
 	return nil
 }
 
+// scopeBusEnv is what the memory-scope wrapper (systemd-run --user --scope)
+// needs to reach the user manager. Without it the wrapped --version dies
+// with "Failed to connect to bus: No medium found" before the binary runs.
+// Both are locations, not credentials, so they are safe to hand on.
+func scopeBusEnv() []string {
+	var out []string
+	for _, k := range []string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"} {
+		if v := os.Getenv(k); v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
+}
+
 // ErrVersionOutput is wrapped when a binary's output cannot be parsed.
 var ErrVersionOutput = errors.New("unrecognised --version output")
 
@@ -519,6 +533,9 @@ func (m *Manager) runVersion(ctx context.Context, typ, bin string) (raw, parsed 
 		// A freshly downloaded CLI must not replace itself (opencode's
 		// cli/upgrade.ts honours this; harmless for the others).
 		"OPENCODE_DISABLE_AUTOUPDATE=true",
+	}
+	if m.Wrap != nil {
+		cmd.Env = append(cmd.Env, scopeBusEnv()...)
 	}
 	b, err := cmd.CombinedOutput()
 	raw = strings.TrimSpace(string(b))
