@@ -690,7 +690,8 @@ describe("ConnectorList per-user (SSO) MCP instances", () => {
     render(ConnectorList, { connectorKey: "helpdesk" });
     await screen.findByText("Helpdesk");
     expect(screen.getByText(/Per-user login · 2 accounts/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Connect my account" })).toBeTruthy();
+    // Styled like the instance Connect button (primary), not bare text.
+    expect(screen.getByRole("button", { name: "Connect my account" }).className).toContain("bg-green-500");
     expect(screen.queryByText("Not connected")).toBeNull();
     expect(screen.queryByText(/Auth failed/)).toBeNull();
   });

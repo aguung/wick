@@ -721,7 +721,9 @@
                         You: connected
                       </span>
                     {:else if canConnect(row)}
-                      <Button variant="secondary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
+                      <!-- Same look as the instance Connect button: secondary
+                           reads as bare text on the dark theme. -->
+                      <Button variant="primary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
                         {connectingId === row.id ? "Connecting…" : "Connect my account"}
                       </Button>
                     {/if}
