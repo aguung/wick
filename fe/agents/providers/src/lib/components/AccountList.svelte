@@ -17,10 +17,15 @@
     canAdd: boolean;
     adding: boolean;
     onAdd: () => void;
-    onRemove: (provider: string) => void;
+    /* Called with the provider, plus the account id when removal is per
+       account (perAccount). */
+    onRemove: (provider: string, accountId?: string) => void;
+    /* opencode: every row is its own login (one per data folder), so each
+       row gets its own remove; omp only removes a whole provider. */
+    perAccount?: boolean;
     note?: Snippet;
   };
-  let { accounts, removeLabel, removing, canAdd, adding, onAdd, onRemove, note }: Props = $props();
+  let { accounts, removeLabel, removing, canAdd, adding, onAdd, onRemove, perAccount = false, note }: Props = $props();
 
   let providers = $derived([...new Set(accounts.map((a) => a.provider))]);
 
@@ -44,20 +49,30 @@
     <div class="rounded-lg border border-white-300 dark:border-navy-600 divide-y divide-white-300 dark:divide-navy-600">
       <div class="flex items-center justify-between gap-2 px-3 py-1.5 text-xs">
         <span class="font-mono font-medium text-black-900 dark:text-white-100">{prov}</span>
-        <button type="button" data-testid="panel-logout-{prov}" class="rounded px-1.5 py-0.5 text-[11px] text-neg-400 hover:bg-white-300 dark:hover:bg-navy-600 disabled:opacity-50" disabled={removing !== ""} onclick={() => onRemove(prov)}>
-          {removing === prov ? "Removing…" : removeLabel}
-        </button>
+        {#if !perAccount}
+          <button type="button" data-testid="panel-logout-{prov}" class="rounded px-1.5 py-0.5 text-[11px] text-neg-400 hover:bg-white-300 dark:hover:bg-navy-600 disabled:opacity-50" disabled={removing !== ""} onclick={() => onRemove(prov)}>
+            {removing === prov ? "Removing…" : removeLabel}
+          </button>
+        {/if}
       </div>
       {#each accounts.filter((a) => a.provider === prov) as a (a.id)}
         <div data-testid="panel-account-row" class="px-3 py-1.5 text-xs space-y-0.5">
           <div class="flex items-baseline justify-between gap-3">
             <span class="min-w-0 truncate text-black-900 dark:text-white-100">{a.label}{#if a.kind}<span class="ml-1 text-[11px] text-black-600 dark:text-black-700">({kindLabel(a.kind)})</span>{/if}</span>
+            {#if perAccount}
+              <button type="button" data-testid="panel-logout-{a.id}" class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-neg-400 hover:bg-white-300 dark:hover:bg-navy-600 disabled:opacity-50" disabled={removing !== ""} onclick={() => onRemove(a.provider, a.id)}>
+                {removing === a.id ? "Removing…" : removeLabel}
+              </button>
+            {/if}
             {#if a.status === "disabled"}
               <span class="shrink-0 rounded bg-neg-100 dark:bg-neg-400/20 px-1.5 py-0.5 text-[11px] font-semibold text-neg-400">disabled</span>
             {:else}
               <span class="shrink-0 rounded bg-pos-100 dark:bg-pos-400/20 px-1.5 py-0.5 text-[11px] font-semibold text-pos-400">active</span>
             {/if}
           </div>
+          {#if a.email && a.email !== a.label}
+            <p class="text-[11px] font-mono text-black-700 dark:text-black-600 truncate">{a.email}</p>
+          {/if}
           {#if a.plan || a.org}
             <p class="text-[11px] text-black-700 dark:text-black-600">{[a.plan ? `Plan: ${prettyPlan(a.plan)}` : "", a.org].filter(Boolean).join(" · ")}</p>
           {/if}

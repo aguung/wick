@@ -319,14 +319,14 @@
     usagePollTimer = setTimeout(() => {
       usagePollTimer = null;
       usagePollsLeft -= 1;
-      if (usagePopoverOpen) loadUsage(true);
+      if (usagePopoverOpen || contextPopoverOpen) loadUsage(true);
     }, 1500);
   }
 
   function loadUsage(silent = false) {
     if (!activeProvider) return;
     if (!silent) usageLoading = true;
-    run(getComposerUsage(base, activeProvider).pipe(Effect.provide(WickClientLayer)))
+    run(getComposerUsage(base, activeProvider, activeModelID).pipe(Effect.provide(WickClientLayer)))
       .then((res) => {
         usageData = normalizeComposerUsage(res);
         if (usageData.checking || usageData.pending) {
@@ -442,6 +442,19 @@
   function openContextPopover() {
     contextPopoverOpen = true;
     void loadContext();
+    // The one-line account quota in the context panel. A cache read on
+    // the server — opening the panel never costs an upstream request.
+    if (activeProvider) {
+      usagePollsLeft = 20;
+      loadUsage(true);
+    }
+  }
+
+  /* Context panel → /usage: the line there is a summary; Details opens
+     the per-account panel in its place. */
+  function openUsageFromContext() {
+    contextPopoverOpen = false;
+    openUsagePopover();
   }
 
   /* Compact is a normal message send — the pool strips the sender line
@@ -2552,6 +2565,10 @@
             onCompact={() => void handleCompact()}
             compacting={compactInFlight}
             onClose={() => (contextPopoverOpen = false)}
+            usage={usageData}
+            onUsageRefresh={recheckUsage}
+            usageRefreshing={usageRechecking}
+            onOpenUsage={openUsageFromContext}
           />
           <Composer
             bind:this={composerRef}

@@ -239,7 +239,7 @@ describe("ReconnectPanel", () => {
     await fireEvent.click(screen.getByTestId("panel-add-account"));
     expect(vi.mocked(logintty.apiLoginTTYStart)).toHaveBeenCalledWith("", "omp", "omp", "openai-codex-device");
     await fireEvent.click(screen.getByTestId("panel-logout-openai-codex"));
-    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "omp", "omp", "openai-codex");
+    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "omp", "omp", "openai-codex", "");
   });
 
   it("API key: marks providers that have a key and saves a new one", async () => {
@@ -263,20 +263,22 @@ describe("ReconnectPanel", () => {
     expect(vi.mocked(logintty.apiSetAPIKey)).toHaveBeenCalledWith("", "opencode", "oc", "groq", "k-test");
   });
 
-  it("opencode: lists logged-in providers (id + type only) and removes one", async () => {
-    const row = (id: string, kind: string) => ({ id, label: id, provider: id, email: "", plan: "", org: "", kind, status: "active", disabledCause: "", disabledAt: "" });
+  it("opencode: lists logged-in providers per account folder and removes one", async () => {
+    const row = (id: string, kind: string) => ({ id, label: "Account " + id.split("/")[0], provider: id.split("/")[1], email: "", plan: "", org: "", kind, status: "active", disabledCause: "", disabledAt: "" });
     vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
-      makeStatus({ accountStore: "data dir x", accounts: [row("openai", "oauth"), row("openrouter", "api")] }),
+      makeStatus({ accountStore: "data dir x", accounts: [row("main/openai", "oauth"), row("main/openrouter", "api"), row("a2/openai", "oauth")] }),
     );
     vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
     vi.mocked(logintty.apiLoginTTYLogout).mockResolvedValue(undefined);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(ReconnectPanel, { props: { base: "", type: "opencode", name: "oc", defaultExpanded: true } });
-    expect((await screen.findAllByTestId("panel-account-row")).length).toBe(2);
+    expect((await screen.findAllByTestId("panel-account-row")).length).toBe(3);
     expect(screen.getByText("(API key)")).toBeTruthy();
     expect(screen.getByTestId("panel-multi-provider-note").textContent).toContain("separate instance");
-    await fireEvent.click(screen.getByTestId("panel-logout-openrouter"));
-    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "opencode", "oc", "openrouter");
+    // Removal is per account folder: the a2 login, not main's.
+    expect(screen.queryByTestId("panel-logout-openai")).toBeNull();
+    await fireEvent.click(screen.getByTestId("panel-logout-a2/openai"));
+    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "opencode", "oc", "openai", "a2");
   });
 
   it("opencode: a second account of a provider logs in to a new data folder", async () => {

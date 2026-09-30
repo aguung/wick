@@ -147,9 +147,9 @@ var ompRunner = func(ctx context.Context, env []string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// ompUsageCacheTTL bounds how often the account card re-execs omp. The
-// usage windows themselves go through the usage probe's own cache/pace
-// gate on top of this.
+// ompUsageCacheTTL bounds how often a FAILED listing is retried (see
+// ompUsageCacheValid). The usage windows themselves go through the usage
+// probe's own cache/pace gate on top of this.
 const ompUsageCacheTTL = 2 * time.Minute
 
 var (
@@ -166,7 +166,7 @@ type ompUsageEntry struct {
 func fetchOMPUsage(env []string, fresh bool) (*ompUsageJSON, error) {
 	key := ompConfigDir(env)
 	ompUsageMu.Lock()
-	if e, ok := ompUsageCache[key]; ok && !fresh && time.Since(e.at) < ompUsageCacheTTL {
+	if e, ok := ompUsageCache[key]; ok && !fresh && ompUsageCacheValid(e, env) {
 		ompUsageMu.Unlock()
 		return e.data, e.err
 	}
@@ -183,6 +183,17 @@ func fetchOMPUsage(env []string, fresh bool) (*ompUsageJSON, error) {
 	ompUsageCache[key] = ompUsageEntry{at: time.Now(), data: data, err: err}
 	ompUsageMu.Unlock()
 	return data, err
+}
+
+// ompUsageCacheValid: a failure is retried after ompUsageCacheTTL; a good
+// listing is served until agent.db changes (a login, logout or token
+// refresh rewrites it) or a usage probe replaces it (fresh). So opening a
+// card or the /usage popover never re-execs omp on its own.
+func ompUsageCacheValid(e ompUsageEntry, env []string) bool {
+	if e.err != nil || e.data == nil {
+		return time.Since(e.at) < ompUsageCacheTTL
+	}
+	return !ompCredentialsChangedAt(env).After(e.at)
 }
 
 func parseOMPUsage(out []byte) (*ompUsageJSON, error) {
@@ -223,15 +234,24 @@ func readOMPAccount(env []string) Account {
 	return acc
 }
 
-// readOMPUsage maps omp's limits onto wick's windows. The 5-hour and
-// 7-day windows get the keys the usage rings already know (five_hour /
-// seven_day); anything else keeps omp's window id.
+// readOMPUsage maps omp's limits onto wick's windows, one set per pool
+// account, each tagged with the account's ListAccounts ID (Headline gives
+// the instance-level view). The 5-hour and 7-day windows get the keys the
+// usage rings already know (five_hour / seven_day); anything else keeps
+// omp's window id.
 func readOMPUsage(env []string) ([]UsageWindow, error) {
 	u, err := fetchOMPUsage(env, true)
 	if err != nil {
 		return nil, err
 	}
-	return ompWindows(u), nil
+	var out []UsageWindow
+	for _, a := range labelPool(ompPool(u)) {
+		for _, w := range a.Usage {
+			w.Account = a.ID
+			out = append(out, w)
+		}
+	}
+	return out, nil
 }
 
 func ompWindows(u *ompUsageJSON) []UsageWindow {

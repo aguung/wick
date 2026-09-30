@@ -14,7 +14,7 @@ import (
 	"github.com/yogasw/wick/pkg/tool"
 )
 
-// apiProviderLoginTTYLogout is POST .../logintty/logout?login_provider=X:
+// apiProviderLoginTTYLogout is POST .../logintty/logout?login_provider=X[&account=aN]:
 // removes every stored credential of one provider from the instance's
 // store (omp `auth-broker logout`). A manage grant, like reconnect.
 func apiProviderLoginTTYLogout(c *tool.Ctx) {
@@ -29,6 +29,16 @@ func apiProviderLoginTTYLogout(c *tool.Ctx) {
 		return
 	}
 	prov := strings.TrimSpace(c.Query("login_provider"))
+	// opencode: ?account=<folder> removes the login from that account
+	// folder, not from the instance's main one.
+	if acct := strings.TrimSpace(c.Query("account")); acct != "" && ins.Type == provider.TypeOpencode {
+		derived, err := provider.WithOpencodeAccount(ins, acct)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ins = derived
+	}
 	if err := logintty.LogoutProvider(ins.Type, provider.AccountEnv(ins), prov); err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

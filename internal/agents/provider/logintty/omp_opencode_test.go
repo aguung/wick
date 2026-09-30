@@ -106,7 +106,7 @@ func TestOMPUsageAndAccount(t *testing.T) {
 	if !slices.Contains(gotEnv, "OMP_PROFILE=wick-usage-test") {
 		t.Fatalf("usage ran without the instance profile: %q", gotEnv)
 	}
-	if !SupportsUsage(provider.TypeOMP) || SupportsUsage(provider.TypeOpencode) {
+	if !SupportsUsage(provider.TypeOMP) || !SupportsUsage(provider.TypeOpencode) || SupportsUsage(provider.TypeGemini) {
 		t.Fatal("usage support flags")
 	}
 	if !strings.HasSuffix(ConfigDir(provider.TypeOMP, env), filepath.Join("profiles", "wick-usage-test", "agent")) {

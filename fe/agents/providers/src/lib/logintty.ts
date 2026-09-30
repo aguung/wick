@@ -218,8 +218,9 @@ export function normalizeLoginStatus(w: WireLoginStatus): LoginTTYStatus {
 
 /* apiLoginTTYLogout removes every stored credential of one provider from
    the instance's store (omp has no per-account logout outside its TUI). */
-export async function apiLoginTTYLogout(base: string, type: string, name: string, loginProvider: string): Promise<void> {
-  await post(`${ttyPath(base, type, name)}/logout?login_provider=${encodeURIComponent(loginProvider)}`);
+export async function apiLoginTTYLogout(base: string, type: string, name: string, loginProvider: string, account = ""): Promise<void> {
+  const acct = account ? `&account=${encodeURIComponent(account)}` : "";
+  await post(`${ttyPath(base, type, name)}/logout?login_provider=${encodeURIComponent(loginProvider)}${acct}`);
 }
 
 /* apiSetAPIKey stores (or, with key "", removes) a provider API key as the

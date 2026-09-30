@@ -107,9 +107,31 @@ func apiProviderLoginTTYStatus(c *tool.Ctx) {
 		LoginChoices: logintty.LoginChoices(ins.Type, provider.AccountEnv(ins)),
 		LoginNote:    logintty.LoginNote(ins.Type),
 		AccountStore: accountStoreLabel(ins),
-		Accounts:     logintty.ListAccounts(ins.Type, provider.AccountEnv(ins)),
+		Accounts:     statusAccounts(ins),
 		APIKeys:      logintty.APIKeyProviders(ins.Type, ins.Env),
 	})
+}
+
+// statusAccounts is the instance's account list for the Connection card.
+// omp rows carry their windows from the pool listing itself; opencode
+// rows get theirs from the shared usage cache (never blocking, never a
+// new request for an account already read).
+func statusAccounts(ins provider.Instance) []logintty.PoolAccount {
+	env := provider.AccountEnv(ins)
+	accts := logintty.ListAccounts(ins.Type, env)
+	if ins.Type != provider.TypeOpencode || len(accts) == 0 {
+		return accts
+	}
+	v := usageProbes.get(logintty.UsageIdentity(ins.Type, env), func() ([]logintty.UsageWindow, error) {
+		return logintty.ReadUsage(ins.Type, env)
+	}, logintty.CredentialsChangedAt(ins.Type, env))
+	if !v.Known || v.Err != nil {
+		return accts
+	}
+	for i := range accts {
+		accts[i].Usage, _ = logintty.AccountWindows(v.Windows, accts[i].ID)
+	}
+	return accts
 }
 
 // apiProviderLoginTTYUsage reports current rate-limit utilization for
@@ -169,7 +191,7 @@ func apiProviderLoginTTYUsage(c *tool.Ctx) {
 		c.JSON(http.StatusOK, body)
 	default:
 		if v.Windows != nil {
-			body["windows"] = v.Windows
+			body["windows"] = logintty.Headline(v.Windows)
 		}
 		c.JSON(http.StatusOK, body)
 	}

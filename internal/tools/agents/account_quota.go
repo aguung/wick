@@ -101,7 +101,7 @@ func ProviderAccountQuota(ctx context.Context, key string) (AccountQuota, bool) 
 	case !v.Known:
 		out.Pending = true
 	default:
-		for _, w := range v.Windows {
+		for _, w := range logintty.Headline(v.Windows) {
 			out.Windows = append(out.Windows, AccountQuotaWindow{
 				Key: w.Key, Utilization: w.Utilization,
 				ResetsAt: w.ResetsAt, ObservedAt: w.ObservedAt,

@@ -404,4 +404,35 @@ describe("ContextPopover — the hover readout holds its height", () => {
     expect(readout.querySelector("span.block")?.textContent?.trim()).toBeTruthy();
     expect(readout.textContent).toMatch(/total/i);
   });
+
+  it("shows the account quota in one line and jumps to /usage", async () => {
+    const onOpenUsage = vi.fn();
+    const onUsageRefresh = vi.fn();
+    render(ContextPopover, {
+      props: {
+        open: true, data: ctx(), loading: false, error: "", onRefresh: () => {}, onCompact: () => {},
+        compacting: false, onClose: () => {}, onOpenUsage, onUsageRefresh,
+        usage: {
+          provider: "omp/yoga", supported: true, reason: "", account: null, error: "", pending: false,
+          checking: false, fetchedAt: "", ageS: 0, nextS: 0, canManage: false, rotation: "",
+          windows: [{ key: "five_hour", utilization: 50, resetsAt: "", observedAt: "" }],
+          accounts: [
+            { id: "a", label: "a", provider: "p", email: "", plan: "", status: "active", error: "", noUsage: false, current: false,
+              windows: [{ key: "five_hour", utilization: 50, resetsAt: "", observedAt: "" }] },
+            { id: "b", label: "b", provider: "p", email: "", plan: "", status: "active", error: "", noUsage: false, current: true,
+              windows: [{ key: "five_hour", utilization: 93, resetsAt: "", observedAt: "" }, { key: "seven_day", utilization: 10, resetsAt: "", observedAt: "" }] },
+          ],
+        },
+      },
+    });
+    const line = screen.getByTestId("context-usage");
+    // The session's own account, not the instance headline.
+    expect(line.textContent).toContain("93%");
+    expect(line.textContent).toContain("7d");
+    expect(line.textContent).toContain("2 accounts");
+    await fireEvent.click(screen.getByTestId("context-usage-refresh"));
+    expect(onUsageRefresh).toHaveBeenCalledOnce();
+    await fireEvent.click(screen.getByTestId("context-usage-open"));
+    expect(onOpenUsage).toHaveBeenCalledOnce();
+  });
 });

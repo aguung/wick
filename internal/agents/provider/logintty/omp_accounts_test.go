@@ -191,7 +191,7 @@ func TestOpencodeAccountsAndLogout(t *testing.T) {
 	}
 	env := []string{"XDG_DATA_HOME=" + data}
 	got := ListAccounts(provider.TypeOpencode, env)
-	if len(got) != 2 || got[0].ID != "openai" || got[0].Kind != "oauth" || got[1].ID != "openrouter" || got[1].Kind != "api" {
+	if len(got) != 2 || got[0].ID != "main/openai" || got[0].Kind != "oauth" || got[1].ID != "main/openrouter" || got[1].Kind != "api" {
 		t.Fatalf("opencode accounts: %+v", got)
 	}
 	var gotType provider.Type

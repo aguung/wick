@@ -143,15 +143,18 @@
     return new Date(iso).toLocaleString();
   }
 
-  async function logoutProvider(prov: string) {
+  async function logoutProvider(prov: string, accountId = "") {
     const n = (status?.accounts ?? []).filter((a) => a.provider === prov).length;
+    // opencode row ids are "<folder>/<provider>"; the folder picks which
+    // account's auth.json the logout runs against.
+    const folder = accountId ? accountId.split("/")[0] : "";
     const msg = type === "omp"
       ? `Log out of ${prov}? omp removes ALL ${n} stored account(s) of this provider from the profile — it has no single-account logout outside its TUI.`
-      : `Remove the ${prov} credential from this instance (opencode auth logout)?`;
+      : `Remove the ${prov} credential of account ${folder || "main"} (opencode auth logout)?`;
     if (!confirm(msg)) return;
-    loggingOut = prov;
+    loggingOut = accountId || prov;
     try {
-      await apiLoginTTYLogout(base, type, name, prov);
+      await apiLoginTTYLogout(base, type, name, prov, folder);
       await refresh();
     } catch (e) {
       toastError(e instanceof Error ? e.message : "Logout failed");
@@ -315,7 +318,8 @@
           canAdd={status.supported && status.session?.state !== "running"}
           adding={starting}
           onAdd={() => void reconnect()}
-          onRemove={(prov) => void logoutProvider(prov)}
+          onRemove={(prov, id) => void logoutProvider(prov, id)}
+          perAccount={type === "opencode"}
         >
           {#snippet note()}
             {#if type === "omp"}

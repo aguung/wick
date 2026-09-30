@@ -25,8 +25,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -125,7 +123,8 @@ func labelPool(pool []PoolAccount) []PoolAccount {
 }
 
 // ListAccounts reports t's accounts: omp's credential pool, opencode's
-// auth.json providers; nil for other types.
+// logged-in providers across all its account folders (ID
+// "<folder>/<provider>"); nil for other types.
 func ListAccounts(t provider.Type, env []string) []PoolAccount {
 	switch t {
 	case provider.TypeOMP:
@@ -135,30 +134,9 @@ func ListAccounts(t provider.Type, env []string) []PoolAccount {
 		}
 		return labelPool(ompPool(u))
 	case provider.TypeOpencode:
-		return opencodeAccounts(opencodeConfigDir(env))
+		return opencodeAllAccounts(env)
 	}
 	return nil
-}
-
-// opencodeAccounts lists auth.json's provider ids + credential type only;
-// the credential values are never decoded beyond that.
-func opencodeAccounts(dir string) []PoolAccount {
-	var auth map[string]struct {
-		Type string `json:"type"`
-	}
-	if dir == "" || !readJSON(filepath.Join(dir, "auth.json"), &auth) {
-		return nil
-	}
-	ids := make([]string, 0, len(auth))
-	for k := range auth {
-		ids = append(ids, k)
-	}
-	sort.Strings(ids)
-	out := make([]PoolAccount, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, PoolAccount{ID: id, Label: id, Provider: id, Kind: auth[id].Type, Status: "active"})
-	}
-	return out
 }
 
 // logoutRunner execs the per-type logout: omp `--profile <p> auth-broker

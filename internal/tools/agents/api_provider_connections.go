@@ -234,6 +234,10 @@ func applyUsageProvenance(dto *providerConnectionDTO, v usageView, now time.Time
 }
 
 func usageWindowDTOs(windows []logintty.UsageWindow) []usageWindowDTO {
+	// Multi-account readings (omp pool, opencode folders) collapse to the
+	// instance's headline here; per-account views pass one account's
+	// windows, which Headline leaves as they are.
+	windows = logintty.Headline(windows)
 	if len(windows) == 0 {
 		return nil
 	}
