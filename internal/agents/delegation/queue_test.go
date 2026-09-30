@@ -3,6 +3,7 @@ package delegation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -548,5 +549,29 @@ func TestClaimForRunYieldsToADispatcherThatWon(t *testing.T) {
 	}
 	if res == nil || res.Status != entity.DelegationRunning || res.DelegationID != "q2" {
 		t.Fatalf("result = %+v, want running q2", res)
+	}
+
+	// The lost-claim result echoes the row's real mode, and never names an
+	// empty delivery sink.
+	row3 := seedDelegation(t, r, "q3", "root-1", entity.DelegationQueued, 0)
+	row3.Mode, row3.DeliverySink = ModeSync, ""
+	if err := r.MarkRunning(ctx, "q3"); err != nil {
+		t.Fatal(err)
+	}
+	res, _ = s.claimForRun(ctx, row3)
+	if res == nil || res.Mode != ModeForeground {
+		t.Fatalf("foreground lost claim mode = %+v, want %q", res, ModeForeground)
+	}
+	if strings.Contains(res.Note, "delivered via .") || !strings.Contains(res.Note, "wick_agent_collect") {
+		t.Fatalf("note = %q", res.Note)
+	}
+	row4 := seedDelegation(t, r, "q4", "root-1", entity.DelegationQueued, 0)
+	row4.Mode, row4.DeliverySink = ModeAsync, SinkSession
+	if err := r.MarkRunning(ctx, "q4"); err != nil {
+		t.Fatal(err)
+	}
+	res, _ = s.claimForRun(ctx, row4)
+	if res == nil || res.Mode != ModeBackground || !strings.Contains(res.Note, "delivered via session") {
+		t.Fatalf("background lost claim = %+v", res)
 	}
 }

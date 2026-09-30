@@ -592,14 +592,21 @@ func (s *Service) claimForRun(ctx context.Context, row *entity.AgentDelegation) 
 	if cur, gerr := s.Repo.Get(ctx, row.ID); gerr == nil && cur != nil {
 		status = cur.Status
 	}
-	note := "Already started by the queue. The result is NOT in this reply — it will be delivered via " +
-		row.DeliverySink + ". (wick_agent_collect with this delegation_id retrieves it manually if it never arrives.)"
+	// The queue took the row, so this call returns without an answer
+	// whatever mode was asked for. Say where the result goes only when it
+	// really goes somewhere; otherwise point at collect.
+	note := "Already started by the queue. The result is NOT in this reply — "
+	if sink := row.DeliverySink; sink != "" && sink != SinkNone {
+		note += "it will be delivered via " + sink + ". (wick_agent_collect with this delegation_id retrieves it manually if it never arrives.)"
+	} else {
+		note += "retrieve it with wick_agent_collect and this delegation_id once it finishes."
+	}
 	if status != entity.DelegationRunning {
 		note = "Left the queue before it started (" + status + ")."
 	}
 	return &Result{
 		DelegationID: row.ID, Profile: row.ProfileKey, Status: status,
-		Mode: ModeBackground, Note: note,
+		Mode: ModeLabel(row.Mode), Note: note,
 		WorkspaceNote: row.WorkspaceNote, TurnsNote: row.TurnsNote,
 	}, false
 }
