@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yogasw/wick/internal/enc"
 	"github.com/yogasw/wick/internal/entity"
 )
 
@@ -539,7 +540,7 @@ func (s *Service) tokenRequest(ctx context.Context, meta *oauthClientMeta, form 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if meta.ClientSecret != "" {
 		secret := meta.ClientSecret
-		if strings.HasPrefix(secret, "wick_enc_") && s.keys != nil {
+		if isSecretToken(secret) && s.keys != nil {
 			if dec, err := s.keys.DecryptSecret(secret); err == nil {
 				secret = dec
 			}
@@ -621,7 +622,7 @@ func (s *Service) OAuthLoginStatus(loginID string) string {
 func (s *Service) oauthAuthExtra(ctx context.Context, f *ServerForm, existingID string) (string, error) {
 	if login, ok := s.logins.get(f.OAuthLoginID); ok {
 		meta := login.Meta
-		if meta.ClientSecret != "" && !strings.HasPrefix(meta.ClientSecret, "wick_enc_") && s.keys != nil {
+		if meta.ClientSecret != "" && !isSecretToken(meta.ClientSecret) && s.keys != nil {
 			if enc, err := s.keys.EncryptSecret(meta.ClientSecret); err == nil {
 				meta.ClientSecret = enc
 			}
@@ -644,7 +645,7 @@ func (s *Service) oauthAuthExtra(ctx context.Context, f *ServerForm, existingID 
 		if err != nil {
 			return "", err
 		}
-		if meta.ClientSecret != "" && !strings.HasPrefix(meta.ClientSecret, "wick_enc_") && s.keys != nil {
+		if meta.ClientSecret != "" && !isSecretToken(meta.ClientSecret) && s.keys != nil {
 			if enc, err := s.keys.EncryptSecret(meta.ClientSecret); err == nil {
 				meta.ClientSecret = enc
 			}
@@ -747,7 +748,7 @@ func (s *Service) saveAccountTokens(ctx context.Context, instanceID, wickUserID,
 }
 
 func (s *Service) encryptRefresh(v string) (string, error) {
-	if v == "" || strings.HasPrefix(v, "wick_enc_") || s.keys == nil {
+	if v == "" || isSecretToken(v) || s.keys == nil {
 		return v, nil
 	}
 	enc, err := s.keys.EncryptSecret(v)
@@ -755,6 +756,14 @@ func (s *Service) encryptRefresh(v string) (string, error) {
 		return "", fmt.Errorf("encrypt refresh token: %w", err)
 	}
 	return enc, nil
+}
+
+// isSecretToken reports whether v is already an encrypted token. The
+// configs service encrypts at rest with the wick_cenc_ master prefix, so
+// both prefixes must count — gating on wick_enc_ alone sends the raw
+// ciphertext to the authorization server.
+func isSecretToken(v string) bool {
+	return enc.IsToken(v) || enc.IsMasterToken(v)
 }
 
 // accountAccessToken returns a live access token for one connected
@@ -768,7 +777,7 @@ func (s *Service) accountAccessToken(ctx context.Context, meta *oauthClientMeta,
 	if refresh == "" {
 		return acc.AccessToken, nil // expired with no refresh path — let the call 401
 	}
-	if strings.HasPrefix(refresh, "wick_enc_") && s.keys != nil {
+	if isSecretToken(refresh) && s.keys != nil {
 		dec, err := s.keys.DecryptSecret(refresh)
 		if err != nil {
 			return "", fmt.Errorf("decrypt refresh token: %w", err)

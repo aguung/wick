@@ -347,3 +347,42 @@ func TestPerUserLegacyInstanceUnchanged(t *testing.T) {
 		t.Errorf("legacy instance call used %q, want the instance token", got)
 	}
 }
+
+// masterKeyStore mimics the production configs service: EncryptSecret
+// returns a wick_cenc_ master token, not wick_enc_.
+type masterKeyStore struct{ fakeKeyStore }
+
+func (m *masterKeyStore) EncryptSecret(plain string) (string, error) {
+	return "wick_cenc_" + plain, nil
+}
+func (m *masterKeyStore) DecryptSecret(token string) (string, error) {
+	return strings.TrimPrefix(token, "wick_cenc_"), nil
+}
+
+// A refresh token stored under the wick_cenc_ master prefix must be
+// decrypted before the refresh grant, never POSTed as ciphertext.
+func TestPerUserRefreshDecryptsMasterToken(t *testing.T) {
+	f := newPerUserFixture(t)
+	f.svc.keys = &masterKeyStore{fakeKeyStore{vals: map[string]string{}}}
+	srv, _, instanceID := f.savePerUser(t, "Helpdesk PU Master")
+	f.connect(t, srv, instanceID, "user-a", "code-A")
+
+	accs, _ := f.conns.ListAccounts(context.Background(), instanceID)
+	if len(accs) != 1 || accs[0].RefreshToken != "wick_cenc_rt-A" {
+		t.Fatalf("stored refresh = %+v, want wick_cenc_rt-A", accs)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := f.conns.UpdateAccountTokens(context.Background(), accs[0].ID, "at-A", "", &past); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.call(t, srv.ID, instanceID, "user-a", ""); err != nil {
+		t.Fatalf("call with expired token: %v", err)
+	}
+	if len(f.refresh) != 1 || f.refresh[0] != "rt-A" {
+		t.Errorf("refresh grants = %v, want the decrypted rt-A", f.refresh)
+	}
+	a, _ := f.conns.GetAccount(context.Background(), accs[0].ID)
+	if a.RefreshToken != "wick_cenc_rt-A2" {
+		t.Errorf("rotated refresh stored as %q, want wick_cenc_rt-A2 (encrypted once)", a.RefreshToken)
+	}
+}
