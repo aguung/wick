@@ -145,6 +145,10 @@ func TestAgentRequeueForRetryOncePerMessage(t *testing.T) {
 	if a.requeueForRetry("hi") {
 		t.Fatal("the same message must be retried only once")
 	}
+	// drainPending joins the queue, so the re-run turn is "hi\n\nlater".
+	if a.requeueForRetry(joinQueued(a.pendingQueue)) {
+		t.Fatal("the re-run turn joined with queued messages must not retry again")
+	}
 	if !a.requeueForRetry("other") {
 		t.Fatal("a new message may be retried")
 	}

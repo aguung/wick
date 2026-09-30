@@ -476,7 +476,9 @@ func (a *Agent) Send(text string) error {
 func (a *Agent) requeueForRetry(msg string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if msg == "" || a.stopped || a.retriedMsg == msg {
+	// The re-run turn may carry messages queued meanwhile after it (the
+	// queue is joined into one turn), so it still counts as the same one.
+	if msg == "" || a.stopped || (a.retriedMsg != "" && strings.HasPrefix(msg, a.retriedMsg)) {
 		return false
 	}
 	a.retriedMsg = msg
