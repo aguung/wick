@@ -50,7 +50,7 @@ type LiveCLIModelConfig struct {
 // OpencodeModelConfig is the opencode-only model/hosting section.
 type OpencodeModelConfig struct {
 	Model       string `wick:"key=opencode_model;desc=provider/model this instance runs (sent as --model), e.g. openai/gpt-5.5. Required: without it opencode silently uses its hosted default model."`
-	AllowHosted string `wick:"key=opencode_allow_hosted;dropdown=false|true;desc=Allow opencode/… hosted models (opencode Zen). On by default so every model the CLI lists is offered; they send the whole conversation to opencode's servers — turn off to keep to your own providers."`
+	AllowHosted bool `wick:"bool;key=opencode_allow_hosted;desc=Allow opencode/… hosted models (opencode Zen). On by default so every model the CLI lists is offered; they send the whole conversation to opencode's servers — turn off to keep to your own providers."`
 }
 
 // ServerModeConfig is the shared-CLI-server section (opencode today, omp
@@ -86,12 +86,10 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 		})...)
 	}
 	if ins.Type == TypeOpencode {
-		oc := OpencodeModelConfig{AllowHosted: "false"}
+		oc := OpencodeModelConfig{AllowHosted: true}
 		if ins.OpencodeConfig != nil {
 			oc.Model = ins.OpencodeConfig.Model
-			if ins.OpencodeConfig.AllowHosted {
-				oc.AllowHosted = "true"
-			}
+			oc.AllowHosted = ins.OpencodeConfig.AllowHosted
 		}
 		rows = append(rows, pkgentity.StructToConfigs(oc)...)
 	}

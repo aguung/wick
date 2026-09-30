@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CollapsibleSection from "$lib/components/CollapsibleSection.svelte";
   import { onMount } from "svelte";
   import { ConfirmDialog, KvList, Breadcrumb, Modal, Select, Button, TextInput, type BreadcrumbItem } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
@@ -76,21 +77,23 @@
   });
   let busy = $state<Record<string, boolean>>({});
 
-  /* Heavy sections (Configuration, env/extra_args editors, Recent
-     Sessions) are collapsed by default — the header row is the summary
-     and clicking it toggles the body. */
-  let secOpen = $state<Record<string, boolean>>({});
-  function toggleSec(k: string) {
-    secOpen[k] = !(secOpen[k] ?? false);
-  }
-  function secKeydown(k: string) {
-    return (e: KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        toggleSec(k);
-      }
-    };
-  }
+  /* Every settings section is a CollapsibleSection: closed by default,
+     summary in its header, open state remembered per browser. */
+  let liveCount = $state<number | null>(null);
+  let configSummary = $derived.by(() => {
+    const parts: string[] = [];
+    const v = (k: string) => fieldValues[k] ?? "";
+    if (simpleFields.some((f) => f.Key === "server_mode")) parts.push(`Server mode: ${v("server_mode") === "true" ? "on" : "off"}`);
+    if (v("opencode_model").trim()) parts.push(`Model: ${v("opencode_model").trim()}`);
+    parts.push(`${simpleFields.length} fields`);
+    return parts.join(" · ");
+  });
+  let modelSummary = $derived.by(() => {
+    if (liveMode) return liveCount === null ? "Live models from CLI" : `Live models: ${liveCount}`;
+    if (fieldValues["model_select"] !== "true") return "Picker off";
+    return `${(editorRows["models"] ?? []).length} models`;
+  });
+
 
   let fieldValues = $state<Record<string, string>>({});
   let secretTouched = $state<Record<string, boolean>>({});
@@ -788,8 +791,14 @@
   {:else if error}
     <div class="rounded-xl border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">{error}</div>
   {:else if data}
+    <!-- Connection first and open: it is what a Detail visit is for. -->
+    <div data-testid="detail-connection-first">
+      <ReconnectPanel {base} {type} {name} defaultExpanded={true} />
+    </div>
+
     <!-- Binary info -->
-    <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 space-y-1 text-xs">
+    <CollapsibleSection title="Binary" storageKey="detail.binary" bodyClass="p-5 space-y-1 text-xs">
+      {#snippet summary()}{#if data?.VersionErr}<span class="text-red-600 dark:text-red-400">error</span>{:else}<span class="font-mono">{data?.Path || "—"}</span>{/if}{/snippet}
       <div class="flex gap-2">
         <span class="w-20 shrink-0 text-black-700 dark:text-black-600">resolved</span>
         {#if data.Path}
@@ -804,13 +813,11 @@
           <span class="font-mono text-red-600 dark:text-red-400 break-all">{data.VersionErr}</span>
         </div>
       {/if}
-    </div>
+    </CollapsibleSection>
 
-    <!-- Connection: account status + usage + reconnect via login TTY -->
     {#if type === "omp" || type === "opencode"}
-      <ManagedBinaryPanel {base} {type} />
+      <ManagedBinaryPanel {base} {type} collapsible />
     {/if}
-    <ReconnectPanel {base} {type} {name} />
 
     <!-- Everything below edits the instance. A non-admin still SEES it —
          that is the point of sharing a provider: you can check how it is
@@ -867,20 +874,8 @@
     <!-- Configuration (simple fields, 2-column grid). Collapsed by
          default; the header is the toggle. -->
     {#if simpleFields.length > 0}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div
-          role="button"
-          tabindex="0"
-          aria-expanded={secOpen["config"] ?? false}
-          onclick={() => toggleSec("config")}
-          onkeydown={secKeydown("config")}
-          class="flex items-center gap-3 px-5 py-3 cursor-pointer select-none bg-white-200 dark:bg-navy-800 hover:bg-white-300 dark:hover:bg-navy-600 transition-colors {secOpen['config'] ? 'border-b border-white-300 dark:border-navy-600' : ''}"
-        >
-          <svg class="h-3.5 w-3.5 shrink-0 text-black-600 transition-transform {secOpen['config'] ? 'rotate-90' : ''}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-          <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Configuration</h3>
-          <span class="text-[11px] text-black-700 dark:text-black-600">{simpleFields.length} fields</span>
-        </div>
-        {#if secOpen["config"]}
+      <CollapsibleSection title="Configuration" storageKey="detail.config" bodyClass="" testid="section-config">
+        {#snippet summary()}{configSummary}{/snippet}
         <div class="p-5">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
             {#each simpleFields as f (f.Key)}
@@ -973,16 +968,15 @@
             class="rounded-lg bg-green-600 hover:bg-green-700 px-4 py-1.5 text-xs font-medium text-white-100 disabled:opacity-50"
           >{saving ? "Saving…" : "Save All"}</button>
         </div>
-        {/if}
-      </div>
+      </CollapsibleSection>
     {/if}
 
     <!-- Model selection — toggle + curated model list in one card. Only for
          CLI providers (the fields are absent for wick). -->
     {#if modelSelectField}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div class="px-5 py-3 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
-          <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Model selection</h3>
+      <CollapsibleSection title="Model selection" storageKey="detail.models" bodyClass="">
+        {#snippet summary()}{modelSummary}{/snippet}
+        <div class="px-5 pt-4">
           <p class="mt-0.5 text-xs text-black-700 dark:text-black-600">
             Let sessions pick a model for this instance. When on, the composer shows a picker of the models below and passes the choice to the CLI via <code class="font-mono">--model</code>.
           </p>
@@ -1031,6 +1025,7 @@
               pin={fieldValues["live_model_default"] ?? ""}
               onSaveFilter={(v) => saveModelKey("live_model_filter", v)}
               onSavePin={(v) => saveModelKey("live_model_default", v)}
+              onCount={(n) => { liveCount = n; }}
             />
           {/if}
 
@@ -1067,14 +1062,12 @@
             </div>
           {/if}
         </div>
-      </div>
+      </CollapsibleSection>
     {/if}
 
     {#if airouterSupported}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div class="px-5 py-3 border-b border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800">
-          <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">AI Router</h3>
-        </div>
+      <CollapsibleSection title="AI Router" storageKey="detail.airouter" bodyClass="">
+        {#snippet summary()}{airUse ? "on" : "off"}{/snippet}
         <div class="p-5">
           <AIRouterConfig
             {base}
@@ -1097,7 +1090,7 @@
             class="rounded-lg bg-green-600 hover:bg-green-700 px-4 py-1.5 text-xs font-medium text-white-100 disabled:opacity-50"
           >{airSaving ? "Saving…" : "Save AI Router"}</button>
         </div>
-      </div>
+      </CollapsibleSection>
     {/if}
 
     <!-- Group separator. The page is one long stack of cards, and
@@ -1116,34 +1109,22 @@
     {#each valueListFields as f (f.Key)}
       {@const entries = catalogFor(f)}
       {@const secKey = "vl:" + f.Key}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div
-          role="button"
-          tabindex="0"
-          aria-expanded={secOpen[secKey] ?? false}
-          onclick={() => toggleSec(secKey)}
-          onkeydown={secKeydown(secKey)}
-          class="px-5 py-3 cursor-pointer select-none bg-white-200 dark:bg-navy-800 hover:bg-white-300 dark:hover:bg-navy-600 transition-colors {secOpen[secKey] ? 'border-b border-white-300 dark:border-navy-600' : ''}"
-        >
-          <div class="flex items-center justify-between gap-2 flex-wrap">
-            <div class="flex items-center gap-3">
-              <svg class="h-3.5 w-3.5 shrink-0 text-black-600 transition-transform {secOpen[secKey] ? 'rotate-90' : ''}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-              <span class="font-mono text-sm font-semibold text-black-900 dark:text-white-100">{f.Key}</span>
-              <span class="text-[11px] text-black-700 dark:text-black-600">{(editorRows[f.Key] ?? []).length} rows</span>
-            </div>
-            {#if entries.length > 0 && secOpen[secKey]}
+      <CollapsibleSection title={f.Key} storageKey={"detail." + secKey} bodyClass="">
+        {#snippet summary()}{(editorRows[f.Key] ?? []).length} rows{/snippet}
+        {#if entries.length > 0 || f.Description}
+        <div class="px-5 pt-4 space-y-2">
+          {#if f.Description}
+            <p class="text-xs text-black-700 dark:text-black-600 whitespace-pre-line">{f.Description}</p>
+          {/if}
+            {#if entries.length > 0}
               <button
                 type="button"
-                onclick={(e) => { e.stopPropagation(); openPicker(f); }}
+                onclick={(e) => { openPicker(f); }}
                 class="rounded-lg border border-green-400 dark:border-green-700 bg-green-50 dark:bg-green-900 px-3 py-1 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors"
               >+ Add from catalog</button>
             {/if}
-          </div>
-          {#if f.Description && secOpen[secKey]}
-            <p class="mt-0.5 text-xs text-black-700 dark:text-black-600 whitespace-pre-line">{f.Description}</p>
-          {/if}
         </div>
-        {#if secOpen[secKey]}
+        {/if}
         <div class="p-5">
           <KvList
             columns={kvCols(f)}
@@ -1155,8 +1136,7 @@
             emptyText="No rows yet — click + Add Row to start"
           />
         </div>
-        {/if}
-      </div>
+      </CollapsibleSection>
     {/each}
 
     <!-- Key-value editors (multi-column kvlist, e.g. env). Collapsed by
@@ -1165,34 +1145,22 @@
       {@const cols = kvCols(f)}
       {@const entries = catalogFor(f)}
       {@const secKey = "kv:" + f.Key}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div
-          role="button"
-          tabindex="0"
-          aria-expanded={secOpen[secKey] ?? false}
-          onclick={() => toggleSec(secKey)}
-          onkeydown={secKeydown(secKey)}
-          class="px-5 py-3 cursor-pointer select-none bg-white-200 dark:bg-navy-800 hover:bg-white-300 dark:hover:bg-navy-600 transition-colors {secOpen[secKey] ? 'border-b border-white-300 dark:border-navy-600' : ''}"
-        >
-          <div class="flex items-center justify-between gap-2 flex-wrap">
-            <div class="flex items-center gap-2">
-              <svg class="h-3.5 w-3.5 shrink-0 text-black-600 transition-transform {secOpen[secKey] ? 'rotate-90' : ''}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-              <span class="font-mono text-sm font-semibold text-black-900 dark:text-white-100">{f.Key}</span>
-              <span class="text-[11px] text-black-700 dark:text-black-600 font-normal">{(editorRows[f.Key] ?? []).length} rows</span>
-            </div>
-            {#if entries.length > 0 && secOpen[secKey]}
+      <CollapsibleSection title={f.Key} storageKey={"detail." + secKey} bodyClass="">
+        {#snippet summary()}{(editorRows[f.Key] ?? []).length} rows{/snippet}
+        {#if entries.length > 0 || f.Description}
+        <div class="px-5 pt-4 space-y-2">
+          {#if f.Description}
+            <p class="text-xs text-black-700 dark:text-black-600 whitespace-pre-line">{f.Description}</p>
+          {/if}
+            {#if entries.length > 0}
               <button
                 type="button"
-                onclick={(e) => { e.stopPropagation(); openPicker(f); }}
+                onclick={(e) => { openPicker(f); }}
                 class="rounded-lg border border-green-400 dark:border-green-700 bg-green-50 dark:bg-green-900 px-3 py-1 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors"
               >+ Add from catalog</button>
             {/if}
-          </div>
-          {#if f.Description && secOpen[secKey]}
-            <p class="mt-0.5 text-xs text-black-700 dark:text-black-600 whitespace-pre-line">{f.Description}</p>
-          {/if}
         </div>
-        {#if secOpen[secKey]}
+        {/if}
         <div class="p-5">
           <KvList
             columns={cols}
@@ -1230,16 +1198,13 @@
             {/snippet}
           </KvList>
         </div>
-        {/if}
-      </div>
+      </CollapsibleSection>
     {/each}
 
     <!-- Hooks -->
     {#if hookEvents.length > 0}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div class="px-5 py-3 border-b border-white-300 dark:border-navy-600">
-          <h2 class="text-sm font-semibold text-black-900 dark:text-white-100">Hooks</h2>
-        </div>
+      <CollapsibleSection title="Hooks" storageKey="detail.hooks" bodyClass="">
+        {#snippet summary()}{hookEvents.filter((e) => data?.HookEnabled[e]).length}/{hookEvents.length} enabled{/snippet}
         <div class="divide-y divide-white-300 dark:divide-navy-600">
           {#each hookEvents as event (event)}
             {@const cap = data.Hooks[event]}
@@ -1292,7 +1257,7 @@
             </div>
           {/each}
         </div>
-      </div>
+      </CollapsibleSection>
     {/if}
 
     <div class="flex items-center gap-3 pt-2">
@@ -1306,9 +1271,9 @@
     <UsageReport {base} provider={`${type}/${name}`} />
 
     <!-- Command Gate -->
-    <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm p-5 space-y-3">
+    <CollapsibleSection title="Command Gate" storageKey="detail.gate">
+      {#snippet summary()}{data.Gate?.Enabled ? "enabled" : "disabled"}{/snippet}
       <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-black-900 dark:text-white-100">Command Gate</h2>
         <button
           onclick={doProbeGate}
           disabled={busy["probe-gate"]}
@@ -1345,15 +1310,12 @@
           </div>
         {/if}
       </div>
-    </div>
+    </CollapsibleSection>
 
     <!-- Active processes -->
     {#if data.ActivePIDs.length > 0}
-      <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 shadow-sm overflow-hidden">
-        <div class="px-5 py-3 border-b border-white-300 dark:border-navy-600 flex items-center justify-between">
-          <h2 class="text-sm font-semibold text-black-900 dark:text-white-100">Active Processes</h2>
-          <span class="rounded bg-blue-100 dark:bg-blue-900 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">{data.ActivePIDs.length}</span>
-        </div>
+      <CollapsibleSection title="Active Processes" storageKey="detail.processes" bodyClass="">
+        {#snippet summary()}{data.ActivePIDs.length} running{/snippet}
         <table class="w-full text-xs">
           <thead>
             <tr class="border-b border-white-300 dark:border-navy-600 text-black-700 dark:text-black-600">
@@ -1372,7 +1334,7 @@
             {/each}
           </tbody>
         </table>
-      </div>
+      </CollapsibleSection>
     {/if}
 
     <!-- Recent spawns — shared component (search + pagination + inline detail) -->

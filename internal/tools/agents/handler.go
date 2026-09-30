@@ -435,6 +435,8 @@ func Register(r tool.Router) {
 	r.POST("/api/providers/{type}/{name}/logintty/start", apiProviderLoginTTYStart)
 	r.POST("/api/providers/{type}/{name}/logintty/extend", apiProviderLoginTTYExtend)
 	r.POST("/api/providers/{type}/{name}/logintty/kill", apiProviderLoginTTYKill)
+	r.POST("/api/providers/{type}/{name}/logintty/logout", apiProviderLoginTTYLogout)
+	r.POST("/api/providers/{type}/{name}/logintty/apikey", apiProviderAPIKeySet)
 	r.GET("/api/providers/{type}/{name}/logintty/ws", apiProviderLoginTTYWS)
 
 	// Git source control (session cwd, multi-repo).

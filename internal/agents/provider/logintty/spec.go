@@ -120,11 +120,12 @@ type LoginChoice struct {
 }
 
 // LoginChoices lists the picker entries for t (nil = no picker).
-func LoginChoices(t provider.Type) []LoginChoice {
+// env is the instance's account env; omp asks its binary for the registry.
+func LoginChoices(t provider.Type, env []string) []LoginChoice {
 	var out []LoginChoice
 	switch t {
 	case provider.TypeOMP:
-		for _, p := range OMPLoginProviders {
+		for _, p := range ompLoginProviders(env) {
 			out = append(out, LoginChoice{ID: p.ID, Label: p.Label, Warning: p.Warning, Default: p.Default})
 		}
 	case provider.TypeOpencode:
@@ -139,7 +140,7 @@ func LoginChoices(t provider.Type) []LoginChoice {
 func LoginNote(t provider.Type) string {
 	switch t {
 	case provider.TypeOMP:
-		return "One instance = one account: log in once per instance. Logging in again adds a second account to the same profile, which omp would rotate between."
+		return "One instance can hold several accounts: log in again to add another, and omp rotates between them automatically when one hits its usage limit. Separate instances still work for keeping accounts apart."
 	case provider.TypeOpencode:
 		return OpencodeClaudeNote
 	}

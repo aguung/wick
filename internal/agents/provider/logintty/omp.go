@@ -32,8 +32,6 @@ import (
 	"time"
 
 	"github.com/yogasw/wick/internal/agents/provider"
-	"github.com/yogasw/wick/internal/pkg/envscrub"
-	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // OMPLoginProvider is one choice in the UI's login picker.
@@ -42,6 +40,8 @@ type OMPLoginProvider struct {
 	Label   string `json:"label"`
 	Warning string `json:"warning,omitempty"`
 	Default bool   `json:"default,omitempty"`
+	// Beta marks a registry provider whose flow wick has not exercised.
+	Beta bool `json:"beta,omitempty"`
 }
 
 // OMPLoginProviders are the omp OAuth providers wick offers. Ids are omp's
@@ -53,8 +53,8 @@ var OMPLoginProviders = []OMPLoginProvider{
 		Warning: "Anthropic's terms restrict using a Claude subscription outside Claude's own apps. Using it through omp may violate them and can get the account suspended — prefer the claude provider for Claude subscriptions."},
 }
 
-func validOMPLoginProvider(id string) bool {
-	for _, p := range OMPLoginProviders {
+func validOMPLoginProvider(env []string, id string) bool {
+	for _, p := range ompLoginProviders(env) {
 		if p.ID == id {
 			return true
 		}
@@ -62,10 +62,10 @@ func validOMPLoginProvider(id string) bool {
 	return false
 }
 
-// ompLoginCommand is `--profile <p> login <provider>`. An unknown provider
-// falls back to the default rather than reaching argv.
+// ompLoginCommand is `--profile <p> login <provider>`. The provider must be
+// one the binary's registry lists (ompLoginProviders); anything else falls back to the default rather than reaching argv.
 func ompLoginCommand(env []string, loginProvider string) []string {
-	if !validOMPLoginProvider(loginProvider) {
+	if !validOMPLoginProvider(env, loginProvider) {
 		loginProvider = OMPLoginProviders[0].ID
 	}
 	return []string{"--profile", ompProfileFromEnv(env), "login", loginProvider}
@@ -124,23 +124,26 @@ type ompUsageJSON struct {
 	} `json:"reports"`
 	AccountsWithoutUsage []struct {
 		Provider string `json:"provider"`
+		Type     string `json:"type"`
 		Email    string `json:"email"`
 		OrgName  string `json:"orgName"`
 	} `json:"accountsWithoutUsage"`
+	DisabledCredentials []struct {
+		Provider     string  `json:"provider"`
+		Type         string  `json:"type"`
+		Email        string  `json:"email"`
+		OrgName      string  `json:"orgName"`
+		Cause        string  `json:"cause"`
+		DisabledAtMs float64 `json:"disabledAtMs"`
+	} `json:"disabledCredentials"`
 }
 
 // ompRunner execs `omp --profile <p> usage --json`. Swapped in tests.
 var ompRunner = func(ctx context.Context, env []string) ([]byte, error) {
-	bin := envValue(env, provider.AccountBinEnvKey)
-	if bin == "" {
-		bin = "omp"
-	}
-	resolved, err := safeexec.ResolveBin(bin)
+	cmd, err := ompCommand(ctx, env, "usage", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("omp binary not found: %w", err)
+		return nil, err
 	}
-	cmd := safeexec.CommandContext(ctx, resolved, "--profile", ompProfileFromEnv(env), "usage", "--json")
-	cmd.Env = append(envscrub.ScrubOSEnv(), env...)
 	return cmd.Output()
 }
 
@@ -194,34 +197,28 @@ func parseOMPUsage(out []byte) (*ompUsageJSON, error) {
 	return &u, nil
 }
 
-// readOMPAccount reports the profile's logged-in account. A profile holds
-// one login by wick's rule; if omp reports several, the first wins and the
-// rest are named in Org so the operator sees the rule was broken.
+// readOMPAccount reports the profile's headline account: the first live
+// credential of the pool (ompPool). A profile may hold several — omp
+// rotates between them — and ListAccounts lists them all; Org then says
+// how many more there are.
 func readOMPAccount(env []string) Account {
 	u, err := fetchOMPUsage(env, false)
 	if err != nil || u == nil {
 		return Account{}
 	}
-	var accs []Account
-	for _, r := range u.Reports {
-		a := Account{Connected: true, AuthMethod: r.Provider, Plan: r.Provider}
-		if e, _ := r.Metadata["email"].(string); e != "" {
-			a.Email = e
+	var live []PoolAccount
+	for _, a := range ompPool(u) {
+		if a.Status == "active" {
+			live = append(live, a)
 		}
-		if o, _ := r.Metadata["orgName"].(string); o != "" {
-			a.Org = o
-		}
-		accs = append(accs, a)
 	}
-	for _, r := range u.AccountsWithoutUsage {
-		accs = append(accs, Account{Connected: true, AuthMethod: r.Provider, Plan: r.Provider, Email: r.Email, Org: r.OrgName})
-	}
-	if len(accs) == 0 {
+	if len(live) == 0 {
 		return Account{}
 	}
-	acc := accs[0]
-	if len(accs) > 1 {
-		acc.Org = strings.TrimSpace(acc.Org + fmt.Sprintf(" (+%d more logins in this profile)", len(accs)-1))
+	first := live[0]
+	acc := Account{Connected: true, AuthMethod: first.Provider, Email: first.Email, Org: first.Org, Plan: first.Plan}
+	if len(live) > 1 {
+		acc.Org = strings.TrimSpace(acc.Org + fmt.Sprintf(" (+%d more accounts in this profile)", len(live)-1))
 	}
 	return acc
 }

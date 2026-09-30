@@ -9,6 +9,8 @@
   import { apiGetCLIModels, isOpencodeHostedModel, type CLIModel } from "$lib/api.js";
 
   interface Props {
+    /* Reports how many models the CLI listed (the section summary). */
+    onCount?: (n: number) => void;
     base: string;
     type: string;
     name: string;
@@ -17,7 +19,7 @@
     onSaveFilter: (v: string) => void;
     onSavePin: (v: string) => void;
   }
-  let { base, type, name, filter, pin, onSaveFilter, onSavePin }: Props = $props();
+  let { base, type, name, filter, pin, onSaveFilter, onSavePin, onCount }: Props = $props();
 
   // How many preview rows render before "show more" — the list can be 100+.
   const PREVIEW_LIMIT = 50;
@@ -39,6 +41,7 @@
     try {
       const r = await apiGetCLIModels(base, type, name, refresh);
       models = r.models;
+      onCount?.(models.length);
       hostedAllowed = r.hostedAllowed;
       fetchedAt = r.fetchedAt;
       err = r.error ?? "";

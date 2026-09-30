@@ -42,6 +42,7 @@ type OpencodeLoginProvider struct {
 // opencode's own (matched case-insensitively by providers.ts).
 var OpencodeLoginProviders = []OpencodeLoginProvider{
 	{ID: "openai-headless", Label: "ChatGPT Plus/Pro — device code", Provider: "openai", Method: "ChatGPT Pro/Plus (headless)", Default: true},
+	{ID: "github-copilot", Label: "GitHub Copilot — device code", Provider: "github-copilot"},
 	{ID: "pick", Label: "Other provider (pick in the terminal)"},
 }
 

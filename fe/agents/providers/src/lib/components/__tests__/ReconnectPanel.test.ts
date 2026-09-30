@@ -12,6 +12,8 @@ vi.mock("$lib/logintty.js", async (importOriginal) => {
     apiLoginTTYUsage: vi.fn(),
     apiLoginTTYStart: vi.fn(),
     apiLoginTTYUsageRefresh: vi.fn(),
+    apiLoginTTYLogout: vi.fn(),
+    apiSetAPIKey: vi.fn(),
   };
 });
 vi.mock("@wick-fe/common-stores", () => ({
@@ -31,6 +33,8 @@ function makeStatus(over: Partial<LoginTTYStatus> = {}): LoginTTYStatus {
     loginChoices: [],
     loginNote: "",
     accountStore: "",
+    accounts: [],
+    apiKeys: [],
     ...over,
   };
 }
@@ -208,4 +212,71 @@ describe("ReconnectPanel", () => {
     await fireEvent.click(screen.getByText("Reconnect"));
     expect(vi.mocked(logintty.apiLoginTTYStart)).toHaveBeenCalledWith("", "omp", "omp", "anthropic");
   });
+
+  it("omp: lists every pooled account, adds another, logs a provider out", async () => {
+    const acct = (id: string, label: string, status = "active") => ({
+      id, label, provider: "openai-codex", email: label, plan: "plus", org: "", kind: "oauth",
+      status, disabledCause: status === "disabled" ? "invalid_grant" : "", disabledAt: "", usage: [],
+    });
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
+      makeStatus({
+        account: { connected: true, email: "a@x.test", plan: "plus", org: "", authMethod: "openai-codex", expiresAt: "0001-01-01T00:00:00Z" },
+        loginChoices: [{ id: "openai-codex-device", label: "ChatGPT device", warning: "", default: true, beta: false }],
+        accountStore: "profile wick-omp",
+        accounts: [acct("openai-codex#1", "a@x.test"), acct("openai-codex#2", "b@x.test", "disabled")],
+      }),
+    );
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
+    vi.mocked(logintty.apiLoginTTYStart).mockResolvedValue(null);
+    vi.mocked(logintty.apiLoginTTYLogout).mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(ReconnectPanel, { props: { base: "", type: "omp", name: "omp", defaultExpanded: true } });
+    expect((await screen.findAllByTestId("panel-account-row")).length).toBe(2);
+    expect(screen.getByText("disabled")).toBeTruthy();
+    expect(screen.getByTestId("panel-multi-account-note")).toBeTruthy();
+    // Go's zero time never renders as "Token expires 1/1/1".
+    expect(screen.queryByText(/Token expires/)).toBeNull();
+    await fireEvent.click(screen.getByTestId("panel-add-account"));
+    expect(vi.mocked(logintty.apiLoginTTYStart)).toHaveBeenCalledWith("", "omp", "omp", "openai-codex-device");
+    await fireEvent.click(screen.getByTestId("panel-logout-openai-codex"));
+    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "omp", "omp", "openai-codex");
+  });
+
+  it("API key: marks providers that have a key and saves a new one", async () => {
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
+      makeStatus({
+        apiKeys: [
+          { id: "openrouter", label: "OpenRouter", env: "OPENROUTER_API_KEY", set: true },
+          { id: "groq", label: "Groq", env: "GROQ_API_KEY", set: false },
+        ],
+      }),
+    );
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
+    vi.mocked(logintty.apiSetAPIKey).mockResolvedValue(undefined);
+    render(ReconnectPanel, { props: { base: "", type: "opencode", name: "oc", defaultExpanded: true } });
+    const box = await screen.findByTestId("panel-api-key");
+    expect(screen.getByTestId("panel-api-keys-set").textContent).toContain("OpenRouter");
+    await fireEvent.click(box.querySelector('[data-testid="wick-select-trigger"]') as HTMLElement);
+    await fireEvent.click(document.body.querySelector('[role="option"][data-value="groq"]') as HTMLElement);
+    await fireEvent.input(await screen.findByTestId("panel-api-key-input"), { target: { value: "k-test" } });
+    await fireEvent.click(screen.getByTestId("panel-api-key-save"));
+    expect(vi.mocked(logintty.apiSetAPIKey)).toHaveBeenCalledWith("", "opencode", "oc", "groq", "k-test");
+  });
+
+  it("opencode: lists logged-in providers (id + type only) and removes one", async () => {
+    const row = (id: string, kind: string) => ({ id, label: id, provider: id, email: "", plan: "", org: "", kind, status: "active", disabledCause: "", disabledAt: "" });
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
+      makeStatus({ accountStore: "data dir x", accounts: [row("openai", "oauth"), row("openrouter", "api")] }),
+    );
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
+    vi.mocked(logintty.apiLoginTTYLogout).mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(ReconnectPanel, { props: { base: "", type: "opencode", name: "oc", defaultExpanded: true } });
+    expect((await screen.findAllByTestId("panel-account-row")).length).toBe(2);
+    expect(screen.getByText("(API key)")).toBeTruthy();
+    expect(screen.getByTestId("panel-multi-provider-note").textContent).toContain("separate instance");
+    await fireEvent.click(screen.getByTestId("panel-logout-openrouter"));
+    expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "opencode", "oc", "openrouter");
+  });
 });
+

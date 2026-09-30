@@ -35,6 +35,12 @@ export type LoginTTYStatus = {
   /* Where this instance's single account lives: omp profile / opencode
      data dir. Empty for types wick does not pin. */
   accountStore: string;
+  /* omp credential pool: every account in the profile (omp rotates
+     between them on usage limits). Empty for other types. */
+  accounts: PoolAccount[];
+  /* API-key login choices (omp/opencode); set = the instance Env already
+     carries that provider's key var. */
+  apiKeys: APIKeyChoice[];
 };
 
 export type LoginChoice = {
@@ -42,7 +48,33 @@ export type LoginChoice = {
   label: string;
   warning: string;
   default: boolean;
+  beta?: boolean;
 };
+
+/* One account = one login to one provider (Instance → Account → Model). */
+export type PoolAccount = {
+  id: string;
+  label: string;
+  provider: string;
+  email: string;
+  plan: string;
+  org: string;
+  kind: string;
+  status: string; // active | disabled
+  disabledCause: string;
+  disabledAt: string;
+  usage?: UsageWindow[];
+};
+
+export type APIKeyChoice = { id: string; label: string; env: string; set: boolean };
+
+/* validTime drops Go's zero time ("0001-01-01T00:00:00Z") and anything
+   unparsable, so no "expires 1/1/1" ever renders. */
+export function validTime(iso: string): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return !isNaN(t) && new Date(iso).getUTCFullYear() > 1970;
+}
 
 /* defaultLoginChoice is the picker's initial value: the entry the server
    flags as default, else the first, else "". */
@@ -107,9 +139,15 @@ interface WireLoginStatus {
   default_ttl_s?: number;
   extend_s?: number;
   max_ttl_s?: number;
-  login_choices?: { id?: string; label?: string; warning?: string; default?: boolean }[] | null;
+  login_choices?: { id?: string; label?: string; warning?: string; default?: boolean; beta?: boolean }[] | null;
   login_note?: string;
   account_store?: string;
+  accounts?: Array<{
+    id?: string; label?: string; provider?: string; email?: string; plan?: string; org?: string; kind?: string;
+    status?: string; disabled_cause?: string; disabled_at?: string;
+    usage?: Array<{ key?: string; utilization?: number; resets_at?: string }> | null;
+  }> | null;
+  api_keys?: Array<{ id?: string; label?: string; env?: string; set?: boolean }> | null;
 }
 
 interface WireUsage {
@@ -157,10 +195,37 @@ export function normalizeLoginStatus(w: WireLoginStatus): LoginTTYStatus {
       label: c.label ?? c.id ?? "",
       warning: c.warning ?? "",
       default: c.default ?? false,
+      beta: c.beta ?? false,
     })),
     loginNote: w.login_note ?? "",
     accountStore: w.account_store ?? "",
+    accounts: (w.accounts ?? []).map((a) => ({
+      id: a.id ?? a.provider ?? "",
+      label: a.label || a.email || a.provider || "",
+      provider: a.provider ?? "",
+      email: a.email ?? "",
+      plan: a.plan ?? "",
+      org: a.org ?? "",
+      kind: a.kind ?? "",
+      status: a.status ?? "active",
+      disabledCause: a.disabled_cause ?? "",
+      disabledAt: a.disabled_at ?? "",
+      usage: (a.usage ?? []).map((x) => ({ key: x.key ?? "", utilization: x.utilization ?? 0, resetsAt: x.resets_at ?? "" })),
+    })),
+    apiKeys: (w.api_keys ?? []).map((k) => ({ id: k.id ?? "", label: k.label ?? k.id ?? "", env: k.env ?? "", set: k.set ?? false })),
   };
+}
+
+/* apiLoginTTYLogout removes every stored credential of one provider from
+   the instance's store (omp has no per-account logout outside its TUI). */
+export async function apiLoginTTYLogout(base: string, type: string, name: string, loginProvider: string): Promise<void> {
+  await post(`${ttyPath(base, type, name)}/logout?login_provider=${encodeURIComponent(loginProvider)}`);
+}
+
+/* apiSetAPIKey stores (or, with key "", removes) a provider API key as the
+   instance env var the CLI reads. The key travels in the body only. */
+export async function apiSetAPIKey(base: string, type: string, name: string, providerID: string, key: string): Promise<void> {
+  await post(`${ttyPath(base, type, name)}/apikey`, { provider: providerID, key });
 }
 
 export function normalizeUsage(w: WireUsage): UsageResult {

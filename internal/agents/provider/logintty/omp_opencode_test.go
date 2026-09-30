@@ -100,7 +100,7 @@ func TestOMPUsageAndAccount(t *testing.T) {
 		t.Errorf("7d = %+v", ws[1])
 	}
 	acc := ReadAccount(provider.TypeOMP, env)
-	if !acc.Connected || acc.Email != "a@example.com" || acc.Plan != "openai-codex" {
+	if !acc.Connected || acc.Email != "a@example.com" || acc.AuthMethod != "openai-codex" || acc.Plan != "" {
 		t.Fatalf("acc = %+v", acc)
 	}
 	if !slices.Contains(gotEnv, "OMP_PROFILE=wick-usage-test") {
@@ -116,7 +116,7 @@ func TestOMPUsageAndAccount(t *testing.T) {
 
 func TestLoginChoices(t *testing.T) {
 	var warned bool
-	for _, c := range LoginChoices(provider.TypeOMP) {
+	for _, c := range LoginChoices(provider.TypeOMP, nil) {
 		if c.ID == "anthropic" && c.Warning != "" {
 			warned = true
 		}
@@ -124,7 +124,7 @@ func TestLoginChoices(t *testing.T) {
 	if !warned {
 		t.Fatal("anthropic must carry a policy warning")
 	}
-	if LoginChoices(provider.TypeClaude) != nil {
+	if LoginChoices(provider.TypeClaude, nil) != nil {
 		t.Fatal("claude has no picker")
 	}
 	if !strings.Contains(LoginNote(provider.TypeOpencode), "Claude") {

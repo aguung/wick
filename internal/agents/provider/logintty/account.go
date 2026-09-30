@@ -19,7 +19,7 @@ type Account struct {
 	// "ChatGPT", "API key", "Google") — the CLI usage screen's "Auth
 	// method" row.
 	AuthMethod string    `json:"auth_method,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at,omitempty"` // zero = unknown / not applicable
+	ExpiresAt  time.Time `json:"expires_at,omitzero"` // zero = unknown / not applicable
 }
 
 // envValue returns the value of key in a KEY=VALUE env list, or "".

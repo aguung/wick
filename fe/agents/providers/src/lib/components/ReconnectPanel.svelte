@@ -11,6 +11,9 @@
     usageLabel,
     fmtResetsIn,
     prettyPlan,
+    validTime,
+    apiLoginTTYLogout,
+    apiSetAPIKey,
     type LoginTTYStatus,
     type LoginTTYSession,
     type UsageResult,
@@ -18,10 +21,11 @@
   } from "$lib/logintty.js";
   import LoginTerminalModal from "$lib/components/LoginTerminalModal.svelte";
   import UsageCacheChip from "$lib/components/UsageCacheChip.svelte";
+  import AccountList from "$lib/components/AccountList.svelte";
   import { fmtSecsShort } from "$lib/usagerings.js";
 
-  type Props = { base: string; type: string; name: string };
-  let { base, type, name }: Props = $props();
+  type Props = { base: string; type: string; name: string; defaultExpanded?: boolean };
+  let { base, type, name, defaultExpanded = false }: Props = $props();
 
   let status = $state<LoginTTYStatus | null>(null);
   let usage = $state<UsageResult | null>(null);
@@ -31,10 +35,16 @@
   let showTerminal = $state(false);
   /* Collapsed by default — the header row is the summary; details
      (account rows + usage) render only when expanded. */
-  let expanded = $state(false);
+  let expanded = $state(defaultExpanded);
   /* omp/opencode: which OAuth provider the next login targets. */
   let loginChoice = $state("");
   let choice = $derived((status?.loginChoices ?? []).find((c) => c.id === loginChoice) ?? null);
+  /* API-key login: provider picked + the key being typed (never echoed). */
+  let apiKeyProvider = $state("");
+  let apiKeyValue = $state("");
+  let apiKeyBusy = $state(false);
+  let apiKeyChoice = $derived((status?.apiKeys ?? []).find((k) => k.id === apiKeyProvider) ?? null);
+  let loggingOut = $state("");
 
   let connected = $derived(status?.account.connected ?? false);
   /* Reconnect shows while collapsed ONLY when a login is actually
@@ -124,10 +134,39 @@
   }
 
   function fmtExpiry(iso: string): string {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleString();
+    if (!validTime(iso)) return "";
+    return new Date(iso).toLocaleString();
+  }
+
+  async function logoutProvider(prov: string) {
+    const n = (status?.accounts ?? []).filter((a) => a.provider === prov).length;
+    const msg = type === "omp"
+      ? `Log out of ${prov}? omp removes ALL ${n} stored account(s) of this provider from the profile — it has no single-account logout outside its TUI.`
+      : `Remove the ${prov} credential from this instance (opencode auth logout)?`;
+    if (!confirm(msg)) return;
+    loggingOut = prov;
+    try {
+      await apiLoginTTYLogout(base, type, name, prov);
+      await refresh();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "Logout failed");
+    } finally {
+      loggingOut = "";
+    }
+  }
+
+  async function saveAPIKey(remove = false) {
+    if (!apiKeyProvider) return;
+    apiKeyBusy = true;
+    try {
+      await apiSetAPIKey(base, type, name, apiKeyProvider, remove ? "" : apiKeyValue);
+      apiKeyValue = "";
+      await refresh();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "Failed to save API key");
+    } finally {
+      apiKeyBusy = false;
+    }
   }
 
   function barColor(pct: number): string {
@@ -244,7 +283,7 @@
             <span class="min-w-0 truncate text-right font-medium text-black-900 dark:text-white-100">{row.value}</span>
           </div>
         {/each}
-        {#if status.account.connected && status.account.expiresAt}
+        {#if status.account.connected && validTime(status.account.expiresAt)}
           <p class="text-[11px] text-black-700 dark:text-black-600">Token expires {fmtExpiry(status.account.expiresAt)}</p>
         {/if}
         {#if status.accountStore}
@@ -252,12 +291,36 @@
             <span class="shrink-0 text-black-800 dark:text-black-600">Account store</span>
             <span data-testid="panel-account-store" class="min-w-0 truncate text-right font-mono text-black-900 dark:text-white-100">{status.accountStore}</span>
           </div>
-          <p class="text-[11px] text-black-700 dark:text-black-600">1 instance = 1 account. Add another instance for another account.</p>
+          {#if type === "omp"}
+            <p data-testid="panel-multi-account-note" class="text-[11px] text-black-700 dark:text-black-600">One instance can hold several accounts: omp rotates to the next one automatically when an account hits its usage limit. Separate instances still work if you want accounts kept apart.</p>
+          {:else}
+            <p data-testid="panel-multi-provider-note" class="text-[11px] text-black-700 dark:text-black-600">One instance can hold many providers, one login each. For two accounts of the same provider, add a separate instance.</p>
+          {/if}
         {/if}
         {#if !status.supported}
           <p class="text-[11px] text-black-700 dark:text-black-600">Reconnect via terminal is not available for this provider type yet.</p>
         {/if}
       </div>
+
+      {#if (status.accounts ?? []).length > 0}
+        <AccountList
+          accounts={status.accounts ?? []}
+          removeLabel={type === "omp" ? "Log out provider" : "Remove"}
+          removing={loggingOut}
+          canAdd={status.supported && status.session?.state !== "running"}
+          adding={starting}
+          onAdd={reconnect}
+          onRemove={(prov) => void logoutProvider(prov)}
+        >
+          {#snippet note()}
+            {#if type === "omp"}
+              "Add another account" runs the login below again into this same profile. omp has no single-account removal outside its own TUI, so logout here is per provider.
+            {:else}
+              One instance can hold many providers (one login each). Two accounts of the same provider need separate instances. "Add another account" logs in to another provider — pick it below, or use an API key.
+            {/if}
+          {/snippet}
+        </AccountList>
+      {/if}
 
       {#if status.supported && (status.loginChoices ?? []).length > 0}
         <div class="space-y-2" data-testid="panel-login-choice">
@@ -265,7 +328,8 @@
           <Select
             id="login-choice-{type}-{name}"
             value={loginChoice}
-            options={status.loginChoices.map((c) => ({ label: c.label, value: c.id, ...(c.warning ? { badge: "policy" } : {}) }))}
+            searchable
+            options={status.loginChoices.map((c) => ({ label: c.label, value: c.id, ...(c.warning ? { badge: "policy" } : c.beta ? { badge: "beta" } : {}) }))}
             onChange={(v) => { loginChoice = v; }}
           />
           {#if choice?.warning}
@@ -275,6 +339,40 @@
             <p class="text-[11px] text-black-700 dark:text-black-600">{status.loginNote}</p>
           {/if}
           <p class="text-[11px] text-black-700 dark:text-black-600">Browser flows redirect to localhost, which this host never receives: when the page fails to load, copy its full URL from the address bar and paste it into the login terminal.</p>
+        </div>
+      {/if}
+
+      {#if (status.apiKeys ?? []).length > 0}
+        <div class="space-y-2" data-testid="panel-api-key">
+          <label for="api-key-provider-{type}-{name}" class="block text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">OR USE AN API KEY</label>
+          <Select
+            id="api-key-provider-{type}-{name}"
+            value={apiKeyProvider}
+            searchable
+            placeholder="Pick a provider…"
+            options={(status.apiKeys ?? []).map((k) => ({ label: k.label, value: k.id, description: k.env, ...(k.set ? { badge: "key set" } : {}) }))}
+            onChange={(v) => { apiKeyProvider = v; apiKeyValue = ""; }}
+          />
+          {#if apiKeyChoice}
+            <div class="flex items-center gap-2">
+              <input
+                type="password"
+                autocomplete="off"
+                data-testid="panel-api-key-input"
+                placeholder={apiKeyChoice.set ? "Key set — paste a new one to replace" : `Paste ${apiKeyChoice.env}`}
+                bind:value={apiKeyValue}
+                class="min-w-0 flex-1 rounded-lg border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2 py-1 font-mono text-xs text-black-900 dark:text-white-100"
+              />
+              <Button variant="primary" testid="panel-api-key-save" disabled={apiKeyBusy || apiKeyValue.trim() === ""} onclick={() => void saveAPIKey()}>Save</Button>
+              {#if apiKeyChoice.set}
+                <Button variant="secondary" testid="panel-api-key-remove" disabled={apiKeyBusy} onclick={() => void saveAPIKey(true)}>Remove</Button>
+              {/if}
+            </div>
+            <p class="text-[11px] text-black-700 dark:text-black-600">Saved as the instance env var <span class="font-mono">{apiKeyChoice.env}</span> (masked like every other secret env); live models refresh after saving.</p>
+          {/if}
+          {#if (status.apiKeys ?? []).some((k) => k.set)}
+            <p data-testid="panel-api-keys-set" class="text-[11px] text-black-700 dark:text-black-600">Keys set: {(status.apiKeys ?? []).filter((k) => k.set).map((k) => k.label).join(", ")}</p>
+          {/if}
         </div>
       {/if}
 

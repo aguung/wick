@@ -304,3 +304,63 @@ tetap tidak dikelola (flag per type, bisa dinyalakan nanti).
   provider lain (claude, codex, gemini, dll) = satu file implementasi + register, tanpa mengubah
   alur install/update/rollback atau UI. Dokumentasikan langkah menambah provider di
   docs/guide/agents/providers.md.
+
+## Status & sisa pekerjaan sampai selesai (update 30 Sep 2026)
+
+Aturan tetap: deploy dulu dari branch `ai/feat/omp-opencode-providers` untuk dicek Yoga; commit lokal bertahap boleh setelah gate hijau (izin Yoga 30 Sep); push + SATU PR ke master hanya setelah Yoga OK.
+
+### Sudah terdeploy
+- 0.1.379–0.1.384: irisan 1–4 (type omp/opencode, isolasi akun & MCP, binary terkelola + UX progress/versi, fix URL login & bus env, resolve model + error spawn tampil, live models + filter `a|b !x`, ikon opencode).
+- 0.1.385 (commit ab1dc086, ae1c8365, c2fa112d, 79ac54ac): mode server opencode (`opencode serve` per instance, default ON, OFF = `opencode run` per turn tetap ada), idle reaper wajib (default 10 menit), stop = abort request, toggle "Load Claude/Codex skills" (default OFF), live models + hosted default ON, ikon omp.
+- Hasil ukur (research/oc-perf): per turn `run` ~6 s / 550–790 MB; server warm 1,5–1,7 s, satu proses ~520 MB. `BUN_ARGUMENTS`/`NODE_OPTIONS`/`BUN_OPTIONS=--smol` tak berefek; `BUN_JSC_forceRAMSize` −20% RSS tapi CPU 2–3,5×.
+
+### Irisan 5 — auth & akun (sedang, sub-agent bc1b18ad)
+Brief: `files/research/oc-perf/BRIEF-auth-multiaccount.md`.
+1. Detail provider: Connection/auth paling atas & terbuka; SEMUA section lain collapsed default dengan ringkasan di header; satu komponen collapsible; state di localStorage.
+2. omp multi-akun native (`<profile>/agent/agent.db` tabel `auth_credentials`, rotasi & pin oleh omp): daftar akun + status/usage, Add account, logout.
+3. Fix "Token expires 1/1/1" (zero time) + mapping Plan/Organization Codex.
+4. Login API key (omp & opencode), disimpan terenkripsi di env instance, nama env per provider dari katalog CLI.
+5. Daftar OAuth dinamis (omp registry; opencode ChatGPT + Copilot), yang belum dites = "beta".
+6. opencode multi-provider per instance (`auth.json` = satu slot per provider): daftar, tambah, hapus via `opencode auth logout`.
+7. Komponen daftar akun generik (dipakai omp & opencode).
+
+### Irisan 6 — model akun: Instance → Provider → (Akun) → Model (keputusan Yoga "ikut wick")
+- Akun = satu login ke satu provider. Satu tombol "Add account" (pilih provider → OAuth/API key).
+- omp: semua akun native di satu profile. opencode: wick membuat folder data (XDG) baru otomatis untuk akun kedua pada provider yang sama; provider berbeda boleh satu folder.
+- Picker (pakai grouping + live-set yang sudah ada di ProviderPicker): type → instance → provider → [Auto | akun A | akun B — hanya jika provider itu punya >1 akun] → model. Nilai pin memakai format live-set wick `<akun|default>@<model>` (aman untuk id model ber-`/`).
+- Rotasi: omp native; opencode dikerjakan wick (usage limit/error kuota → akun berikutnya pada provider yang sama). Server mode opencode: satu server per akun.
+- Pin akun omp lewat `/session pin <n|email>` di mode RPC (lihat irisan 7); kalau tak bisa, picker hanya menampilkan akun yang melayani.
+
+#### BE dibuat generik (Yoga 30 Sep: "cuma butuh diperluas di BE, biar provider lain gampang di-expand")
+FE sudah generik: `ComposerModelOption.live` = baris set yang bisa di-drill, `loadModels(value, {entry})` = level 4, pin `<entry>@<model>` (fe/common/ui/src/composer-types.ts, ProviderPicker). Yang masih khusus wick ada di BE:
+- `providerOptionModelsJSON` (internal/tools/agents/handler.go ~2583): `?entry=` hanya untuk `TypeWick` → `expandLiveWickSet`.
+- Resolusi pin set saat spawn: `resolveLiveSetFallback` (internal/agents/provider/wick/spawn.go:258).
+Rencana: satu kontrak di paket provider, registri per type (pola sama dengan registri managedbin):
+```go
+// ModelSets exposes a provider type's grouped picker levels.
+type ModelSets interface {
+    Sets(ctx, ins) ([]ModelChoice, error)            // baris live=true (wick: live set; omp/opencode: provider, atau "provider · akun" bila >1 akun)
+    Expand(ctx, ins, entry string) ([]ModelChoice, error)
+    Resolve(ins, entry, model string) (SpawnPin, error) // akun/model yang dipakai spawn
+}
+func RegisterModelSets(t Type, s ModelSets)
+```
+- Handler & spawn memanggil registri, bukan `if TypeWick`. wick direfaktor jadi implementasi pertama (perilaku sama, test lama tetap hijau), lalu omp & opencode.
+- **Generik penuh, kedalaman bebas (Yoga 30 Sep: "buat reusable/generic, case kayak ini bakal banyak")** — bukan 1 level set:
+  - BE: `Expand(ctx, ins, path []string)`; tiap `ModelChoice` bisa `live` (punya anak) di level mana pun. Contoh path: `["codex"]` → akun; `["codex","akunA"]` → model. Satu provider satu akun → level akun dilewati (implementasi tak mengembalikan level itu).
+  - API: `?entry=` menerima path ber-encode (mis. `codex/akunA`, tiap segmen di-escape); respons sama bentuknya di semua level.
+  - FE ProviderPicker: ganti `setDrill` tunggal dengan TUMPUKAN drill (breadcrumb + back), cache per path; `loadModels(value, {entry: path})`. Label terpilih = rangkaian segmen ("opencode · yoga · Codex · akun A · gpt-5.x").
+  - Pin: `<path>@<model>` (path ber-escape, model sesudah `@` terakhir yang tidak ter-escape) — pin wick lama `<entry>@<model>` = path 1 segmen, tetap valid (kompatibel mundur, ada test).
+  - Satu komponen/tipe tree yang sama dipakai juga di tempat lain yang butuh pilihan bertingkat (project default model, preset, schedule).
+- Provider baru cukup: implement `ModelSets` + `RegisterModelSets`, tanpa sentuh handler/FE.
+
+### Irisan 7 — mode server omp
+- `omp --mode rpc --no-ui` persisten, toggle per instance default ON, OFF = `-p` per turn tetap. Idle kill wajib, stop = abort. Ukur satu turn omp dulu dengan akun asli.
+
+### Irisan 8 — terminal web (gotty)
+- gotty (sorenisanerd/gotty, MIT) sebagai binary terkelola (managedbin), dijalankan per permintaan di 127.0.0.1 port & kredensial acak, `--once --permit-write`, env instance; dibuka di modal wick lewat reverse proxy wick (auth wick, admin saja, diaudit). Kill saat tab tutup / idle. Isi: `omp --profile <p>`, `opencode`, `omp login`, `omp usage`, `opencode auth login`.
+
+### Penutup
+- Hapus env instance tak berguna di host Yoga (`BUN_ARGUMENTS`, `NODE_OPTIONS`) — manual oleh Yoga.
+- Revoke key Zen testing; hapus entri `opencode` di auth.json instance bila sudah di-revoke.
+- Setelah semua irisan OK di host: squash-free push branch + SATU PR ke master, pindahkan plan ke `done/`.

@@ -153,3 +153,18 @@ describe("ManagedBinaryPanel", () => {
     expect(screen.queryByTestId("managed-row-download")).toBeNull();
   });
 });
+
+describe("ManagedBinaryPanel - collapsible (Detail page)", () => {
+  it("starts collapsed with the version line visible, opens on click and remembers it", async () => {
+    localStorage.clear();
+    vi.mocked(mb.apiManagedList).mockResolvedValue({ types: [base], isAdmin: true });
+    render(ManagedBinaryPanel, { props: { base: "", type: "omp", collapsible: true } });
+    const panel = await screen.findByTestId("managed-binary-collapsed");
+    expect(await screen.findByTestId("managed-current")).toBeTruthy();
+    await fireEvent.click(screen.getByText("Binary · omp"));
+    expect(screen.queryByTestId("managed-binary-collapsed")).toBeNull();
+    expect(screen.getByTestId("managed-binary-panel")).toBe(panel);
+    expect(localStorage.getItem("wick.providers.section.managed-binary.omp")).toBe("1");
+  });
+});
+

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { loadOpen, saveOpen } from "$lib/collapse.js";
   /* ManagedBinaryPanel — the "Binary" section for one wick-managed type
      (omp, opencode). Summary on top: active version, host, newest release
      and what to do about it (Download vX, then Activate vX). Below, one
@@ -35,13 +36,23 @@
   } from "$lib/managedbin.js";
 
   type Props = {
+    collapsible?: boolean;
     base: string;
     type: string;
     /* Compact = inside the Add form: status + first download only. */
     compact?: boolean;
     onChange?: (m: ManagedBinary | null) => void;
   };
-  let { base, type, compact = false, onChange }: Props = $props();
+  let { base, type, compact = false, collapsible = false, onChange }: Props = $props();
+  /* collapsible (Detail page): hidden by default, header + version line
+     stay visible; open state remembered per browser. */
+  let open = $state(loadOpen(`managed-binary.${type}`, false));
+  let shown = $derived(!collapsible || open);
+  function toggleOpen() {
+    if (!collapsible) return;
+    open = !open;
+    saveOpen(`managed-binary.${type}`, open);
+  }
 
   let data = $state<ManagedBinary | null>(null);
   let isAdmin = $state(false);
@@ -138,8 +149,19 @@
   const latestAct = $derived(data ? latestState(data) : "");
 </script>
 
-<div data-testid="managed-binary-panel" data-type={type} class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 {compact ? 'p-3' : 'p-5'} space-y-3">
-  <div class="flex flex-wrap items-center gap-2">
+<div data-testid={collapsible && !open ? "managed-binary-collapsed" : "managed-binary-panel"} data-type={type} class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 {compact ? 'p-3' : 'p-5'} space-y-3">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="flex flex-wrap items-center gap-2 {collapsible ? 'cursor-pointer select-none' : ''}"
+    role={collapsible ? "button" : undefined}
+    tabindex={collapsible ? 0 : undefined}
+    aria-expanded={collapsible ? open : undefined}
+    onclick={toggleOpen}
+    onkeydown={(e) => { if (collapsible && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleOpen(); } }}
+  >
+    {#if collapsible}
+      <svg class="h-3.5 w-3.5 shrink-0 text-black-600 transition-transform {open ? 'rotate-90' : ''}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    {/if}
     <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Binary · {type}</h3>
     <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">managed by wick</span>
     {#if data?.hostLabel}
@@ -171,6 +193,7 @@
         <span data-testid="managed-sessions-old" class="text-black-800 dark:text-black-600">{note}</span>
       {/if}
     </div>
+    {#if shown}
     {#if data.currentPath && !compact}
       <p class="font-mono text-[11px] text-black-700 dark:text-black-600 break-all">{data.currentPath}</p>
     {/if}
@@ -299,6 +322,7 @@
           </div>
         {/if}
       </div>
+    {/if}
     {/if}
   {/if}
 </div>

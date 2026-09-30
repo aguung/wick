@@ -48,6 +48,12 @@ type LoginTTYStatusResponse struct {
 	// AccountStore names where this instance's single account lives (omp
 	// profile / opencode data dir), so the card can show it.
 	AccountStore string `json:"account_store,omitempty"`
+	// Accounts is the instance's credential pool (omp: several accounts
+	// per profile, rotated on usage limits). Empty for other types.
+	Accounts []logintty.PoolAccount `json:"accounts,omitempty"`
+	// APIKeys are the API-key login choices (omp/opencode), each marked
+	// set when the instance Env already carries its var.
+	APIKeys []logintty.APIKeyProvider `json:"api_keys,omitempty"`
 }
 
 func loginTTYSessionDTO(s *logintty.Session) *LoginTTYSessionDTO {
@@ -98,9 +104,11 @@ func apiProviderLoginTTYStatus(c *tool.Ctx) {
 		DefaultTTLS:  int(logintty.DefaultTTL.Seconds()),
 		ExtendS:      int(logintty.ExtendStep.Seconds()),
 		MaxTTLS:      int(logintty.MaxTTL.Seconds()),
-		LoginChoices: logintty.LoginChoices(ins.Type),
+		LoginChoices: logintty.LoginChoices(ins.Type, provider.AccountEnv(ins)),
 		LoginNote:    logintty.LoginNote(ins.Type),
 		AccountStore: accountStoreLabel(ins),
+		Accounts:     logintty.ListAccounts(ins.Type, provider.AccountEnv(ins)),
+		APIKeys:      logintty.APIKeyProviders(ins.Type, ins.Env),
 	})
 }
 

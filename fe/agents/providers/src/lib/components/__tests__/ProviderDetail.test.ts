@@ -47,7 +47,14 @@ function makeDetail(): ProviderDetailResponse {
 
 const defaultProps = { base: "", type: "claude", name: "default", onBack: vi.fn(), onOpenSession: vi.fn() };
 
+/* Collapsible sections remember their state per browser; start every
+   test clean, with the CollapsibleSection cards open so the content tests
+   below can reach their controls (default-closed is tested on its own). */
+const OPEN_SECTIONS = ["binary", "models", "airouter", "hooks", "gate", "processes"];
+
 beforeEach(() => {
+  localStorage.clear();
+  for (const k of OPEN_SECTIONS) localStorage.setItem(`wick.providers.section.detail.${k}`, "1");
   vi.mocked(api.apiGetProviderDetail).mockResolvedValue(makeDetail());
   // ProviderDetail embeds <RecentSpawns>, which fetches on mount.
   vi.mocked(api.apiGetSessions).mockResolvedValue({ Sessions: [], Page: 1, HasNext: false, Total: 0 });
@@ -77,7 +84,8 @@ describe("ProviderDetail - rendering", () => {
 
   it("renders resolved path in binary info", async () => {
     render(ProviderDetail, { props: defaultProps });
-    expect(await screen.findByText("/usr/bin/claude")).toBeTruthy();
+    // Once in the collapsed Binary header summary, once in its body.
+    expect((await screen.findAllByText("/usr/bin/claude")).length).toBe(2);
   });
 
   it("collapses Configuration / extra_args / env by default", async () => {
@@ -513,6 +521,9 @@ describe("ProviderDetail - server mode + Load Claude/Codex skills toggles", () =
     ];
     vi.mocked(api.apiGetProviderDetail).mockResolvedValue(d);
     render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    // Closed by default, but the header already says what is inside.
+    expect((await screen.findByTestId("section-config")).getAttribute("data-open")).toBe("0");
+    expect(screen.getByText(/Server mode: on · 2 fields/)).toBeTruthy();
     await fireEvent.click(await screen.findByText("Configuration"));
     const server = await screen.findByTestId("server-mode-toggle");
     expect(server.getAttribute("aria-checked")).toBe("true");
@@ -522,5 +533,28 @@ describe("ProviderDetail - server mode + Load Claude/Codex skills toggles", () =
     await fireEvent.click(server);
     expect(server.getAttribute("aria-checked")).toBe("false");
     expect(screen.getByTestId("run-per-turn-note")).toBeTruthy();
+  });
+});
+
+describe("ProviderDetail - layout", () => {
+  it("puts Connection first and keeps the other sections collapsed by default", async () => {
+    localStorage.clear();
+    const { container } = render(ProviderDetail, { props: defaultProps });
+    const first = await screen.findByTestId("detail-connection-first");
+    const binaryHeader = await screen.findByText("Binary");
+    // Connection precedes the Binary card in document order.
+    expect(first.compareDocumentPosition(binaryHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("Probe Gate")).toBeNull();
+    const open = [...container.querySelectorAll("[data-open]")].map((el) => el.getAttribute("data-open"));
+    expect(open.length).toBeGreaterThan(0);
+    expect(open.every((v) => v === "0")).toBe(true);
+  });
+
+  it("remembers an opened section in localStorage", async () => {
+    localStorage.clear();
+    render(ProviderDetail, { props: defaultProps });
+    await fireEvent.click(await screen.findByText("Command Gate"));
+    expect(localStorage.getItem("wick.providers.section.detail.gate")).toBe("1");
+    expect(await screen.findByText("Probe Gate")).toBeTruthy();
   });
 });
