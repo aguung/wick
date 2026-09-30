@@ -61,9 +61,6 @@
   // false until the first connections request settles: a card without a
   // connection row then means "not checked yet", not "logged out".
   let connectionsLoaded = $state(false);
-  // Types whose account + usage row comes from the connections request
-  // (logintty reads a login for each). Only these get the "checking" row.
-  const LOGIN_TYPES = new Set(["claude", "codex", "gemini", "omp", "opencode"]);
   // Types whose binary wick can install/update itself (omp, opencode),
   // with their status — the cards only INDICATE it (version, update
   // available, a running download); every action lives on Detail. Read
@@ -869,10 +866,9 @@
                  much of its rate-limit windows is spent. Two nested arcs
                  (inner 5-hour, outer 7-day) keep it to one glance; the
                  numbers are spelled out beside them. Until the connections
-                 request resolves, every type that keeps a login shows a
-                 "checking" row instead of nothing; types with no
-                 credentials on disk never show the row. -->
-            {#if !connectionsLoaded && LOGIN_TYPES.has(p.Instance.Type)}
+                 request resolves, every non-wick card shows a "checking"
+                 row instead of letting the block pop in. -->
+            {#if !connectionsLoaded && p.Instance.Type !== "wick"}
               <div data-testid="conn-loading" class="pt-3 border-t border-white-300 dark:border-navy-600 flex items-center gap-2 text-xs text-black-700 dark:text-black-600">
                 <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
                 Checking login &amp; usage…
@@ -951,13 +947,6 @@
                     </div>
                   {/if}
                 </div>
-              </div>
-            {:else if !connectionsLoaded && p.Instance.Type !== "wick"}
-              <!-- Account + usage come from a separate request; until it
-                   lands, say so instead of letting the block pop in. -->
-              <div data-testid="conn-loading" class="pt-3 border-t border-white-300 dark:border-navy-600 flex items-center gap-2 text-xs text-black-700 dark:text-black-600">
-                <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
-                checking login &amp; usage…
               </div>
             {/if}
             <!-- Per-instance Command Gate: enabling a hook changes what
