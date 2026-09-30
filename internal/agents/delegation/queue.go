@@ -161,6 +161,9 @@ func (s *Service) startNextQueued(ctx context.Context, rootID string) {
 	}
 
 	if err := s.Repo.MarkRunning(ctx, head.ID); err != nil {
+		if errors.Is(err, errNotQueued) {
+			return // another dispatcher claimed it first
+		}
 		log.Warn().Err(err).Str("delegation", head.ID).Msg("delegation: queued mark-running failed")
 		return
 	}

@@ -528,11 +528,27 @@ func (r *Repo) SumTurnsByRoot(ctx context.Context, rootID string) (int, error) {
 	return *sum, nil
 }
 
+// errNotQueued is MarkRunning losing the claim: the row had already left
+// the queue (started by another dispatcher, interrupted, or never queued).
+var errNotQueued = errors.New("delegation is no longer queued")
+
 // MarkRunning flips a queued delegation to running.
+//
+// The status guard is the claim: every terminal delegation pokes the
+// dispatcher on its own goroutine, so two can read the same head at once.
+// Only the one whose update lands may start it — the other gets
+// errNotQueued, or the same row runs twice.
 func (r *Repo) MarkRunning(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Model(&entity.AgentDelegation{}).
+	res := r.db.WithContext(ctx).Model(&entity.AgentDelegation{}).
 		Where("id = ? AND status = ?", id, entity.DelegationQueued).
-		Updates(map[string]any{"status": entity.DelegationRunning}).Error
+		Updates(map[string]any{"status": entity.DelegationRunning})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errNotQueued
+	}
+	return nil
 }
 
 // ReopenForContinue flips a FINISHED delegation back to running for

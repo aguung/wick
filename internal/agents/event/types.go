@@ -45,7 +45,8 @@ const (
 	// consumers treat it as end-of-turn.
 	Error
 	// Warning is a NON-fatal error the CLI reported mid-stream (e.g. a
-	// malformed skill/agent-role definition it chose to ignore). It is
+	// malformed skill/agent-role definition it chose to ignore), or a
+	// stdout line wick itself could not parse (provider/agent.go). It is
 	// recorded to history like an error but does NOT end the turn — the
 	// subprocess keeps running. ErrorMsg carries the detail.
 	Warning

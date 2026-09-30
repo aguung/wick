@@ -271,6 +271,31 @@ func TestRunSurfacesErrorEventAsFailedStatus(t *testing.T) {
 	}
 }
 
+// A line the provider parser could not read arrives as a Warning while the
+// child keeps working. Treating it as the end of the run closed delegations
+// "(no output)" minutes before the child finished, lost the real answer and
+// released the conversation's queue slot early.
+func TestRunKeepsRunningThroughWarning(t *testing.T) {
+	stream := &scriptedStream{events: []StreamEvent{
+		{Type: event.TextDelta, Text: "checking. "},
+		{Type: event.Warning, Text: "claude parse: unexpected end of JSON input"},
+		{Type: event.TextDelta, Text: "real answer"},
+		{Type: event.Done},
+	}}
+	s, _, _ := runService(t, stream, &fakeRunner{})
+
+	res, err := s.Run(context.Background(), baseReq())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Status != entity.DelegationDone {
+		t.Fatalf("status = %q, want %q (note %q)", res.Status, entity.DelegationDone, res.Note)
+	}
+	if !strings.Contains(res.Result, "real answer") {
+		t.Fatalf("result = %q, want the output that came after the warning", res.Result)
+	}
+}
+
 // The child's MCP identity must carry the intersected tag set, not the
 // user's full set and never an admin token.
 func TestRunIssuesScopedTokenWithNarrowedTags(t *testing.T) {

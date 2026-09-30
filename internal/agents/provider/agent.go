@@ -1116,9 +1116,13 @@ func (a *Agent) run(ctx context.Context) {
 		evs, err := event.ParseLine(a.parser, line)
 		if err != nil {
 			// One bad line shouldn't tank the agent. Log+continue is
-			// the policy the design specifies; we surface as Error
-			// event so the store + UI still see it.
-			evs = []event.AgentEvent{{Type: event.Error, ErrorMsg: err.Error(), Raw: line}}
+			// the policy the design specifies. It goes out as a Warning,
+			// NOT an Error: the subprocess is still working, and every
+			// consumer reads Error as end-of-turn — a delegation closed
+			// "(no output)" and released its queue slot on a single
+			// truncated line while the child worked on for 15 minutes.
+			log.Warn().Err(err).Int("line_bytes", len(line)).Msg("agent.reader: unparsable stdout line, continuing")
+			evs = []event.AgentEvent{{Type: event.Warning, ErrorMsg: err.Error(), Raw: line}}
 		}
 		for _, ev := range evs {
 

@@ -562,7 +562,8 @@ func (s *Service) Run(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
-	if err := s.Repo.MarkRunning(ctx, id); err != nil {
+	// errNotQueued is the normal case for a row that never waited.
+	if err := s.Repo.MarkRunning(ctx, id); err != nil && !errors.Is(err, errNotQueued) {
 		log.Warn().Err(err).Str("delegation", id).Msg("delegation: mark running failed")
 	}
 	row.Status = entity.DelegationRunning
