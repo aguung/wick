@@ -707,7 +707,25 @@
                     {/each}
                   {/if}
                   <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {chip.cls}">{chip.label}</span>
-                  {#if canConnect(row)}
+                  {#if row.mcp_auth?.per_user}
+                    <!-- Per-user (SSO) MCP instance: it holds no credential of
+                         its own, so it is never "not connected". Neutral count
+                         of the accounts the viewer may see, then the viewer's
+                         own state. -->
+                    <span class="inline-flex items-center rounded-md border border-white-400 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-2 py-0.5 text-[11px] text-black-800 dark:text-black-600" data-per-user-chip>
+                      Per-user login · {row.mcp_auth.account_count ?? 0} {(row.mcp_auth.account_count ?? 0) === 1 ? "account" : "accounts"}
+                    </span>
+                    {#if row.mcp_auth.mine_connected}
+                      <span class="inline-flex items-center gap-1 rounded-md border border-green-600/40 bg-green-900/20 px-2 py-0.5 text-[11px] font-medium text-green-500" data-mine-connected>
+                        <svg class="h-3 w-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>
+                        You: connected
+                      </span>
+                    {:else if canConnect(row)}
+                      <Button variant="secondary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
+                        {connectingId === row.id ? "Connecting…" : "Connect my account"}
+                      </Button>
+                    {/if}
+                  {:else if canConnect(row)}
                     <Button variant="primary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
                       {connectingId === row.id ? "Connecting…" : connectLabel(row)}
                     </Button>
@@ -718,7 +736,9 @@
                   <!-- Auth state is per instance. Broken auth wins over the
                        account chip: a reassuring identity next to a dead
                        token is worse than no chip at all. -->
-                  {#if row.mcp_auth && authBroken(row)}
+                  {#if row.mcp_auth?.per_user}
+                    <!-- chips rendered above -->
+                  {:else if row.mcp_auth && authBroken(row)}
                     <span
                       class="inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-md border border-neg-400 bg-neg-100 px-2 py-0.5 text-[11px] font-medium text-neg-400"
                       title={authBrokenReason(row)}
