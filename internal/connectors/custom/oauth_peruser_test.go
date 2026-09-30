@@ -255,11 +255,19 @@ func TestPerUserTwoUsersEachUseTheirOwnToken(t *testing.T) {
 	if got := f.lastCaller(); got != "Bearer at-A" {
 		t.Errorf("explicit account call used %q", got)
 	}
+	// Accounts private (the default): B naming A's account is refused even
+	// when the framework gate ran under an admin principal (owner-less
+	// spawns use the internal admin token), and A's token is never sent.
+	before := f.lastCaller()
+	if err := f.call(t, srv.ID, instanceID, "user-b", byUser["user-a"].ID); err == nil || !strings.Contains(err.Error(), "belongs to another user") {
+		t.Fatalf("private pool: user-b picking user-a's account err = %v", err)
+	}
+	if got := f.lastCaller(); got != before {
+		t.Errorf("refused call still reached the server with %q", got)
+	}
 	// With the pool shared on purpose (AllowOthersSeeAccounts — "every user
-	// with tag access sees, and can run as, every connected account") the
-	// framework clears B's explicit pick of A's account, so it runs as A.
-	// Keeping accounts private is the framework's AccountVisibleTo gate,
-	// covered in the connectors package.
+	// with tag access sees, and can run as, every connected account") B's
+	// explicit pick of A's account runs as A.
 	if err := f.svc.conns.SetAccessPolicy(context.Background(), instanceID, connectors.AccessPolicy{
 		EnableSSO: true, AllowOthersConnectSSO: true, MultiAccount: true, AllowOthersSeeAccounts: true,
 	}); err != nil {

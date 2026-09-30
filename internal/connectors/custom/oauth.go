@@ -865,25 +865,36 @@ var ErrNoOAuthAccount = fmt.Errorf("no connected account")
 // that is no longer connected to the instance.
 var ErrOAuthAccountGone = fmt.Errorf("account not connected to this instance")
 
+// ErrOAuthAccountNotYours is returned when a call names (@accountId)
+// another user's account on an instance that keeps accounts private.
+var ErrOAuthAccountNotYours = fmt.Errorf("account belongs to another user")
+
 // callerAccount resolves the account an SSO-mode call runs as.
 //
-// An explicit @accountId is the account the framework already resolved AND
-// cleared for this caller (connectors.Service.Execute runs AccountVisibleTo
-// before stamping Ctx.AccountID): the caller's own, or one the instance
-// shares on purpose (AllowOthersSeeAccounts, a tag share, an ownerless
-// legacy row, or the caller administers the instance). That gate is the
-// policy; this only looks the row up. Without an explicit account the call
-// runs as the caller's own account and never falls back to someone else's.
-func (s *Service) callerAccount(ctx context.Context, instanceID, accountID, callerUserID string) (*entity.ConnectorAccount, error) {
-	accs, err := s.conns.ListAccounts(ctx, instanceID)
+// callerUserID is the session owner (connectors.Service.Execute stamps it
+// over the MCP principal, which for owner-less spawns is a synthetic
+// admin), so ownership is checked here too rather than trusting the
+// framework's AccountVisibleTo gate alone: that gate runs against the MCP
+// principal and passes every account for an admin one. An explicit
+// @accountId may name the caller's own account, an ownerless legacy row,
+// or any account when the instance shares them (AllowOthersSeeAccounts).
+// Without an explicit account the call runs as the caller's own account
+// and never falls back to someone else's.
+func (s *Service) callerAccount(ctx context.Context, inst entity.Connector, accountID, callerUserID string) (*entity.ConnectorAccount, error) {
+	accs, err := s.conns.ListAccounts(ctx, inst.ID)
 	if err != nil {
 		return nil, err
 	}
 	if accountID != "" {
 		for i := range accs {
-			if accs[i].ID == accountID {
+			if accs[i].ID != accountID {
+				continue
+			}
+			owner := accs[i].WickUserID
+			if owner == "" || inst.AllowOthersSeeAccounts || (callerUserID != "" && owner == callerUserID) {
 				return &accs[i], nil
 			}
+			return nil, ErrOAuthAccountNotYours
 		}
 		return nil, ErrOAuthAccountGone
 	}

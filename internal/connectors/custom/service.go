@@ -1233,7 +1233,7 @@ func (s *Service) ProbeInstance(ctx context.Context, instanceID string, caller *
 		if u := login.GetUser(ctx); u != nil {
 			uid = u.ID
 		}
-		acc, aerr := s.callerAccount(ctx, instanceID, "", uid)
+		acc, aerr := s.callerAccount(ctx, *row, "", uid)
 		if aerr != nil {
 			return ProbeResult{OK: false, Error: "you have not connected your own account — use Connect my account"}, nil
 		}

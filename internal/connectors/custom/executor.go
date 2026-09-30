@@ -619,14 +619,16 @@ func (s *Service) executeMCP(c *connector.Ctx, src MCPSource, inputs []DefField)
 	if row.AuthScheme == "oauth" {
 		meta := parseOAuthMeta(row.AuthExtra)
 		if inst, err := s.conns.Get(c.Context(), c.InstanceID()); err == nil && s.InstancePerUser(*inst) {
-			// Per-user (SSO) instance: run as the explicit @accountId the
-			// framework already cleared for this caller, else the caller's
-			// own connected account — never a fallback to someone else's.
-			acc, err := s.callerAccount(c.Context(), inst.ID, c.AccountID(), c.CallerUserID())
+			// Per-user (SSO) instance: run as an explicit @accountId the
+			// session owner may use, else the owner's own connected
+			// account — never a fallback to someone else's.
+			acc, err := s.callerAccount(c.Context(), *inst, c.AccountID(), c.CallerUserID())
 			if err != nil {
 				switch err {
 				case ErrNoOAuthAccount:
 					return nil, fmt.Errorf("you have not connected your own %s account yet — open /manager/connectors/%s/%s and click Connect to link it, then retry", inst.Label, inst.Key, inst.ID)
+				case ErrOAuthAccountNotYours:
+					return nil, fmt.Errorf("account %q belongs to another user and %s keeps connected accounts private — connect your own at /manager/connectors/%s/%s", c.AccountID(), inst.Label, inst.Key, inst.ID)
 				case ErrOAuthAccountGone:
 					return nil, fmt.Errorf("account %q is no longer connected to %s — pick another account or connect your own at /manager/connectors/%s/%s", c.AccountID(), inst.Label, inst.Key, inst.ID)
 				}
