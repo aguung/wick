@@ -1733,7 +1733,11 @@ func applyAccountForm(ins *provider.Instance, c *tool.Ctx) string {
 			if !filepath.IsAbs(d) {
 				return "opencode data dir must be an absolute path"
 			}
-			ins.OpencodeConfig = &provider.OpencodeConfig{DataDir: d}
+			// Only the data dir: Model / AllowHosted stay as saved.
+			if ins.OpencodeConfig == nil {
+				ins.OpencodeConfig = &provider.OpencodeConfig{}
+			}
+			ins.OpencodeConfig.DataDir = d
 		}
 	}
 	return ""
