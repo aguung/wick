@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -158,4 +160,30 @@ func TestIsModelAccessErrorAndMessage(t *testing.T) {
 	if got := ModelUnavailableMessage("openai-codex/gpt-5.5", "free"); got != "gpt-5.5 tidak tersedia untuk akun free ini — pilih model lain." {
 		t.Fatalf("msg %q", got)
 	}
+}
+
+// ApplyAvailability runs on HTTP handlers while Mark* run on an agent's
+// stdout reader; the picker must not read the shared map after the lock
+// is released (go test -race).
+func TestApplyAvailabilityConcurrentWithMark(t *testing.T) {
+	withModelStateDir(t)
+	ins := Instance{Type: TypeOMP, Name: "race"}
+	rows := []ModelChoice{{ID: "m0"}, {ID: "m1"}, {ID: "m2"}}
+	MarkModelUnavailable(ins, "", "m0", "seed")
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			MarkModelUnavailable(ins, "", fmt.Sprintf("x%d", i), "r")
+			MarkModelWorked(ins, "", fmt.Sprintf("x%d", i))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			ApplyAvailability(ins, "", rows)
+		}
+	}()
+	wg.Wait()
 }

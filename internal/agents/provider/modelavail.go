@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,7 +209,8 @@ func ApplyAvailability(ins Instance, account string, rows []ModelChoice) []Model
 	var unavailable map[string]string
 	last := ""
 	if e := st.Accounts[account]; e != nil {
-		unavailable, last = e.Unavailable, e.LastWorked
+		// Copied under the lock: Mark* mutate this map in place.
+		unavailable, last = maps.Clone(e.Unavailable), e.LastWorked
 	}
 	modelStateMu.Unlock()
 
