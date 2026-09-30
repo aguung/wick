@@ -154,17 +154,22 @@ describe("ManagedBinaryPanel", () => {
   });
 });
 
-describe("ManagedBinaryPanel - collapsible (Detail page)", () => {
-  it("starts collapsed with the version line visible, opens on click and remembers it", async () => {
-    localStorage.clear();
+describe("ManagedBinaryPanel - embedded (Detail page Binary section)", () => {
+  it("renders no card header of its own; platform / active / latest as rows, controls kept", async () => {
     vi.mocked(mb.apiManagedList).mockResolvedValue({ types: [base], isAdmin: true });
-    render(ManagedBinaryPanel, { props: { base: "", type: "omp", collapsible: true } });
-    const panel = await screen.findByTestId("managed-binary-collapsed");
-    expect(await screen.findByTestId("managed-current")).toBeTruthy();
-    await fireEvent.click(screen.getByText("Binary · omp"));
-    expect(screen.queryByTestId("managed-binary-collapsed")).toBeNull();
-    expect(screen.getByTestId("managed-binary-panel")).toBe(panel);
-    expect(localStorage.getItem("wick.providers.section.managed-binary.omp")).toBe("1");
+    render(ManagedBinaryPanel, { props: { base: "", type: "omp", embedded: true } });
+    expect((await screen.findByTestId("managed-current")).textContent).toBe("v18.4.3");
+    expect(screen.queryByText("Binary · omp")).toBeNull();
+    expect(screen.queryByText("managed by wick")).toBeNull(); // the section header shows it
+    expect(screen.getByTestId("managed-host").textContent).toBe("linux-x64 · glibc · AVX2");
+    expect(screen.getByText("Platform")).toBeTruthy();
+    expect(screen.getByText("Latest")).toBeTruthy();
+    expect(screen.getByTestId("managed-update-available").textContent).toContain("v18.4.4");
+    expect(screen.getByTestId("managed-sessions-old").textContent).toBe("2 sessions still on v18.4.2");
+    // the path is the section's Resolved path row, not repeated here
+    expect(screen.queryByText("/data/providers/bin/omp/versions/18.4.3/omp")).toBeNull();
+    expect(screen.getByTestId("managed-download-latest").textContent).toBe("Download v18.4.4");
+    expect(screen.getByTestId("managed-version-list")).toBeTruthy();
+    expect(screen.getByTestId("managed-binary-panel").className).not.toContain("rounded-xl");
   });
 });
-

@@ -82,6 +82,8 @@
   /* Every settings section is a CollapsibleSection: closed by default,
      summary in its header, open state remembered per browser. */
   let liveCount = $state<number | null>(null);
+  // Types whose binary wick downloads and switches itself.
+  let managedType = $derived(type === "omp" || type === "opencode");
   let configSummary = $derived.by(() => {
     const parts: string[] = [];
     const v = (k: string) => fieldValues[k] ?? "";
@@ -799,27 +801,34 @@
       <ReconnectPanel {base} {type} {name} defaultExpanded={true} />
     </div>
 
-    <!-- Binary info -->
-    <CollapsibleSection title="Binary" storageKey="detail.binary" bodyClass="p-5 space-y-1 text-xs">
-      {#snippet summary()}{#if data?.VersionErr}<span class="text-red-600 dark:text-red-400">error</span>{:else}<span class="font-mono">{data?.Path || "—"}</span>{/if}{/snippet}
-      <div class="flex gap-2">
-        <span class="w-20 shrink-0 text-black-700 dark:text-black-600">resolved</span>
-        {#if data.Path}
-          <span class="font-mono text-black-900 dark:text-white-100 break-all">{data.Path}</span>
-        {:else}
-          <span class="text-black-600 dark:text-black-700">—</span>
+    <!-- Binary: one section for every type. The header carries only the
+         version (and "managed by wick" for omp/opencode) — the long path
+         lives in the body, where it can wrap. Managed types add their
+         platform, active/latest and download/switch controls below. -->
+    <CollapsibleSection title="Binary" storageKey="detail.binary" testid="section-binary" bodyClass="p-5 space-y-4 text-xs">
+      {#snippet summary()}<span class="inline-flex items-center gap-1.5">{#if data?.VersionErr}<span class="text-red-600 dark:text-red-400">error</span>{:else if data?.Version}<span data-testid="binary-version-pill" class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 font-mono text-[11px] font-medium text-black-800 dark:text-black-600">v{data.Version.replace(/^v/, "")}</span>{:else if !data?.Path}<span>not found</span>{/if}{#if managedType}<span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">managed by wick</span>{/if}</span>{/snippet}
+      <dl data-testid="binary-info" class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">
+        <dt class="text-black-700 dark:text-black-600">Resolved path</dt>
+        <dd class="min-w-0">
+          {#if data.Path}
+            <span class="font-mono text-black-900 dark:text-white-100 break-all">{data.Path}</span>
+          {:else}
+            <span class="text-black-600 dark:text-black-700">—</span>
+          {/if}
+        </dd>
+        <dt class="text-black-700 dark:text-black-600">Version</dt>
+        <dd class="min-w-0 font-mono text-black-900 dark:text-white-100">{data.Version || "—"}</dd>
+        {#if data.VersionErr}
+          <dt class="text-black-700 dark:text-black-600">Error</dt>
+          <dd class="min-w-0 font-mono text-red-600 dark:text-red-400 break-all">{data.VersionErr}</dd>
         {/if}
-      </div>
-      {#if data.VersionErr}
-        <div class="flex gap-2">
-          <span class="w-20 shrink-0 text-black-700 dark:text-black-600">error</span>
-          <span class="font-mono text-red-600 dark:text-red-400 break-all">{data.VersionErr}</span>
-        </div>
+      </dl>
+      {#if managedType}
+        <ManagedBinaryPanel {base} {type} embedded />
       {/if}
     </CollapsibleSection>
 
-    {#if type === "omp" || type === "opencode"}
-      <ManagedBinaryPanel {base} {type} collapsible />
+    {#if managedType}
       <!-- A terminal is a shell on the host: admin-only, like editing. -->
       {#if !readOnly}
         <TerminalPanel {base} {type} {name} />
@@ -1279,7 +1288,12 @@
     <!-- Token ledger for THIS provider — same component as the list
          page, scoped by the provider prop. What it cost, and which
          sessions spent it (paginated; the list is unbounded). -->
-    <UsageReport {base} provider={`${type}/${name}`} />
+    <!-- Closed by default like every other section; its body (and so the
+         usage fetch) only mounts once opened. -->
+    <CollapsibleSection title="Token Usage" storageKey="detail.activity" testid="section-activity" bodyClass="">
+      {#snippet summary()}{type}/{name}{/snippet}
+      <UsageReport {base} provider={`${type}/${name}`} title="" flush />
+    </CollapsibleSection>
 
     <!-- Command Gate -->
     <CollapsibleSection title="Command Gate" storageKey="detail.gate">

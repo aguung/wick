@@ -3,9 +3,14 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import ProviderDetail from "../ProviderDetail.svelte";
 import { cardStacksMissingRhythm, expectCardRhythm } from "./cardRhythm.js";
 import * as api from "$lib/api.js";
+import * as mb from "$lib/managedbin.js";
 import type { ProviderDetailResponse } from "$lib/types.js";
 
 vi.mock("$lib/api.js");
+vi.mock("$lib/managedbin.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("$lib/managedbin.js")>()),
+  apiManagedList: vi.fn(),
+}));
 vi.mock("@wick-fe/common-stores", () => ({
   toastOk: vi.fn(),
   toastError: vi.fn(),
@@ -79,13 +84,15 @@ describe("ProviderDetail - rendering", () => {
 
   it("renders version badge when path found", async () => {
     render(ProviderDetail, { props: defaultProps });
-    expect(await screen.findByText("1.2.3")).toBeTruthy();
+    // Heading badge + the open Binary section's Version row.
+    expect((await screen.findAllByText("1.2.3")).length).toBe(2);
   });
 
   it("renders resolved path in binary info", async () => {
     render(ProviderDetail, { props: defaultProps });
-    // Once in the collapsed Binary header summary, once in its body.
-    expect((await screen.findAllByText("/usr/bin/claude")).length).toBe(2);
+    // Body only: the header carries the version pill, not the long path.
+    expect((await screen.findAllByText("/usr/bin/claude")).length).toBe(1);
+    expect(screen.getByTestId("binary-version-pill").textContent).toBe("v1.2.3");
   });
 
   it("collapses Configuration / extra_args / env by default", async () => {
@@ -556,5 +563,61 @@ describe("ProviderDetail - layout", () => {
     await fireEvent.click(await screen.findByText("Command Gate"));
     expect(localStorage.getItem("wick.providers.section.detail.gate")).toBe("1");
     expect(await screen.findByText("Probe Gate")).toBeTruthy();
+  });
+});
+
+describe("ProviderDetail - Binary section", () => {
+  it("non-managed type: one Binary section, path + version rows, no managed rows", async () => {
+    render(ProviderDetail, { props: defaultProps });
+    const sec = await screen.findByTestId("section-binary");
+    expect(sec.textContent).toContain("Resolved path");
+    expect(sec.textContent).toContain("/usr/bin/claude");
+    expect(sec.textContent).not.toContain("managed by wick");
+    expect(screen.queryByTestId("managed-binary-panel")).toBeNull();
+  });
+
+  it("managed type: ONE Binary section holds the managed info; header = version + managed pill", async () => {
+    localStorage.removeItem("wick.providers.section.detail.binary");
+    const d = makeDetail();
+    d.Instance = { ...d.Instance, Type: "opencode", Name: "oc" };
+    d.Path = "/home/x/.support-tools/providers/bin/opencode/versions/1.18.33/opencode";
+    d.Version = "1.18.33";
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(d);
+    vi.mocked(mb.apiManagedList).mockResolvedValue({
+      isAdmin: true,
+      types: [mb.normalizeManaged({ type: "opencode", enabled: true, host_label: "linux-x64 · glibc · AVX2", current: "1.18.33", current_path: d.Path, latest: { tag: "v1.18.33", version: "1.18.33" } })],
+    });
+    render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
+    const sec = await screen.findByTestId("section-binary");
+    // collapsed by default: header summary only, no long path
+    expect(sec.getAttribute("data-open")).toBe("0");
+    expect(sec.textContent).toContain("v1.18.33");
+    expect(sec.textContent).toContain("managed by wick");
+    expect(sec.textContent).not.toContain("/opencode/versions/");
+    expect(screen.queryByText("Binary · opencode")).toBeNull();
+    expect(screen.getAllByText("Binary")).toHaveLength(1);
+
+    await fireEvent.click(screen.getByText("Binary"));
+    const panel = await screen.findByTestId("managed-binary-panel");
+    expect(sec.contains(panel)).toBe(true);
+    expect((await screen.findByTestId("managed-current")).textContent).toBe("v1.18.33");
+    expect(screen.getByTestId("managed-host").textContent).toBe("linux-x64 · glibc · AVX2");
+    expect(sec.textContent).toContain(d.Path);
+    expect(localStorage.getItem("wick.providers.section.detail.binary")).toBe("1");
+  });
+});
+
+describe("ProviderDetail - Activity", () => {
+  it("Token Usage is collapsed by default and mounts the report only when opened", async () => {
+    render(ProviderDetail, { props: defaultProps });
+    const sec = await screen.findByTestId("section-activity");
+    expect(sec.getAttribute("data-open")).toBe("0");
+    expect(sec.textContent).toContain("Token Usage");
+    expect(sec.textContent).toContain("claude/default");
+    expect(screen.queryByText("Refresh")).toBeNull();
+    await fireEvent.click(screen.getByText("Token Usage"));
+    expect(sec.getAttribute("data-open")).toBe("1");
+    expect(await screen.findByText("Refresh")).toBeTruthy();
+    expect(localStorage.getItem("wick.providers.section.detail.activity")).toBe("1");
   });
 });

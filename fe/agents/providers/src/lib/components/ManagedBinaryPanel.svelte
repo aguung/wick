@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { loadOpen, saveOpen } from "$lib/collapse.js";
-  /* ManagedBinaryPanel — the "Binary" section for one wick-managed type
-     (omp, opencode). Summary on top: active version, host, newest release
+  /* ManagedBinaryPanel — the managed part of the "Binary" section for one
+     wick-managed type (omp, opencode). Summary on top: active version, host, newest release
      and what to do about it (Download vX, then Activate vX). Below, one
      version list = cached GitHub releases + downloaded versions, each row
      with its own status and action: Download (fetch + verify + store only,
@@ -36,23 +35,17 @@
   } from "$lib/managedbin.js";
 
   type Props = {
-    collapsible?: boolean;
     base: string;
     type: string;
     /* Compact = inside the Add form: status + first download only. */
     compact?: boolean;
+    /* Embedded = inside the Detail page's "Binary" section: no card or
+       header of its own, the summary becomes definition rows that line
+       up with the section's Resolved path / Version rows. */
+    embedded?: boolean;
     onChange?: (m: ManagedBinary | null) => void;
   };
-  let { base, type, compact = false, collapsible = false, onChange }: Props = $props();
-  /* collapsible (Detail page): hidden by default, header + version line
-     stay visible; open state remembered per browser. */
-  let open = $state(loadOpen(`managed-binary.${type}`, false));
-  let shown = $derived(!collapsible || open);
-  function toggleOpen() {
-    if (!collapsible) return;
-    open = !open;
-    saveOpen(`managed-binary.${type}`, open);
-  }
+  let { base, type, compact = false, embedded = false, onChange }: Props = $props();
 
   let data = $state<ManagedBinary | null>(null);
   let isAdmin = $state(false);
@@ -149,25 +142,16 @@
   const latestAct = $derived(data ? latestState(data) : "");
 </script>
 
-<div data-testid={collapsible && !open ? "managed-binary-collapsed" : "managed-binary-panel"} data-type={type} class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 {compact ? 'p-3' : 'p-5'} space-y-3">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="flex flex-wrap items-center gap-2 {collapsible ? 'cursor-pointer select-none' : ''}"
-    role={collapsible ? "button" : undefined}
-    tabindex={collapsible ? 0 : undefined}
-    aria-expanded={collapsible ? open : undefined}
-    onclick={toggleOpen}
-    onkeydown={(e) => { if (collapsible && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleOpen(); } }}
-  >
-    {#if collapsible}
-      <svg class="h-3.5 w-3.5 shrink-0 text-black-600 transition-transform {open ? 'rotate-90' : ''}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-    {/if}
-    <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Binary · {type}</h3>
-    <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">managed by wick</span>
-    {#if data?.hostLabel}
-      <span data-testid="managed-host" class="text-[11px] text-black-700 dark:text-black-600">{data.hostLabel}</span>
-    {/if}
-  </div>
+<div data-testid="managed-binary-panel" data-type={type} class="{embedded ? '' : `rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 ${compact ? 'p-3' : 'p-5'}`} space-y-3">
+  {#if !embedded}
+    <div class="flex flex-wrap items-center gap-2">
+      <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Binary · {type}</h3>
+      <span class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">managed by wick</span>
+      {#if data?.hostLabel}
+        <span data-testid="managed-host" class="text-[11px] text-black-700 dark:text-black-600">{data.hostLabel}</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if loading}
     <p class="text-xs text-black-700 dark:text-black-600">Checking…</p>
@@ -177,24 +161,53 @@
     {#if !data.enabled}
       <p class="text-xs text-black-700 dark:text-black-600">Disabled in config (providers.managed_binaries.{type}.enabled).</p>
     {/if}
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-      {#if data.current}
-        <span data-testid="managed-current" class="text-black-900 dark:text-white-100">Active <span class="font-mono font-medium">v{data.current}</span></span>
-      {:else}
-        <span data-testid="managed-not-installed" class="text-neg-400 font-medium">Binary not installed</span>
-      {/if}
-      {#if data.latest}
-        <span class="text-black-800 dark:text-black-600" title={data.latestCheckedAt ? `checked ${new Date(data.latestCheckedAt).toLocaleString()}` : ""}>Latest on GitHub <span class="font-mono">{data.latest}</span></span>
-      {/if}
-      {#if data.updateAvailable}
-        <span data-testid="managed-update-available" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available {data.latest}</span>
-      {/if}
-      {#if note}
-        <span data-testid="managed-sessions-old" class="text-black-800 dark:text-black-600">{note}</span>
-      {/if}
-    </div>
-    {#if shown}
-    {#if data.currentPath && !compact}
+    {#if embedded}
+      <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs">
+        {#if data.hostLabel}
+          <dt class="text-black-700 dark:text-black-600">Platform</dt>
+          <dd data-testid="managed-host" class="min-w-0 text-black-900 dark:text-white-100">{data.hostLabel}</dd>
+        {/if}
+        <dt class="text-black-700 dark:text-black-600">Active</dt>
+        <dd class="min-w-0 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {#if data.current}
+            <span data-testid="managed-current" class="font-mono font-medium text-black-900 dark:text-white-100">v{data.current}</span>
+          {:else}
+            <span data-testid="managed-not-installed" class="text-neg-400 font-medium">Binary not installed</span>
+          {/if}
+          {#if note}
+            <span data-testid="managed-sessions-old" class="text-black-800 dark:text-black-600">{note}</span>
+          {/if}
+        </dd>
+        {#if data.latest}
+          <dt class="text-black-700 dark:text-black-600">Latest</dt>
+          <dd class="min-w-0 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span class="font-mono text-black-900 dark:text-white-100" title={data.latestCheckedAt ? `checked ${new Date(data.latestCheckedAt).toLocaleString()}` : ""}>{data.latest}</span>
+            <span class="text-black-700 dark:text-black-600">on GitHub</span>
+            {#if data.updateAvailable}
+              <span data-testid="managed-update-available" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available {data.latest}</span>
+            {/if}
+          </dd>
+        {/if}
+      </dl>
+    {:else}
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        {#if data.current}
+          <span data-testid="managed-current" class="text-black-900 dark:text-white-100">Active <span class="font-mono font-medium">v{data.current}</span></span>
+        {:else}
+          <span data-testid="managed-not-installed" class="text-neg-400 font-medium">Binary not installed</span>
+        {/if}
+        {#if data.latest}
+          <span class="text-black-800 dark:text-black-600" title={data.latestCheckedAt ? `checked ${new Date(data.latestCheckedAt).toLocaleString()}` : ""}>Latest on GitHub <span class="font-mono">{data.latest}</span></span>
+        {/if}
+        {#if data.updateAvailable}
+          <span data-testid="managed-update-available" class="rounded bg-cau-100 dark:bg-cau-400/20 px-1.5 py-0.5 text-[11px] font-medium text-cau-400">update available {data.latest}</span>
+        {/if}
+        {#if note}
+          <span data-testid="managed-sessions-old" class="text-black-800 dark:text-black-600">{note}</span>
+        {/if}
+      </div>
+    {/if}
+    {#if data.currentPath && !compact && !embedded}
       <p class="font-mono text-[11px] text-black-700 dark:text-black-600 break-all">{data.currentPath}</p>
     {/if}
     {#if data.latestErr && !compact}
@@ -298,7 +311,7 @@
 
         {#if isAdmin && data.enabled && available.length > 0}
           <div data-testid="managed-other-version" class="flex flex-wrap items-end gap-2 pt-1">
-            <div class="min-w-[16rem] flex-1 max-w-sm">
+            <div class="min-w-0 basis-64 flex-1 max-w-sm">
               <label for="managed-pick-{type}" class="mb-1 block text-[11px] font-medium text-black-700 dark:text-black-600">Download another version</label>
               <Select
                 id="managed-pick-{type}"
@@ -322,7 +335,6 @@
           </div>
         {/if}
       </div>
-    {/if}
     {/if}
   {/if}
 </div>
