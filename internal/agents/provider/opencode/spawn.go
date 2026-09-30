@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -117,6 +118,13 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 			log.Info().Str("provider", prov).Str("account", acct).Msg("agents.spawn: opencode account folder")
 			ins = acc
 		}
+	}
+	// An opencode session lives in the data folder that created it: after
+	// a rotation to another account folder the old id does not exist
+	// there, so the turn starts a fresh session instead of failing.
+	if dir, derr := provider.OpencodeDataDir(ins); derr == nil && folderSwitched(opt.SessionID, dir) && opt.ResumeID != "" {
+		log.Info().Str("session", opt.SessionID).Msg("agents.spawn: opencode account folder changed; starting a new opencode session")
+		opt.ResumeID = ""
 	}
 	model, inArgs, err := resolveModel(ctx, ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
 	if err != nil {
@@ -258,4 +266,17 @@ func (s Spawner) spawnServe(ctx context.Context, opt provider.SpawnOptions, ins 
 		p.run(rctx, l, t)
 	}()
 	return p, nil
+}
+
+// sessionFolders remembers the data folder each wick session last ran in.
+var sessionFolders sync.Map
+
+// folderSwitched records dir for session and reports whether the session
+// previously ran in a different folder.
+func folderSwitched(session, dir string) bool {
+	if session == "" {
+		return false
+	}
+	prev, loaded := sessionFolders.Swap(session, dir)
+	return loaded && prev.(string) != dir
 }

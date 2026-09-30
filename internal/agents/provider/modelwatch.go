@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -23,9 +24,22 @@ type modelTurnWatch struct {
 	key    string
 	failed bool
 	// opencode rotation: the provider and account folder this turn runs in
-	// (quotaAcct "main" = the instance's own folder).
+	// (quotaAcct "main" = the instance's own folder); pinned = the user
+	// chose that account, so wick never rotates away from it.
 	quotaProv, quotaAcct string
+	pinned               bool
+	// notice writes a system line into the session transcript; nil = none.
+	notice func(string)
+	// rotate re-runs this turn once on the next account (Auto only);
+	// returns false when the turn was already a retry.
+	rotate  func() bool
+	noticed bool
 }
+
+// AccountPlanLabel names the plan of a provider account for messages
+// ("ChatGPT free"); set by the logintty package, which owns the account
+// listing. account "" = the provider's only/active account. "" = unknown.
+var AccountPlanLabel = func(ins Instance, prov, account string) string { return "" }
 
 // isErrorLine: only an error frame may count as a quota hit — a model
 // answer that merely mentions "429" must not rotate accounts.
@@ -53,6 +67,9 @@ func newModelTurnWatch(ins *Instance, pin string) *modelTurnWatch {
 			acct = OpencodeMainAccount
 		}
 		w.quotaProv, w.quotaAcct = prov, acct
+		if p, ok := ResolvePin(ins, pin); ok && p.Account != "" && p.Account != AutoAccount {
+			w.pinned = true
+		}
 	}
 	return w
 }
@@ -84,6 +101,41 @@ func (w *modelTurnWatch) learnModel(line string) {
 	w.model, w.key = model, modelPrefix(model)
 }
 
+// account is the pool account the turn ran on, "" when Auto/unknown.
+func (w *modelTurnWatch) account() string {
+	if i := strings.IndexByte(w.key, '#'); i >= 0 {
+		return w.key[i+1:]
+	}
+	return ""
+}
+
+func (w *modelTurnWatch) say(msg string) {
+	if w.notice != nil && msg != "" {
+		w.notice(msg)
+	}
+}
+
+// rotationNotice handles a quota hit on an opencode account: Auto moves to
+// the provider's next account and re-runs this turn there once; a pinned
+// account or the last one left just says so.
+func (w *modelTurnWatch) rotationNotice() string {
+	from := w.quotaAcct
+	if w.pinned {
+		return fmt.Sprintf("Akun %s (%s) kena limit — akun ini dipilih manual, jadi tidak dipindah. Pilih akun lain atau Auto.", from, w.quotaProv)
+	}
+	next := OpencodeAutoAccount(w.ins, w.quotaProv)
+	if next == "" {
+		next = OpencodeMainAccount
+	}
+	if next == from {
+		return fmt.Sprintf("Akun %s (%s) kena limit dan tidak ada akun lain yang tersedia untuk provider ini.", from, w.quotaProv)
+	}
+	if w.rotate != nil && w.rotate() {
+		return fmt.Sprintf("Akun %s (%s) kena limit → pindah ke akun %s; pesan ini diulang sekali di sana.", from, w.quotaProv, next)
+	}
+	return fmt.Sprintf("Akun %s (%s) kena limit → turn berikutnya memakai akun %s.", from, w.quotaProv, next)
+}
+
 // turnEnded reports a line that closes one turn of the CLI's JSON stream.
 func turnEnded(t Type, line string) bool {
 	switch t {
@@ -103,21 +155,38 @@ func (w *modelTurnWatch) observe(line string) {
 	if IsModelAccessError(line) {
 		w.failed = true
 		if w.model != "" {
-			reason := ""
+			reason, plan := "", ""
 			if p := rePlanField.FindStringSubmatch(line); p != nil {
-				reason = "plan " + p[1]
+				reason, plan = "plan "+p[1], p[1]
 			}
 			MarkModelUnavailable(w.ins, w.key, w.model, reason)
+			if !w.noticed {
+				w.noticed = true
+				// The plan lookup may exec the CLI (omp usage, cached):
+				// never on the line reader's goroutine.
+				ins, model, prov, acct, say, plan := w.ins, w.model, modelPrefix(w.model), w.account(), w.say, plan
+				go func() {
+					if label := AccountPlanLabel(ins, prov, acct); label != "" {
+						plan = label
+					}
+					say(ModelUnavailableMessage(model, plan))
+				}()
+			}
 		}
 		return
 	}
 	if w.ins.Type == TypeOpencode && w.quotaProv != "" && isErrorLine(line) && IsQuotaError(line) {
-		// Auto moves the next turn to the provider's next account folder.
-		MarkAccountExhausted(w.ins, w.quotaProv, w.quotaAcct)
 		w.failed = true
+		if w.noticed {
+			return
+		}
+		w.noticed = true
+		MarkAccountExhausted(w.ins, w.quotaProv, w.quotaAcct)
+		w.say(w.rotationNotice())
 		return
 	}
 	if turnEnded(w.ins.Type, line) {
+		w.noticed = false
 		if !w.failed && w.model != "" {
 			MarkModelWorked(w.ins, w.key, w.model)
 			if w.key != "" {

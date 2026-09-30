@@ -403,3 +403,20 @@ func useFreshServers(t *testing.T, start startFunc) {
 	servers = m
 	t.Cleanup(func() { m.shutdown(); servers = prev })
 }
+
+// After a rotation to another account folder the old opencode session id
+// does not exist there: the spawn must start a new session.
+func TestFolderSwitchedPerSession(t *testing.T) {
+	if folderSwitched("s-fs", "/a") {
+		t.Fatal("first spawn is not a switch")
+	}
+	if folderSwitched("s-fs", "/a") {
+		t.Fatal("same folder is not a switch")
+	}
+	if !folderSwitched("s-fs", "/a/accounts/a2") {
+		t.Fatal("folder change must be reported")
+	}
+	if folderSwitched("", "/x") || folderSwitched("", "/y") {
+		t.Fatal("no session id → never a switch")
+	}
+}

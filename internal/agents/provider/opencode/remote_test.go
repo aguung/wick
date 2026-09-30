@@ -153,6 +153,9 @@ type fakeOpencode struct {
 	stored []string
 	// silent: the run goes busy then idle with nothing in between.
 	silent bool
+	// joined tracks prompts that joined the gated run: like opencode, the
+	// run goes idle only once every joined message has been answered.
+	joined sync.WaitGroup
 }
 
 func (f *fakeOpencode) publish(typ string, props any) {
@@ -212,6 +215,12 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"name":"UnknownError"}`, status)
 			return
 		}
+		// Registered before the 204, so a caller that returns from the
+		// prompt call can never race the run's idle past this answer.
+		joins := gate != nil && !first
+		if joins {
+			f.joined.Add(1)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		var body struct {
 			Parts []struct {
@@ -227,6 +236,9 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n, delay, silent := len(f.prompts), f.storeDelay, f.silent
 		f.mu.Unlock()
 		go func() {
+			if joins {
+				defer f.joined.Done() // every path, incl. hang/silent
+			}
 			if first && delay > 0 {
 				time.Sleep(delay)
 			}
@@ -245,10 +257,11 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.publish("message.part.updated", map[string]any{"part": map[string]any{"type": "text", "text": "hello", "sessionID": sid, "messageID": "m", "time": map[string]any{"end": 1}}})
 			f.publish("message.part.updated", map[string]any{"part": map[string]any{"type": "step-finish", "reason": "stop", "sessionID": sid, "messageID": "m"}})
 			if gate != nil {
-				if !first {
+				if joins {
 					return
 				}
 				<-gate
+				f.joined.Wait()
 			}
 			f.publish("session.idle", map[string]any{"sessionID": sid})
 		}()

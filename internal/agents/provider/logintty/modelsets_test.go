@@ -173,3 +173,25 @@ func TestOpencodeAccountFoldersAndRotation(t *testing.T) {
 		t.Fatalf("account data dir = %q", got)
 	}
 }
+
+func TestAccountPlanLabel(t *testing.T) {
+	pa := modelSetsAccounts
+	t.Cleanup(func() { modelSetsAccounts = pa })
+	one := labelPool([]PoolAccount{{Provider: "openai-codex", Plan: "free", Status: "active"}})
+	modelSetsAccounts = func(provider.Instance) []PoolAccount { return one }
+	omp := provider.Instance{Type: provider.TypeOMP, Name: "t"}
+	if got := accountPlanLabel(omp, "openai-codex", ""); got != "ChatGPT free" {
+		t.Fatalf("single account = %q", got)
+	}
+	two := labelPool([]PoolAccount{{Provider: "openai-codex", Plan: "free", Status: "active"}, {Provider: "openai-codex", Plan: "plus", Status: "active"}})
+	modelSetsAccounts = func(provider.Instance) []PoolAccount { return two }
+	if got := accountPlanLabel(omp, "openai-codex", ""); got != "" {
+		t.Fatalf("Auto over two accounts is ambiguous, got %q", got)
+	}
+	if got := accountPlanLabel(omp, "openai-codex", "2"); got != "ChatGPT plus" {
+		t.Fatalf("pinned account 2 = %q", got)
+	}
+	if got := accountPlanLabel(provider.Instance{Type: provider.TypeOpencode}, "openai", ""); got != "" {
+		t.Fatalf("opencode has no plan, got %q", got)
+	}
+}

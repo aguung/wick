@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEncodeDecodePathRoundTrip(t *testing.T) {
@@ -80,6 +81,11 @@ func TestModelArgsResolvesGroupedPinViaRegistry(t *testing.T) {
 func withModelStateDir(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
+	// Quota exhaustion is process-global too: a repeated run (-count=N)
+	// must not inherit the previous run's exhausted accounts.
+	exhaustedMu.Lock()
+	exhaustedAt = map[string]time.Time{}
+	exhaustedMu.Unlock()
 	prev := modelStateDir
 	modelStateDir = func() (string, error) { return dir, nil }
 	modelStateMu.Lock()

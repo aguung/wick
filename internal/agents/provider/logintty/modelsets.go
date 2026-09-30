@@ -23,6 +23,34 @@ import (
 func init() {
 	provider.RegisterModelSets(provider.TypeOMP, cliModelSets{})
 	provider.RegisterModelSets(provider.TypeOpencode, cliModelSets{})
+	provider.AccountPlanLabel = accountPlanLabel
+}
+
+// accountPlanLabel names the plan of the account a refused turn ran on, for
+// "gpt-5.5 tidak tersedia untuk akun ChatGPT free ini". omp only: opencode's
+// auth.json carries no plan. account "" = the provider's single active
+// account (Auto with several is ambiguous → "").
+func accountPlanLabel(ins provider.Instance, prov, account string) string {
+	if ins.Type != provider.TypeOMP || prov == "" {
+		return ""
+	}
+	accts := providerAccounts(ins)[prov]
+	var pick *PoolAccount
+	for i := range accts {
+		if account != "" && accountSegment(accts[i]) == account {
+			pick = &accts[i]
+		}
+	}
+	if account == "" && len(accts) == 1 {
+		pick = &accts[0]
+	}
+	if pick == nil || pick.Plan == "" {
+		return ""
+	}
+	if strings.HasPrefix(prov, "openai-codex") {
+		return "ChatGPT " + pick.Plan
+	}
+	return pick.Plan
 }
 
 // Seams for tests: the CLI model list and the account pool.

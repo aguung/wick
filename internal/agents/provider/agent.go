@@ -87,6 +87,9 @@ type Agent struct {
 	// claude folds input typed mid-turn into its next turn — so six quick
 	// Enters are one turn, not six. None are dropped.
 	pendingQueue []string
+	// turnMsg is the message the current respawn turn started with;
+	// retriedMsg the last one re-run after a quota hit (once per message).
+	turnMsg, retriedMsg string
 	// turnActive is true for RespawnOnSend agents between a respawn and
 	// its turn completing (lifecycle returns to idle). Gates whether a
 	// fresh Send respawns now or just appends to pendingQueue.
@@ -459,6 +462,21 @@ func (a *Agent) Send(text string) error {
 // while the turn ran, respawns once with it. Called from the reader on
 // Done/Error. Runs the respawn in a goroutine so the reader loop (which
 // holds no lock here but is mid-iteration) isn't blocked by the spawn.
+// requeueForRetry puts msg back at the head of the queue so it runs again
+// as the next turn (on the next account after a quota hit). Once per
+// message: a retry that hits the limit again is not retried. Returns
+// whether it was queued.
+func (a *Agent) requeueForRetry(msg string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if msg == "" || a.stopped || a.retriedMsg == msg {
+		return false
+	}
+	a.retriedMsg = msg
+	a.pendingQueue = append([]string{msg}, a.pendingQueue...)
+	return true
+}
+
 func (a *Agent) drainPending() {
 	a.mu.Lock()
 	a.turnActive = false
@@ -582,6 +600,7 @@ func (a *Agent) respawnWithMessage(text string) error {
 	}
 	a.parser = a.cfg.ParserFactory()
 	a.exitReasonSet = false
+	a.turnMsg = text
 
 	log.Debug().Str("message", text).Str("resume_id", resumeID).Msg("agent.respawn: spawning with initial message")
 
@@ -945,6 +964,20 @@ func (a *Agent) run(ctx context.Context) {
 	// when the OS eventually tears the pipe down after process reap.
 	lineCh := make(chan string)
 	watch := newModelTurnWatch(a.cfg.Instance, a.cfg.ModelID)
+	if watch != nil {
+		a.mu.Lock()
+		turnMsg := a.turnMsg
+		a.mu.Unlock()
+		watch.notice = func(msg string) {
+			a.mu.Lock()
+			st := a.store
+			a.mu.Unlock()
+			if st != nil {
+				_ = st.AppendNoticeTurn(msg)
+			}
+		}
+		watch.rotate = func() bool { return a.requeueForRetry(turnMsg) }
+	}
 	go func() {
 		defer close(lineCh)
 		for scanner.Scan() {
