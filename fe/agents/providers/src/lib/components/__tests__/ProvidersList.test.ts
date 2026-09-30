@@ -528,15 +528,27 @@ describe("ProvidersList card header on narrow screens", () => {
     return d;
   }
 
-  it("truncates the name with the full name in title, and keeps the cap on one line", async () => {
+  it("clamps the name to two wrapped lines with the full name in title, and keeps the cap on one line", async () => {
     vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
     render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
     await screen.findByText("omp/a-rather-long-instance-name");
     const name = screen.getAllByTestId("card-name").find((n) => n.textContent === "omp/a-rather-long-instance-name")!;
-    expect(name.className).toContain("truncate");
+    expect(name.className).toContain("line-clamp-2");
+    expect(name.className).toContain("break-all");
     expect(name.className).toContain("min-w-0");
     expect(name.getAttribute("title")).toBe("omp/a-rather-long-instance-name");
-    expect(name.parentElement!.parentElement!.className).toContain("min-w-0");
+    const titleCol = name.parentElement!.parentElement!;
+    expect(titleCol.className).toContain("min-w-0");
+    expect(titleCol.className).toContain("flex-1");
+    // The actions never wrap under the title: the header row does not wrap
+    // and the button group does not shrink.
+    const header = titleCol.parentElement!;
+    expect(header.className).not.toContain("flex-wrap");
+    expect((titleCol.nextElementSibling as HTMLElement).className).toContain("shrink-0");
+    // Cap + info icon sit on their own row under the name.
+    const cap = titleCol.querySelector('[data-testid="card-cap"]')!;
+    expect(cap.parentElement!.contains(titleCol.querySelector('[data-testid="one-account-badge"]'))).toBe(true);
+    expect(cap.parentElement!.contains(name)).toBe(false);
     for (const cap of screen.getAllByTestId("card-cap")) {
       expect(cap.className).toContain("whitespace-nowrap");
       expect(cap.className).toContain("shrink-0");
@@ -548,7 +560,7 @@ describe("ProvidersList card header on narrow screens", () => {
     render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
     await screen.findByText("omp/a-rather-long-instance-name");
     const [omp, opencode] = screen.getAllByTestId("one-account-badge");
-    expect(omp.textContent).toBe("i");
+    expect(omp.querySelector('svg[data-icon="info"] circle')).not.toBeNull();
     expect(omp.getAttribute("title")).toBe("One instance = one omp profile. It can hold several accounts; omp rotates between them.");
     expect(omp.getAttribute("aria-label")).toBe(omp.getAttribute("title"));
     expect(opencode.getAttribute("title")).toBe("One instance = one data folder. Add a second account of a provider as an extra account folder.");

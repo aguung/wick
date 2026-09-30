@@ -562,10 +562,11 @@
   {/if}
 {/snippet}
 
-<!-- Round "i" beside an account-isolated type: what one instance holds.
+<!-- Info icon (circled "i") beside an account-isolated type: what one instance holds.
      Hover shows the title; a tap toggles a small popover (touch screens
-     never show a title). -->
-{#snippet accountHintIcon(key: string, type: string, testid: string)}
+     never show a title). `align` is the edge the popover hangs from, so it
+     opens into the card instead of past its edge. -->
+{#snippet accountHintIcon(key: string, type: string, testid: string, align: "left" | "right")}
   {@const hint = accountHint(type)}
   <span class="relative inline-flex shrink-0">
     <button
@@ -574,15 +575,21 @@
       title={hint}
       aria-label={hint}
       aria-expanded={hintOpen === key}
-      class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-white-400 dark:border-navy-600 text-[10px] font-semibold leading-none text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600"
+      class="inline-flex h-4 w-4 items-center justify-center rounded-full text-black-600 dark:text-black-700 hover:text-black-800 dark:hover:text-black-500"
       onclick={(e) => {
         e.stopPropagation();
         hintOpen = hintOpen === key ? null : key;
       }}
       onblur={() => { if (hintOpen === key) hintOpen = null; }}
-    >i</button>
+    >
+      <svg data-icon="info" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true" class="h-4 w-4">
+        <circle cx="8" cy="8" r="6.3" />
+        <path d="M8 7.3v3.6" />
+        <circle cx="8" cy="5" r="0.35" fill="currentColor" />
+      </svg>
+    </button>
     {#if hintOpen === key}
-      <span role="tooltip" data-testid={`${testid}-popover`} class="absolute right-0 top-full z-20 mt-1 w-56 max-w-[calc(100vw-3rem)] rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2.5 py-1.5 text-[11px] font-normal text-black-800 dark:text-black-600 shadow-lg">{hint}</span>
+      <span role="tooltip" data-testid={`${testid}-popover`} class="absolute {align === 'left' ? 'left-0' : 'right-0'} top-full z-20 mt-1 w-56 max-w-[calc(100vw-3rem)] rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2.5 py-1.5 text-[11px] font-normal text-black-800 dark:text-black-600 shadow-lg">{hint}</span>
     {/if}
   </span>
 {/snippet}
@@ -681,9 +688,9 @@
           {#if isWick(p)}
             {@const ready = (wickInfo?.count ?? 0) > 0}
             <div class="rounded-xl border border-green-500 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-2 flex flex-col">
-              <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center gap-2"><ProviderIcon value="wick" class="w-5 h-5 shrink-0" /><p class="text-base font-semibold text-black-900 dark:text-white-100">Wick</p></div>
-                <span class="rounded-full bg-green-100 dark:bg-green-900 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">Built-in</span>
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex min-w-0 flex-1 items-center gap-2"><ProviderIcon value="wick" class="w-5 h-5 shrink-0" /><p class="min-w-0 line-clamp-2 break-all text-base font-semibold text-black-900 dark:text-white-100">Wick</p></div>
+                <span class="shrink-0 whitespace-nowrap rounded-full bg-green-100 dark:bg-green-900 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">Built-in</span>
               </div>
               <p class="text-xs text-black-700 dark:text-black-600">Runs inside wick — no CLI, no PATH setup.</p>
               <div class="flex items-center justify-between text-xs">
@@ -735,16 +742,19 @@
           {@const conn = connections[connectionKey(p.Instance.Type, p.Instance.Name)]}
           {@const mbin = !p.Instance.Binary ? managedByType[p.Instance.Type] : undefined}
           <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-3">
-            <!-- Wraps on narrow screens: the actions drop under the title
-                 instead of being pushed off the card by a long name. -->
-            <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+            <!-- The actions keep the top-right corner at every width; the
+                 name wraps (two lines at most) and the cap + info icon sit
+                 on their own row, so nothing fights the buttons for room. -->
+            <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2 min-w-0">
-                  <ProviderIcon value={p.Instance.Type} class="w-5 h-5 shrink-0" />
-                  <p data-testid="card-name" title={`${p.Instance.Type}/${p.Instance.Name}`} class="min-w-0 truncate text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
+                <div class="flex items-start gap-2 min-w-0">
+                  <ProviderIcon value={p.Instance.Type} class="w-5 h-5 shrink-0 mt-0.5" />
+                  <p data-testid="card-name" title={`${p.Instance.Type}/${p.Instance.Name}`} class="min-w-0 line-clamp-2 break-all text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
+                </div>
+                <div class="mt-1 flex items-center gap-1.5">
                   <span data-testid="card-cap" class={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
                   {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
-                    {@render accountHintIcon(`card-${p.Instance.Type}-${p.Instance.Name}`, p.Instance.Type, "one-account-badge")}
+                    {@render accountHintIcon(`card-${p.Instance.Type}-${p.Instance.Name}`, p.Instance.Type, "one-account-badge", "left")}
                   {/if}
                 </div>
                 {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
@@ -1168,7 +1178,7 @@
           <div data-testid="add-account-store" class="rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-3 py-2 space-y-2">
             <div class="flex items-center justify-between gap-2">
               <span class="text-xs font-medium text-black-800 dark:text-black-600">{formType === "omp" ? "omp profile" : "Data dir"}</span>
-              {@render accountHintIcon("add", formType, "add-account-hint")}
+              {@render accountHintIcon("add", formType, "add-account-hint", "right")}
             </div>
             {#if formStoreOverride}
               <input
