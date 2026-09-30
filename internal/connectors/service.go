@@ -996,6 +996,32 @@ func (s *Service) SaveAccount(ctx context.Context, connectorID, wickUserID, exte
 	return s.repo.UpsertAccount(ctx, acc, row.MultiAccount)
 }
 
+// SaveAccountTokens is SaveAccount for flows that also carry a refresh
+// token and expiry (OAuth MCP per-user connect). Same MultiAccount upsert
+// rules as SaveAccount.
+func (s *Service) SaveAccountTokens(ctx context.Context, connectorID, wickUserID, externalUserID, displayName, accessToken, refreshToken string, expiresAt *time.Time) error {
+	row, err := s.repo.Get(ctx, connectorID)
+	if err != nil {
+		return err
+	}
+	acc := &entity.ConnectorAccount{
+		ConnectorID:    connectorID,
+		WickUserID:     wickUserID,
+		ExternalUserID: externalUserID,
+		DisplayName:    displayName,
+		AccessToken:    accessToken,
+		RefreshToken:   refreshToken,
+		ExpiresAt:      expiresAt,
+		UpdatedAt:      time.Now(),
+	}
+	return s.repo.UpsertAccount(ctx, acc, row.MultiAccount)
+}
+
+// UpdateAccountTokens persists a refreshed token set onto one account.
+func (s *Service) UpdateAccountTokens(ctx context.Context, accountID, accessToken, refreshToken string, expiresAt *time.Time) error {
+	return s.repo.UpdateAccountTokens(ctx, accountID, accessToken, refreshToken, expiresAt)
+}
+
 // DeleteAccount removes one connected account by ID.
 func (s *Service) DeleteAccount(ctx context.Context, accountID string) error {
 	return s.repo.DeleteAccount(ctx, accountID)
@@ -2009,6 +2035,9 @@ func (s *Service) Execute(ctx context.Context, p ExecuteParams) (*ExecuteResult,
 		}
 	}
 	cctx.SetCallerUserID(callerUID)
+	if acct != nil {
+		cctx.SetAccountID(acct.ID)
+	}
 	// Names, so an op can tell the model who wrote something instead of
 	// quoting a uuid at it.
 	if s.userName != nil {
