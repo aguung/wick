@@ -288,10 +288,10 @@ func saveProviderDetail(c *tool.Ctx) {
 	if t == provider.TypeOMP || t == provider.TypeOpencode {
 		keys := []string{"extra_mcp_servers"}
 		if t == provider.TypeOpencode {
-			keys = append(keys, "opencode_model", "opencode_allow_hosted")
+			keys = append(keys, "opencode_model", "opencode_allow_hosted", "load_external_skills")
 		}
 		if provider.SupportsServerMode(t) {
-			keys = append(keys, "server_mode", "server_idle_minutes", "load_external_skills")
+			keys = append(keys, "server_mode", "server_idle_minutes")
 		}
 		for _, k := range keys {
 			if _, present := c.R.Form[k]; !present {

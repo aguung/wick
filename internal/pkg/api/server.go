@@ -39,6 +39,7 @@ import (
 	agentproject "github.com/yogasw/wick/internal/agents/project"
 	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/provider/managedbin"
+	ompprovider "github.com/yogasw/wick/internal/agents/provider/omp"
 	"github.com/yogasw/wick/internal/agents/provider/oomscore"
 	opencodeprovider "github.com/yogasw/wick/internal/agents/provider/opencode"
 	wickprovider "github.com/yogasw/wick/internal/agents/provider/wick"
@@ -50,6 +51,7 @@ import (
 	agentskills "github.com/yogasw/wick/internal/agents/skills"
 	"github.com/yogasw/wick/internal/agents/storage"
 	"github.com/yogasw/wick/internal/agents/store"
+	"github.com/yogasw/wick/internal/agents/terminal"
 	"github.com/yogasw/wick/internal/agents/ticket"
 	"github.com/yogasw/wick/internal/agents/ticketprompt"
 	"github.com/yogasw/wick/internal/agents/todoprompt"
@@ -739,6 +741,16 @@ func NewServer() *Server {
 		return wb, wa, func() { g.ReleaseScope(unit) }
 	}
 	upgrade.Register("provider binary installs", managedbin.Default.InflightCount)
+	// Web terminals (gotty) run their command in the same memory scope an
+	// agent spawn gets; gotty and everything under it share one scope.
+	terminal.Default.Wrap = func(bin string, args []string) (string, []string, func()) {
+		g := agentsFactory.MemGuardLoader()
+		if g == nil {
+			return bin, args, func() {}
+		}
+		wb, wa, unit := g.Wrap(bin, args, "terminal", int(time.Now().UnixNano()%1_000_000))
+		return wb, wa, func() { g.ReleaseScope(unit) }
+	}
 	agentsFactory.ToolMemoryLoader = func() int {
 		v, _ := strconv.Atoi(configsSvc.GetOwned("agents", "tool_memory_max_mb"))
 		return v
@@ -830,6 +842,9 @@ func NewServer() *Server {
 	// (which revokes them on exit) is built before the delegation service
 	// (which issues the sub-agent ones) — one issuer, shared by both.
 	mcpScopedTokens := mcp.NewScopedTokens()
+	// omp revokes its own per-session tokens (they live as long as the
+	// session's RPC process, not one turn).
+	ompprovider.SetMCPTokenRevoker(func(token string) { mcpScopedTokens.Revoke(token) })
 
 	preemptIdle := configsSvc.GetOwned("agents", "preempt_idle") != "false"
 	agentsPool = agentpool.New(agentpool.PoolConfig{
@@ -3407,6 +3422,9 @@ func (s *Server) Run(ctx context.Context, port int) error {
 		// After the pool: its turns are gone, so the shared opencode
 		// servers have no one left to serve and must not outlive wick.
 		opencodeprovider.ShutdownServers()
+		ompprovider.ShutdownServers()
+		// Web terminals are shells on this host: never leave one behind.
+		_ = terminal.Default.Shutdown(context.Background())
 		if s.pluginReloader != nil {
 			s.pluginReloader.Stop()
 		}
@@ -3641,6 +3659,9 @@ func (s *Server) drainForUpgrade(logger *zerolog.Logger, httpSrv *http.Server, b
 		_ = httpSrv.Close()
 		<-shutdownDone
 	}
+	// A web terminal the dropped websocket did not already end (opened,
+	// never attached) is killed here rather than left to its gotty timeout.
+	_ = terminal.Default.Shutdown(context.Background())
 	// Stop the workflow subsystem explicitly. Its Stop() had no caller at
 	// all before this path existed, so every restart cut running workflows
 	// off mid-node; here the runs above have already finished, and this only
@@ -3651,6 +3672,7 @@ func (s *Server) drainForUpgrade(logger *zerolog.Logger, httpSrv *http.Server, b
 	// Every turn has drained by now; the shared opencode servers go with
 	// this process rather than lingering beside its successor.
 	opencodeprovider.ShutdownServers()
+	ompprovider.ShutdownServers()
 	if s.pluginReloader != nil {
 		s.pluginReloader.Stop()
 	}

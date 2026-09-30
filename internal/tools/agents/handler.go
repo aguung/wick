@@ -439,6 +439,13 @@ func Register(r tool.Router) {
 	r.POST("/api/providers/{type}/{name}/logintty/apikey", apiProviderAPIKeySet)
 	r.GET("/api/providers/{type}/{name}/logintty/ws", apiProviderLoginTTYWS)
 
+	// Web terminal (gotty): one allowlisted command under the instance
+	// env, 127.0.0.1 only, reached through wick's proxy. Admin-only.
+	r.GET("/api/providers/{type}/{name}/terminal", apiProviderTerminalStatus)
+	r.POST("/api/providers/{type}/{name}/terminal", apiProviderTerminalStart)
+	r.POST("/api/providers/{type}/{name}/terminal/{id}/close", apiProviderTerminalClose)
+	r.GET("/api/providers/{type}/{name}/terminal/{id}/{path...}", apiProviderTerminalProxy)
+
 	// Git source control (session cwd, multi-repo).
 	registerSCM(r)
 

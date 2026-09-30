@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sendModeNote } from "../sendmode";
   import CollapsibleSection from "$lib/components/CollapsibleSection.svelte";
   import { onMount } from "svelte";
   import { ConfirmDialog, KvList, Breadcrumb, Modal, Select, Button, TextInput, type BreadcrumbItem } from "@wick-fe/common-ui";
@@ -23,6 +24,7 @@
   import { UsageReport } from "@wick-fe/common-ui";
   import ReconnectPanel from "$lib/components/ReconnectPanel.svelte";
   import ManagedBinaryPanel from "$lib/components/ManagedBinaryPanel.svelte";
+  import TerminalPanel from "$lib/components/TerminalPanel.svelte";
   import LiveModelsPanel from "$lib/components/LiveModelsPanel.svelte";
 
 
@@ -817,6 +819,10 @@
 
     {#if type === "omp" || type === "opencode"}
       <ManagedBinaryPanel {base} {type} collapsible />
+      <!-- A terminal is a shell on the host: admin-only, like editing. -->
+      {#if !readOnly}
+        <TerminalPanel {base} {type} {name} />
+      {/if}
     {/if}
 
     <!-- Everything below edits the instance. A non-admin still SEES it —
@@ -952,7 +958,11 @@
                   </p>
                 {/if}
                 {#if f.Key === "server_mode" && fieldValues[f.Key] !== "true"}
-                  <p data-testid="run-per-turn-note" class="mt-1.5 text-[11px] text-black-700 dark:text-black-600">Server mode is off: every turn starts its own opencode run process (slower, more memory per turn).</p>
+                  <p data-testid="run-per-turn-note" class="mt-1.5 text-[11px] text-black-700 dark:text-black-600">Server mode is off: every turn starts its own {type === "omp" ? "omp -p" : "opencode run"} process (slower, more memory per turn; messages sent mid-turn queue for the next turn).</p>
+                {/if}
+                {#if f.Key === "send_mode"}
+                  {@const note = sendModeNote(type, fieldValues[f.Key] ?? "", fieldValues["server_mode"] === "true")}
+                  <p data-testid="send-mode-support" data-level={note.level} class="mt-1.5 rounded-lg px-3 py-2 text-[11px] {note.level === 'changed' ? 'border border-cau-400 bg-cau-100 dark:bg-cau-400/20 text-black-900 dark:text-white-100' : 'bg-white-200 dark:bg-navy-700 text-black-800 dark:text-white-300'}">{note.text}</p>
                 {/if}
                 {#if f.Key === "opencode_model" && !(fieldValues[f.Key] ?? "").trim()}
                   <p data-testid="opencode-model-missing" class="mt-1.5 text-[11px] text-neg-400">No model set — spawns on this instance are refused until you pick one (or a session pins one).</p>
