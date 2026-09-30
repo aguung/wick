@@ -74,7 +74,7 @@
             <p class="text-[11px] font-mono text-black-700 dark:text-black-600 truncate">{a.email}</p>
           {/if}
           {#if a.plan || a.org}
-            <p class="text-[11px] text-black-700 dark:text-black-600">{[a.plan ? `Plan: ${prettyPlan(a.plan)}` : "", a.org].filter(Boolean).join(" · ")}</p>
+            <p class="text-[11px] text-black-700 dark:text-black-600">{[a.plan ? `Plan: ${prettyPlan(a.plan, a.provider)}` : "", a.org].filter(Boolean).join(" · ")}</p>
           {/if}
           {#if a.status === "disabled"}
             <p class="text-[11px] text-neg-400">{a.disabledCause}{fmt(a.disabledAt) ? ` (since ${fmt(a.disabledAt)})` : ""} — log in again to restore</p>

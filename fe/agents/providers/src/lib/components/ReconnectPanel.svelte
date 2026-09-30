@@ -197,11 +197,14 @@
   let accountRows = $derived.by(() => {
     if (!status) return [] as { label: string; value: string }[];
     const a = status.account;
+    // omp/opencode set authMethod to the pool provider id (openai-codex,
+    // anthropic…); the other types are single-provider, so the type is it.
+    const provider = type === "omp" || type === "opencode" ? a.authMethod : type;
     return [
       { label: "Auth method", value: a.authMethod },
       { label: "Email", value: a.email },
       { label: "Organization", value: a.org },
-      { label: "Plan", value: prettyPlan(a.plan) },
+      { label: "Plan", value: prettyPlan(a.plan, provider) },
     ].filter((r) => r.value !== "");
   });
 </script>

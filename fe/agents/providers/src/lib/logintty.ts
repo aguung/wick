@@ -417,8 +417,10 @@ export function fmtResetsIn(resetsAt: string, nowMs: number): string {
 }
 
 /* prettyPlan renders the raw subscription type the way the CLI shows
-   it ("Claude team", "Claude max"); non-claude plans pass through. */
-export function prettyPlan(plan: string): string {
+   it ("Claude team", "ChatGPT free"). The brand follows the account's
+   provider: "" / claude / anthropic* → Claude, openai* / codex* →
+   ChatGPT; any other provider shows the raw plan. */
+export function prettyPlan(plan: string, provider = ""): string {
   switch (plan) {
     case "":
       return "";
@@ -428,8 +430,12 @@ export function prettyPlan(plan: string): string {
     case "pro":
     case "max":
     case "team":
-    case "enterprise":
-      return `Claude ${plan}`;
+    case "enterprise": {
+      const p = provider.toLowerCase();
+      if (p === "" || p === "claude" || p.startsWith("anthropic")) return `Claude ${plan}`;
+      if (p.startsWith("openai") || p.startsWith("codex")) return `ChatGPT ${plan}`;
+      return plan;
+    }
     default:
       return plan;
   }
