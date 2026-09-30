@@ -522,3 +522,27 @@ func TestMarkRunningClaimsOnce(t *testing.T) {
 		t.Fatalf("second claim = %v, want errNotQueued", err)
 	}
 }
+
+// Run's own claim: a dispatcher that took the queued row between Create
+// and Run's MarkRunning owns it; Run must yield rather than execute too.
+func TestClaimForRunYieldsToADispatcherThatWon(t *testing.T) {
+	r := testRepo(t)
+	s := &Service{Repo: r}
+	ctx := context.Background()
+	row := seedDelegation(t, r, "q1", "root-1", entity.DelegationQueued, 0)
+	if res, ok := s.claimForRun(ctx, row); !ok || res != nil {
+		t.Fatalf("uncontended claim = (%+v, %v), want (nil, true)", res, ok)
+	}
+
+	row2 := seedDelegation(t, r, "q2", "root-1", entity.DelegationQueued, 0)
+	if err := r.MarkRunning(ctx, "q2"); err != nil { // the dispatcher wins
+		t.Fatal(err)
+	}
+	res, ok := s.claimForRun(ctx, row2)
+	if ok {
+		t.Fatal("lost claim reported as won: the delegation would run twice")
+	}
+	if res == nil || res.Status != entity.DelegationRunning || res.DelegationID != "q2" {
+		t.Fatalf("result = %+v, want running q2", res)
+	}
+}

@@ -562,9 +562,8 @@ func (s *Service) Run(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
-	// errNotQueued is the normal case for a row that never waited.
-	if err := s.Repo.MarkRunning(ctx, id); err != nil && !errors.Is(err, errNotQueued) {
-		log.Warn().Err(err).Str("delegation", id).Msg("delegation: mark running failed")
+	if res, ok := s.claimForRun(ctx, row); !ok {
+		return res, nil
 	}
 	row.Status = entity.DelegationRunning
 	if mode == ModeAsync {
@@ -572,6 +571,37 @@ func (s *Service) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	return s.execute(ctx, row, profile, effTags)
+}
+
+// claimForRun is Run's MarkRunning. The row was created queued, so a
+// dispatcher poked by a sibling finish (or an interrupt) can take it
+// between Create and here; the status guard is the claim, and losing it
+// means this call must not execute too. ok=false returns what the row is
+// now instead. A storage error other than a lost claim is logged and Run
+// carries on, as before.
+func (s *Service) claimForRun(ctx context.Context, row *entity.AgentDelegation) (*Result, bool) {
+	err := s.Repo.MarkRunning(ctx, row.ID)
+	if err == nil {
+		return nil, true
+	}
+	if !errors.Is(err, errNotQueued) {
+		log.Warn().Err(err).Str("delegation", row.ID).Msg("delegation: mark running failed")
+		return nil, true
+	}
+	status := entity.DelegationRunning
+	if cur, gerr := s.Repo.Get(ctx, row.ID); gerr == nil && cur != nil {
+		status = cur.Status
+	}
+	note := "Already started by the queue. The result is NOT in this reply — it will be delivered via " +
+		row.DeliverySink + ". (wick_agent_collect with this delegation_id retrieves it manually if it never arrives.)"
+	if status != entity.DelegationRunning {
+		note = "Left the queue before it started (" + status + ")."
+	}
+	return &Result{
+		DelegationID: row.ID, Profile: row.ProfileKey, Status: status,
+		Mode: ModeBackground, Note: note,
+		WorkspaceNote: row.WorkspaceNote, TurnsNote: row.TurnsNote,
+	}, false
 }
 
 // execute spawns and drives a delegation whose row already exists, is
