@@ -13,6 +13,7 @@
   import ImageEditor from "./ImageEditor.svelte";
   import CapabilityChips from "./CapabilityChips.svelte";
   import CapabilityModal from "./CapabilityModal.svelte";
+  import ProviderIcon from "./ProviderIcon.svelte";
   import type { ComposerCommand, ComposerSelect, ComposerSelectOption, ComposerModelOption } from "./composer-types.js";
   import { matchModelFilter } from "./modelFilter.js";
 
@@ -808,7 +809,7 @@
 
   // rawType extracts the raw provider TYPE segment from an option value
   // ("claude/timA" → "claude"; a bare "wick" → "wick"). Distinct from
-  // provType (which normalizes to a fixed brand set for the icon).
+  // providerBrand (which normalizes to a fixed brand set for the icon).
   function rawType(value: string): string {
     const key = splitModelPin(value).key;
     const slash = key.indexOf("/");
@@ -932,17 +933,6 @@
   function isActive(s: ComposerSelect | undefined): boolean {
     return !!s && !!s.value;
   }
-  // Provider brand from the "type/name" value: claude / codex / gemini / opencode / omp / other.
-  function provType(value: string): "claude" | "codex" | "gemini" | "opencode" | "omp" | "wick" | "other" {
-    const t = (value.split("/")[0] || "").toLowerCase();
-    if (t === "opencode") return "opencode";
-    if (t === "omp") return "omp";
-    if (t.includes("claude")) return "claude";
-    if (t.includes("codex") || t.includes("openai")) return "codex";
-    if (t.includes("gemini")) return "gemini";
-    if (t.includes("wick")) return "wick";
-    return "other";
-  }
 
   // The `/` toolbar button: same command menu as typing `/`. Prefix a `/` at the
   // start (if missing) and open the menu.
@@ -984,25 +974,7 @@
 </script>
 
 {#snippet provIcon(value: string, cls: string)}
-  {@const t = provType(value)}
-  {#if t === "claude" || t === "gemini" || t === "opencode" || t === "omp" || t === "wick"}
-    <!-- Multicolor brand marks served statically from /public/img/providers (embedded). -->
-    <img
-      src={`/public/img/providers/${t}.svg`}
-      alt=""
-      aria-hidden="true"
-      draggable="false"
-      class={`${cls} object-contain`}
-    />
-  {:else if t === "codex"}
-    <!-- OpenAI mark is monochrome: two static files toggled by the app's `.dark`
-         class so it follows the in-app theme, not the OS-only prefers-color-scheme
-         an <img> SVG would otherwise read. -->
-    <img src="/public/img/providers/codex.svg" alt="" aria-hidden="true" draggable="false" class={`${cls} object-contain dark:hidden`} />
-    <img src="/public/img/providers/codex-dark.svg" alt="" aria-hidden="true" draggable="false" class={`${cls} object-contain hidden dark:block`} />
-  {:else}
-    <svg class={cls} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="5.5" r="2.5"/><path d="M3.5 13a4.5 4.5 0 019 0" stroke-linecap="round"/></svg>
-  {/if}
+  <ProviderIcon {value} class={cls} />
 {/snippet}
 
 <!-- The click handler is a mouse-only convenience (click empty space →

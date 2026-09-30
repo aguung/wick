@@ -2,7 +2,7 @@
   import { sendModeNote } from "../sendmode";
   import CollapsibleSection from "$lib/components/CollapsibleSection.svelte";
   import { onMount } from "svelte";
-  import { ConfirmDialog, KvList, Breadcrumb, Modal, Select, Button, TextInput, type BreadcrumbItem } from "@wick-fe/common-ui";
+  import { ConfirmDialog, KvList, Breadcrumb, Modal, Select, Button, TextInput, ProviderIcon, type BreadcrumbItem } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import {
     apiGetProviderDetail,
@@ -720,6 +720,7 @@
   <Breadcrumb items={crumbs} />
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <div class="flex items-center gap-2 flex-wrap">
+      <ProviderIcon value={type} class="w-6 h-6 shrink-0" />
       {#if readOnly}
         <span class="text-lg font-semibold text-black-900 dark:text-white-100">{type}/{name}</span>
       {:else}

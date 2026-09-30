@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ConfirmDialog, Breadcrumb, Modal, Select, Button, KebabMenu, CapabilityChips, CapabilityModal, matchModelFilter, type BreadcrumbItem } from "@wick-fe/common-ui";
+  import { ConfirmDialog, Breadcrumb, ProviderIcon, Modal, Select, Button, KebabMenu, CapabilityChips, CapabilityModal, matchModelFilter, type BreadcrumbItem } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import {
     apiGetWickConfig,
@@ -803,6 +803,7 @@
 <div class="space-y-4">
   <Breadcrumb items={crumbs} />
   <div class="flex items-center gap-2 flex-wrap">
+    <ProviderIcon value="wick" class="w-6 h-6 shrink-0" />
     <span class="text-lg font-semibold text-black-900 dark:text-white-100">wick</span>
     <span class="rounded-full bg-green-100 dark:bg-green-900 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">Built-in</span>
     <span class="rounded-full border border-white-400 dark:border-navy-500 px-2 py-0.5 text-xs font-medium text-black-800 dark:text-black-600">Single instance — no duplicate / rename</span>

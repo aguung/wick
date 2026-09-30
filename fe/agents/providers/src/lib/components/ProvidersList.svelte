@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ConfirmDialog, Modal, Select } from "@wick-fe/common-ui";
+  import { ConfirmDialog, Modal, ProviderIcon, Select } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import AIRouterConfig from "$lib/components/AIRouterConfig.svelte";
   import RecentSpawns from "$lib/components/RecentSpawns.svelte";
@@ -653,7 +653,7 @@
             {@const ready = (wickInfo?.count ?? 0) > 0}
             <div class="rounded-xl border border-green-500 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-2 flex flex-col">
               <div class="flex items-center justify-between gap-2">
-                <p class="text-base font-semibold text-black-900 dark:text-white-100">Wick</p>
+                <div class="flex items-center gap-2"><ProviderIcon value="wick" class="w-5 h-5 shrink-0" /><p class="text-base font-semibold text-black-900 dark:text-white-100">Wick</p></div>
                 <span class="rounded-full bg-green-100 dark:bg-green-900 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">Built-in</span>
               </div>
               <p class="text-xs text-black-700 dark:text-black-600">Runs inside wick — no CLI, no PATH setup.</p>
@@ -709,6 +709,7 @@
             <div class="flex items-start justify-between gap-3">
               <div>
                 <div class="flex items-center gap-2">
+                  <ProviderIcon value={p.Instance.Type} class="w-5 h-5 shrink-0" />
                   <p class="text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
                   <span class={`rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
                   {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
