@@ -995,9 +995,6 @@ func sidebarVMScoped(c *tool.Ctx, activePage, activeSessionID, scopedProjectID s
 	if sidebarOwner == "me" {
 		ids = ownedSessionIDs(c, ids, allSessions, scopedProjectID)
 	}
-	if len(ids) > sidebarCap {
-		ids = ids[:sidebarCap]
-	}
 	lc := make(map[string]view.SessionLifecycleVM)
 	liveBySession := make(map[string]string)
 	for _, e := range globalPool.ActiveSnapshot() {
@@ -1016,6 +1013,12 @@ func sidebarVMScoped(c *tool.Ctx, activePage, activeSessionID, scopedProjectID s
 		entry := lc[root]
 		entry.SubAgent = sub
 		lc[root] = entry
+	}
+	// Running first, then last use — and only then the cap, so a busy
+	// session never falls off the list for being touched eleventh.
+	ids = orderSidebarIDs(ids, allSessions, lc)
+	if len(ids) > sidebarCap {
+		ids = ids[:sidebarCap]
 	}
 	// Read labels concurrently — buffered channel = no goroutine leak.
 	type result struct{ id, label string }
