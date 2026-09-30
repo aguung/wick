@@ -248,12 +248,25 @@ func TestPerUserTwoUsersEachUseTheirOwnToken(t *testing.T) {
 	if got := f.lastCaller(); got != "Bearer at-B" {
 		t.Errorf("call as B used %q", got)
 	}
-	// Explicit @accountId wins over the caller fallback.
-	if err := f.call(t, srv.ID, instanceID, "user-b", byUser["user-a"].ID); err != nil {
-		t.Fatalf("call with explicit account: %v", err)
+	// Explicit @accountId works for the caller's own account…
+	if err := f.call(t, srv.ID, instanceID, "user-a", byUser["user-a"].ID); err != nil {
+		t.Fatalf("call with explicit own account: %v", err)
 	}
 	if got := f.lastCaller(); got != "Bearer at-A" {
 		t.Errorf("explicit account call used %q", got)
+	}
+	// …but never runs as another user's, even when the pool is shared.
+	if err := f.svc.conns.SetAccessPolicy(context.Background(), instanceID, connectors.AccessPolicy{
+		EnableSSO: true, AllowOthersConnectSSO: true, MultiAccount: true, AllowOthersSeeAccounts: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(f.callers)
+	if err := f.call(t, srv.ID, instanceID, "user-b", byUser["user-a"].ID); err == nil {
+		t.Fatal("user-b ran as user-a's account")
+	}
+	if len(f.callers) != before {
+		t.Errorf("a tools/call went out as %q", f.lastCaller())
 	}
 
 	// The shared op list syncs under the caller's account.

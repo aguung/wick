@@ -811,8 +811,10 @@ func (s *Service) accountAccessToken(ctx context.Context, meta *oauthClientMeta,
 var ErrNoOAuthAccount = fmt.Errorf("no connected account")
 
 // callerAccount resolves the account an SSO-mode call runs as: the
-// explicit @accountId the framework already vetted, else the caller's
-// own account (most recently updated first). Never another user's.
+// explicit @accountId when the caller owns it, else the caller's own
+// account (most recently updated first). Never another user's — the
+// framework's visibility gate lets shared-pool / tag-shared accounts
+// through, but seeing an account is not running as it.
 func (s *Service) callerAccount(ctx context.Context, instanceID, accountID, callerUserID string) (*entity.ConnectorAccount, error) {
 	accs, err := s.conns.ListAccounts(ctx, instanceID)
 	if err != nil {
@@ -820,7 +822,7 @@ func (s *Service) callerAccount(ctx context.Context, instanceID, accountID, call
 	}
 	if accountID != "" {
 		for i := range accs {
-			if accs[i].ID == accountID {
+			if accs[i].ID == accountID && callerUserID != "" && accs[i].WickUserID == callerUserID {
 				return &accs[i], nil
 			}
 		}
