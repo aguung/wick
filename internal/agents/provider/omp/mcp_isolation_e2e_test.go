@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // hitRecorder is a minimal MCP-over-HTTP server that logs every request.
@@ -159,7 +160,7 @@ func TestE2EOMPMCPIsolation(t *testing.T) {
 	// the dummy, or the check above proves nothing.
 	cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer ccancel()
-	ctl := exec.CommandContext(cctx, bin, "--profile", "wick-control", "-p", "--mode", "json", "--no-title", "--cwd", ws, "--", "say hi")
+	ctl := safeexec.CommandContext(cctx, bin, "--profile", "wick-control", "-p", "--mode", "json", "--no-title", "--cwd", ws, "--", "say hi")
 	ctl.Dir = ws
 	ctl.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"))
 	_, _ = ctl.CombinedOutput()

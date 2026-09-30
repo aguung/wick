@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,6 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // The test binary doubles as a fake gotty (FAKE_GOTTY=1): it parses the
@@ -53,7 +54,7 @@ func fakeGotty(argv []string) {
 			}
 		}
 	}
-	child := exec.Command("sleep", "300")
+	child := safeexec.Command("sleep", "300")
 	setSession(child)
 	_ = child.Start()
 	fmt.Fprintf(os.Stderr, "child=%d\n", child.Process.Pid)

@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +18,8 @@ import (
 	"time"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // hitRecorder is a minimal MCP-over-HTTP server that logs every request.
@@ -104,7 +105,7 @@ func TestE2EOpencodeMCPIsolation(t *testing.T) {
 	writeJSON(t, filepath.Join(ws, "opencode.json"), oc("oc-proj"))
 	// A git repo, so opencode treats ws as a project and loads its config.
 	for _, a := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.email=p@x", "-c", "user.name=p", "commit", "-qm", "init"}} {
-		cmd := exec.Command("git", a...)
+		cmd := safeexec.Command("git", a...)
 		cmd.Dir = ws
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v %s", a, err, out)
@@ -188,7 +189,7 @@ func TestE2EOpencodeMCPIsolation(t *testing.T) {
 	// dummy, or the check above proves nothing.
 	cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer ccancel()
-	ctl := exec.CommandContext(cctx, bin, "run", "--format", "json", "--model", "openai/gpt-5.5", "say hi")
+	ctl := safeexec.CommandContext(cctx, bin, "run", "--format", "json", "--model", "openai/gpt-5.5", "say hi")
 	ctl.Dir = ws
 	ctl.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(root, "ctl-data"), "OPENCODE_DISABLE_AUTOUPDATE=true")
 	_, _ = ctl.CombinedOutput()
@@ -209,7 +210,7 @@ func TestE2EOpencodeMCPIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dbg := exec.CommandContext(cctx, bin, "debug", "config")
+	dbg := safeexec.CommandContext(cctx, bin, "debug", "config")
 	dbg.Dir = ws
 	dbg.Env = append(append(os.Environ(), ins.Env...), env...)
 	out, err := dbg.Output()

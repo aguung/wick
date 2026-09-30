@@ -31,6 +31,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // DefaultIdleTimeout ends a session nobody has typed into or read from.
@@ -171,7 +173,7 @@ func (m *Manager) Start(req StartRequest) (*Session, error) {
 	if m.Wrap != nil {
 		bin, args, s.release = m.Wrap(bin, args)
 	}
-	cmd := exec.Command(bin, args...)
+	cmd := safeexec.Command(bin, args...)
 	cmd.Env = req.Env
 	cmd.Dir = req.Dir
 	setProcGroup(cmd)
