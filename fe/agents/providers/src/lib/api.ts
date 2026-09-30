@@ -1508,6 +1508,7 @@ interface WireProviderConnection {
   type: string;
   name: string;
   connected?: boolean;
+  account_unknown?: boolean;
   email?: string;
   plan?: string;
   org?: string;
@@ -1529,6 +1530,7 @@ export function normalizeConnections(
     type: c.type ?? "",
     name: c.name ?? "",
     connected: c.connected ?? false,
+    accountUnknown: c.account_unknown ?? false,
     email: c.email ?? "",
     plan: c.plan ?? "",
     org: c.org ?? "",

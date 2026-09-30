@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import ProvidersList from "../ProvidersList.svelte";
 import { expectCardRhythm } from "./cardRhythm.js";
 import * as api from "$lib/api.js";
@@ -272,6 +272,7 @@ describe("ProvidersList connection badges", () => {
       type: "claude",
       name: "claude",
       connected: true,
+      accountUnknown: false,
       email: "dev@abc.com",
       plan: "max",
       org: "",
@@ -528,7 +529,7 @@ describe("ProvidersList card header on narrow screens", () => {
     return d;
   }
 
-  it("clamps the name to two wrapped lines with the full name in title, and keeps the cap on one line", async () => {
+  it("clamps the name to two wrapped lines with the full name in title, with the cap on one line beside it", async () => {
     vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
     render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
     await screen.findByText("omp/a-rather-long-instance-name");
@@ -545,14 +546,34 @@ describe("ProvidersList card header on narrow screens", () => {
     const header = titleCol.parentElement!;
     expect(header.className).not.toContain("flex-wrap");
     expect((titleCol.nextElementSibling as HTMLElement).className).toContain("shrink-0");
-    // Cap + info icon sit on their own row under the name.
+    // Cap + info icon ride right after the name, in a group that never
+    // shrinks, so a long name clamps beside them instead of pushing them.
     const cap = titleCol.querySelector('[data-testid="card-cap"]')!;
-    expect(cap.parentElement!.contains(titleCol.querySelector('[data-testid="one-account-badge"]'))).toBe(true);
-    expect(cap.parentElement!.contains(name)).toBe(false);
+    const group = cap.parentElement!;
+    expect(group.contains(titleCol.querySelector('[data-testid="one-account-badge"]'))).toBe(true);
+    expect(group.contains(name)).toBe(false);
+    expect(group.parentElement).toBe(name.parentElement);
+    expect(group.className).toContain("shrink-0");
     for (const cap of screen.getAllByTestId("card-cap")) {
       expect(cap.className).toContain("whitespace-nowrap");
-      expect(cap.className).toContain("shrink-0");
     }
+  });
+
+  it("says 'checking login' until the connections land, and while the login is unreadable", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
+    let resolve!: (v: Awaited<ReturnType<typeof api.apiGetConnections>>) => void;
+    vi.mocked(api.apiGetConnections).mockReturnValue(new Promise((r) => (resolve = r)));
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    await screen.findByText("omp/a-rather-long-instance-name");
+    expect(screen.getAllByTestId("card-account-loading").length).toBe(2);
+    expect(screen.queryByText(/not logged in/)).toBeNull();
+    resolve([
+      { type: "omp", name: "a-rather-long-instance-name", connected: false, accountUnknown: true, email: "", plan: "", org: "", authMethod: "", usageSupported: true, usageErr: "", usagePending: true, usageChecking: false, usageFetchedAt: "", usageAgeS: 0, usageNextS: 0, windows: [] },
+    ]);
+    // omp could not be read → still checking; opencode has no row → logged out.
+    await waitFor(() => expect(screen.getAllByTestId("card-account-loading").length).toBe(1));
+    expect(screen.getByTestId("conn-checking")).toBeTruthy();
+    expect(screen.getByText(/not logged in/)).toBeTruthy();
   });
 
   it("replaces the one-account text badge with an info icon that explains the type", async () => {

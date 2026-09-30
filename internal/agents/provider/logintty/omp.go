@@ -215,7 +215,9 @@ func parseOMPUsage(out []byte) (*ompUsageJSON, error) {
 func readOMPAccount(env []string) Account {
 	u, err := fetchOMPUsage(env, false)
 	if err != nil || u == nil {
-		return Account{}
+		// A failed `omp usage` is not a logout: omp may be busy, slow to
+		// boot or rate-limited, and the next read usually succeeds.
+		return Account{Unknown: true}
 	}
 	var live []PoolAccount
 	for _, a := range ompPool(u) {

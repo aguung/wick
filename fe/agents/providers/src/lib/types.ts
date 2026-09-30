@@ -293,6 +293,9 @@ export interface ProviderConnection {
   type: string;
   name: string;
   connected: boolean;
+  /* accountUnknown: the login could not be read this time (the CLI probe
+     failed or timed out). Not a logout — shown as "checking". */
+  accountUnknown: boolean;
   email: string;
   plan: string;
   org: string;

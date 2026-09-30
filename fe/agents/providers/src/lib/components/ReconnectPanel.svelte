@@ -52,7 +52,14 @@
   let showReconnect = $derived.by(() => {
     if (!status?.supported) return false;
     if (status.session?.state === "running") return false;
-    return expanded || !connected;
+    return expanded || (!connected && !status.account.unknown);
+  });
+
+  // An unreadable login ("unknown") is retried on its own, so "Checking
+  // login…" settles without the user reloading the page.
+  let unknownRetry: ReturnType<typeof setTimeout> | null = null;
+  onMount(() => () => {
+    if (unknownRetry !== null) clearTimeout(unknownRetry);
   });
 
   async function refresh() {
@@ -61,6 +68,8 @@
     } catch {
       status = null;
     }
+    if (unknownRetry !== null) clearTimeout(unknownRetry);
+    unknownRetry = status?.account.unknown ? setTimeout(() => void refresh(), 5000) : null;
     try {
       usage = await apiLoginTTYUsage(base, type, name);
     } catch {
@@ -97,7 +106,7 @@
     loginChoice = defaultLoginChoice(status?.loginChoices ?? []);
     // A fresh omp/opencode instance needs a provider picked before Login,
     // so open the details (where the picker lives) instead of hiding it.
-    if (status && (status.loginChoices ?? []).length > 0 && !status.account.connected) {
+    if (status && (status.loginChoices ?? []).length > 0 && !status.account.connected && !status.account.unknown) {
       expanded = true;
     }
   });
@@ -251,7 +260,9 @@
     {#if loading}
       <span class="text-xs text-black-700 dark:text-black-600">Checking…</span>
     {:else if status}
-      {#if connected}
+      {#if status.account.unknown}
+        <span data-testid="panel-checking" class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-semibold text-black-700 dark:text-black-500">Checking login…</span>
+      {:else if connected}
         <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-2 py-0.5 text-xs font-semibold text-pos-400">Connected</span>
         {#if status.account.email}
           <span class="hidden sm:inline min-w-0 truncate font-mono text-xs text-black-800 dark:text-black-600">{status.account.email}</span>

@@ -58,6 +58,9 @@
   // its own endpoint after the list paints: the account read is local but
   // the usage probe is a remote call, and the cards must not wait on it.
   let connections = $state<Record<string, ProviderConnection>>({});
+  // false until the first connections request settles: a card without a
+  // connection row then means "not checked yet", not "logged out".
+  let connectionsLoaded = $state(false);
   // Types whose binary wick can install/update itself (omp, opencode),
   // with their status — the cards only INDICATE it (version, update
   // available, a running download); every action lives on Detail. Read
@@ -221,6 +224,8 @@
       connections = next;
     } catch {
       connections = {};
+    } finally {
+      connectionsLoaded = true;
     }
   }
 
@@ -742,27 +747,37 @@
           {@const conn = connections[connectionKey(p.Instance.Type, p.Instance.Name)]}
           {@const mbin = !p.Instance.Binary ? managedByType[p.Instance.Type] : undefined}
           <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-3">
-            <!-- The actions keep the top-right corner at every width; the
-                 name wraps (two lines at most) and the cap + info icon sit
-                 on their own row, so nothing fights the buttons for room. -->
+            <!-- The actions keep the top-right corner at every width. The
+                 cap + info icon ride right after the name (never wrapping
+                 themselves); a long name clamps to two lines beside them
+                 instead of pushing them, or the buttons, away. -->
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
                 <div class="flex items-start gap-2 min-w-0">
                   <ProviderIcon value={p.Instance.Type} class="w-5 h-5 shrink-0 mt-0.5" />
                   <p data-testid="card-name" title={`${p.Instance.Type}/${p.Instance.Name}`} class="min-w-0 line-clamp-2 break-all text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
-                </div>
-                <div class="mt-1 flex items-center gap-1.5">
-                  <span data-testid="card-cap" class={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
-                  {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
-                    {@render accountHintIcon(`card-${p.Instance.Type}-${p.Instance.Name}`, p.Instance.Type, "one-account-badge", "left")}
-                  {/if}
+                  <div class="shrink-0 mt-0.5 flex items-center gap-1.5">
+                    <span data-testid="card-cap" class={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
+                    {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
+                      {@render accountHintIcon(`card-${p.Instance.Type}-${p.Instance.Name}`, p.Instance.Type, "one-account-badge", "left")}
+                    {/if}
+                  </div>
                 </div>
                 {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
                   <!-- Several omp/opencode instances differ only by account,
                        so the account is part of the card's identity. -->
-                  <p data-testid="card-account" class="text-xs mt-0.5 font-mono truncate {conn?.connected ? 'text-black-800 dark:text-black-600' : 'text-neg-400'}">
-                    {conn?.connected ? (conn.email || conn.plan || "logged in") : "not logged in — open Detail to log in"}
-                  </p>
+                  {#if !connectionsLoaded || conn?.accountUnknown}
+                    <!-- Login state comes from a separate request; until it
+                         lands the account is unknown, not logged out. -->
+                    <p data-testid="card-account-loading" class="text-xs mt-0.5 inline-flex items-center gap-1 text-black-700 dark:text-black-600">
+                      <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
+                      checking login…
+                    </p>
+                  {:else}
+                    <p data-testid="card-account" class="text-xs mt-0.5 font-mono truncate {conn?.connected ? 'text-black-800 dark:text-black-600' : 'text-neg-400'}">
+                      {conn?.connected ? (conn.email || conn.plan || "logged in") : "not logged in — open Detail to log in"}
+                    </p>
+                  {/if}
                 {/if}
                 {#if p.Instance.Disabled}
                   <p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">disabled</p>
@@ -860,7 +875,9 @@
                 {/if}
                 <div class="min-w-0 flex-1 space-y-0.5">
                   <div class="flex items-center gap-2 flex-wrap">
-                    {#if conn.connected}
+                    {#if conn.accountUnknown}
+                      <span data-testid="conn-checking" class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-xs font-medium text-black-700 dark:text-black-500">Checking login…</span>
+                    {:else if conn.connected}
                       <span class="rounded bg-pos-100 dark:bg-pos-400/20 px-2 py-0.5 text-xs font-medium text-pos-400">Connected</span>
                     {:else}
                       <span class="rounded bg-neg-100 dark:bg-neg-400/20 px-2 py-0.5 text-xs font-medium text-neg-400">Not connected</span>

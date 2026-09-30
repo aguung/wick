@@ -6,6 +6,8 @@ import { get, post, ApiError } from "./api.js";
 
 export type LoginAccount = {
   connected: boolean;
+  /* unknown: the login could not be read this time — not a logout. */
+  unknown?: boolean;
   email: string;
   plan: string;
   org: string;
@@ -118,6 +120,7 @@ export type LoginTTYFrame = {
 
 interface WireLoginAccount {
   connected?: boolean;
+  unknown?: boolean;
   email?: string;
   plan?: string;
   org?: string;
@@ -164,6 +167,7 @@ interface WireUsage {
 export function mapLoginAccount(w: WireLoginAccount | null | undefined): LoginAccount {
   return {
     connected: w?.connected ?? false,
+    unknown: w?.unknown ?? false,
     email: w?.email ?? "",
     plan: w?.plan ?? "",
     org: w?.org ?? "",
