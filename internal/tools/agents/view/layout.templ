@@ -413,10 +413,13 @@ templ sharedSessionMark(people int) {
 }
 
 // sidebarSessionRow is one conversation in the sidebar. A running row
-// (see IsRunningStatus) gets a green left border on top of its spinner and
-// sorts to the top, so the busy ones are findable at a glance; every other
-// row shows a compact "last update" age instead. The border is always
-// there — transparent when idle — so toggling it live never shifts text.
+// (see IsRunningStatus) gets a green left border and a faint green wash on
+// top of its spinner, and sorts to the top, so the busy ones are findable
+// at a glance without a group header eating a row; every other row shows a
+// compact "last update" age instead, in the board's muted meta style. The
+// border is always there — transparent when idle — so toggling it live
+// never shifts text. The wash is skipped on the open row, whose own
+// highlight already says more.
 //
 // data-session-row / data-last-active / data-running are read by the
 // shell island (fe/agents/shell/src/main.ts), which re-sorts the rows and
@@ -432,11 +435,15 @@ templ sidebarSessionRow(base, id string, sess session.Session, label string, lc 
 		data-session-row={ id }
 		data-last-active={ fmt.Sprint(lastMs) }
 		data-running={ fmt.Sprint(running) }
+		if active {
+			aria-current="page"
+		}
 		title="Drag onto a project to move"
 		class={
 			"flex items-center gap-0 w-full border-l-2 pl-2.5 pr-3 py-2 transition-colors text-left cursor-pointer",
 			templ.KV("border-green-500", running),
 			templ.KV("border-transparent", !running),
+			templ.KV("bg-green-500/5 dark:bg-green-500/10", running && !active),
 			templ.KV("bg-white-300 dark:bg-navy-600", active),
 			templ.KV("hover:bg-white-200 dark:hover:bg-navy-600/60", !active),
 		}
@@ -461,7 +468,7 @@ templ sidebarSessionRow(base, id string, sess session.Session, label string, lc 
 		<span
 			data-session-age={ id }
 			class={
-				"ml-2 shrink-0 whitespace-nowrap tabular-nums text-[11px] text-black-600 dark:text-black-700",
+				"ml-2 shrink-0 whitespace-nowrap tabular-nums text-xs text-black-600 dark:text-black-700",
 				templ.KV("hidden", running),
 			}
 		>{ sidebarAgeLabel(lastMs) }</span>

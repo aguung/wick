@@ -100,15 +100,26 @@ describe("sidebar rows", () => {
     expect(a.dataset["running"]).toBe("true");
     expect(a.classList.contains("border-green-500")).toBe(true);
     expect(a.classList.contains("border-transparent")).toBe(false);
+    expect(a.classList.contains("bg-green-500/5")).toBe(true);
     expect(a.querySelector("[data-session-age]")!.classList.contains("hidden")).toBe(true);
     expect(a.dataset["lastActive"]).toBe(String(now));
 
     // Finishing shows the age again, reading "now".
     expect(applyRowStatus(a, "working", "idle", now + 1000)).toBe(true);
     expect(a.classList.contains("border-transparent")).toBe(true);
+    expect(a.classList.contains("bg-green-500/5")).toBe(false);
     const age = a.querySelector<HTMLElement>("[data-session-age]")!;
     expect(age.classList.contains("hidden")).toBe(false);
     expect(age.textContent).toBe("now");
+  });
+
+  test("the open row gets the accent but not the wash", () => {
+    const list = mount(row("a", 1));
+    const a = list.querySelector<HTMLElement>('[data-session-row="a"]')!;
+    a.setAttribute("aria-current", "page");
+    applyRowStatus(a, undefined, "working", 1_000_000_000);
+    expect(a.classList.contains("border-green-500")).toBe(true);
+    expect(a.classList.contains("bg-green-500/5")).toBe(false);
   });
 
   test("a replayed idle row keeps its age and needs no re-sort", () => {

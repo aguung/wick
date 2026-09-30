@@ -7,8 +7,10 @@
 
 import { relativeAge, isRunningStatus, sortRows, touchesActivity } from "./sidebarOrder.js";
 
+/* MIRRORS the running classes in layout.templ sidebarSessionRow. */
 const RUNNING_BORDER = "border-green-500";
 const IDLE_BORDER = "border-transparent";
+const RUNNING_WASH = ["bg-green-500/5", "dark:bg-green-500/10"];
 
 function rowsIn(list: HTMLElement): HTMLElement[] {
   return Array.from(list.querySelectorAll<HTMLElement>(":scope > [data-session-row]"));
@@ -44,6 +46,11 @@ export function applyRowStatus(
   row.dataset["running"] = String(running);
   row.classList.toggle(RUNNING_BORDER, running);
   row.classList.toggle(IDLE_BORDER, !running);
+  // The open row keeps its own highlight; a wash on top would muddy it.
+  const wash = running && row.getAttribute("aria-current") !== "page";
+  for (const c of RUNNING_WASH) {
+    row.classList.toggle(c, wash);
+  }
   if (touchesActivity(prevStatus, status)) {
     row.dataset["lastActive"] = String(nowMs);
     changed = true;
