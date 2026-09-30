@@ -97,11 +97,14 @@
   // as old processes finish).
   function schedule(): void {
     if (timer) clearTimeout(timer);
+    // load() awaits before it gets here; after unmount it must not re-arm.
+    if (destroyed) return;
     timer = setTimeout(() => void load(), isRunning(data?.job ?? null) ? 500 : 15000);
   }
 
+  let destroyed = false;
   onMount(() => void load());
-  onDestroy(() => { if (timer) clearTimeout(timer); if (justDoneTimer) clearTimeout(justDoneTimer); });
+  onDestroy(() => { destroyed = true; if (timer) clearTimeout(timer); if (justDoneTimer) clearTimeout(justDoneTimer); });
 
   async function act(key: string, f: () => Promise<unknown>): Promise<void> {
     busy = key;

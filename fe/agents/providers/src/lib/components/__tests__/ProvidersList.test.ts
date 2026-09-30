@@ -595,3 +595,23 @@ describe("ProvidersList card header on narrow screens", () => {
     expect(screen.queryByTestId("one-account-badge-popover")).toBeNull();
   });
 });
+
+describe("ProvidersList unmount", () => {
+  it("does not keep following a download after unmount", async () => {
+    let resolve!: (v: { types: mb.ManagedBinary[]; isAdmin: boolean }) => void;
+    vi.mocked(mb.apiManagedList).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    const { unmount } = render(ProvidersList, { props: { onNavigate: vi.fn(), onOpenSession: vi.fn(), base: "" } });
+    await waitFor(() => expect(mb.apiManagedList).toHaveBeenCalled());
+    unmount();
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const running = mb.normalizeManaged({
+      type: "omp", enabled: true,
+      job: { id: "j", type: "omp", tag: "v1", version: "1", activate: false, phase: "download" },
+    } as Parameters<typeof mb.normalizeManaged>[0]);
+    resolve({ types: [running], isAdmin: true });
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    await Promise.resolve();
+    expect(spy.mock.calls.filter((c) => c[1] === 2000)).toHaveLength(0);
+    spy.mockRestore();
+  });
+});

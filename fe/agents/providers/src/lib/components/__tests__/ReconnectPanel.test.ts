@@ -316,3 +316,20 @@ describe("ReconnectPanel", () => {
     expect(screen.getByText("Session (5hr)")).toBeTruthy();
   });
 });
+
+describe("ReconnectPanel unmount", () => {
+  it("does not re-arm the unknown-login retry after unmount", async () => {
+    let resolve!: (v: LoginTTYStatus) => void;
+    vi.mocked(logintty.apiLoginTTYStatus).mockReturnValue(new Promise((r) => { resolve = r; }));
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage());
+    const { unmount } = render(ReconnectPanel, { props: { base: "/tools/agents", type: "claude", name: "main" } });
+    unmount();
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const st = makeStatus();
+    resolve({ ...st, account: { ...st.account, unknown: true } });
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    await Promise.resolve();
+    expect(spy.mock.calls.filter((c) => c[1] === 5000)).toHaveLength(0);
+    spy.mockRestore();
+  });
+});

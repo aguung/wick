@@ -61,7 +61,10 @@
   // An unreadable login ("unknown") is retried on its own, so "Checking
   // login…" settles without the user reloading the page.
   let unknownRetry: ReturnType<typeof setTimeout> | null = null;
+  // refresh() awaits before re-arming; after unmount it must not.
+  let destroyed = false;
   onMount(() => () => {
+    destroyed = true;
     if (unknownRetry !== null) clearTimeout(unknownRetry);
   });
 
@@ -72,7 +75,7 @@
       status = null;
     }
     if (unknownRetry !== null) clearTimeout(unknownRetry);
-    unknownRetry = status?.account.unknown ? setTimeout(() => void refresh(), 5000) : null;
+    unknownRetry = status?.account.unknown && !destroyed ? setTimeout(() => void refresh(), 5000) : null;
     try {
       usage = await apiLoginTTYUsage(base, type, name);
     } catch {

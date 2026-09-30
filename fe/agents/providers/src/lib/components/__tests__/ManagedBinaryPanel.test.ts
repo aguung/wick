@@ -173,3 +173,18 @@ describe("ManagedBinaryPanel - embedded (Detail page Binary section)", () => {
     expect(screen.getByTestId("managed-binary-panel").className).not.toContain("rounded-xl");
   });
 });
+
+describe("ManagedBinaryPanel unmount", () => {
+  it("does not re-arm the poll when unmounted while a load is in flight", async () => {
+    let resolve!: (v: { types: mb.ManagedBinary[]; isAdmin: boolean }) => void;
+    vi.mocked(mb.apiManagedList).mockReturnValue(new Promise((r) => { resolve = r; }));
+    const { unmount } = render(ManagedBinaryPanel, { props: { base: "", type: "omp" } });
+    unmount();
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    resolve({ types: [base], isAdmin: true });
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    await Promise.resolve();
+    expect(spy.mock.calls.filter((c) => c[1] === 15000 || c[1] === 500)).toHaveLength(0);
+    spy.mockRestore();
+  });
+});

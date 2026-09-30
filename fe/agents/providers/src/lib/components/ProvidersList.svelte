@@ -78,9 +78,12 @@
     }
     // Follow a running download so the card's progress stays live.
     if (managedTimer) clearTimeout(managedTimer);
+    // The await above can outlive the component; do not re-arm after it.
+    if (managedDestroyed) return;
     if (Object.values(managedByType).some((m) => isRunning(m.job))) managedTimer = setTimeout(() => void loadManagedTypes(), 2000);
   }
-  $effect(() => () => { if (managedTimer) clearTimeout(managedTimer); });
+  let managedDestroyed = false;
+  $effect(() => () => { managedDestroyed = true; if (managedTimer) clearTimeout(managedTimer); });
   let confirmDelete = $state<ProviderStatusDTO | null>(null);
   let busy = $state<Record<string, boolean>>({});
   // Which account-hint popover is open (keyed per card, "add" for the
