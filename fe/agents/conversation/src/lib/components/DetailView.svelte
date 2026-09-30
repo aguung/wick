@@ -277,6 +277,7 @@
   let usageError = $state("");
   let usageRechecking = $state(false);
   let usageRecheckWait = $state(0);
+  let usageWaitTimer: ReturnType<typeof setTimeout> | null = null;
 
   /* Re-check asks the SERVER's cache for a fresh reading — it does not
      bypass anything. A refusal comes back as a wait, which the popover
@@ -288,7 +289,13 @@
     run(refreshComposerUsage(base, activeProvider).pipe(Effect.provide(WickClientLayer)))
       .then((res) => {
         const r = normalizeUsageRefresh(res);
-        if (!r.accepted) usageRecheckWait = r.waitS;
+        if (!r.accepted) {
+          usageRecheckWait = r.waitS;
+          // The wait is a moment in time, not a state: clear it once it
+          // has passed so the button reads as ready again.
+          if (usageWaitTimer !== null) clearTimeout(usageWaitTimer);
+          usageWaitTimer = setTimeout(() => { usageRecheckWait = 0; usageWaitTimer = null; }, Math.max(1, r.waitS) * 1000);
+        }
       })
       .catch(() => { usageError = "Could not re-check usage."; })
       .finally(() => {
@@ -2568,6 +2575,7 @@
             usage={usageData}
             onUsageRefresh={recheckUsage}
             usageRefreshing={usageRechecking}
+            usageRecheckWait={usageRecheckWait}
             onOpenUsage={openUsageFromContext}
           />
           <Composer

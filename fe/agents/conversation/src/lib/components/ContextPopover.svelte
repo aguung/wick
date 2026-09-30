@@ -65,13 +65,15 @@
     /** Ask the usage cache for a fresh reading (it may decline). */
     onUsageRefresh?: () => void;
     usageRefreshing?: boolean;
+    /** Seconds the server said to wait when it declined the last click. */
+    usageRecheckWait?: number;
     /** Close this panel and open /usage for the per-account detail. */
     onOpenUsage?: () => void;
   };
 
   let {
     open, data, live = null, loading, error, onRefresh, onCompact, compacting, onClose,
-    usage = null, onUsageRefresh, usageRefreshing = false, onOpenUsage,
+    usage = null, onUsageRefresh, usageRefreshing = false, usageRecheckWait = 0, onOpenUsage,
   }: Props = $props();
 
   /* The windows the usage line summarises: the account this session runs
@@ -409,6 +411,9 @@
             {#if usage.accounts.length > 1}<span class="text-black-600 dark:text-black-700"> · {usage.accounts.length} accounts</span>{/if}
           {/if}
         </span>
+        {#if usageRecheckWait > 0}
+          <span data-testid="context-usage-wait" class="shrink-0 text-[10px] text-black-600 dark:text-black-700" title="A probe now would land inside a cooldown, so it was not sent">wait {usageRecheckWait}s</span>
+        {/if}
         {#if usage.supported && onUsageRefresh}
           <button
             type="button"
@@ -416,7 +421,7 @@
             aria-label="Re-check usage"
             title="Re-check usage"
             class="shrink-0 rounded px-1 text-black-700 hover:bg-white-200 disabled:opacity-50 dark:text-black-600 dark:hover:bg-navy-800"
-            disabled={usageRefreshing || usage.checking || usage.nextS > 0}
+            disabled={usageRefreshing || usage.checking}
             onclick={onUsageRefresh}
           ><span class={usageRefreshing || usage.checking ? "inline-block animate-spin" : ""}>↻</span></button>
         {/if}

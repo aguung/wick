@@ -414,7 +414,7 @@ describe("ContextPopover — the hover readout holds its height", () => {
         compacting: false, onClose: () => {}, onOpenUsage, onUsageRefresh,
         usage: {
           provider: "omp/yoga", supported: true, reason: "", account: null, error: "", pending: false,
-          checking: false, fetchedAt: "", ageS: 0, nextS: 0, canManage: false, rotation: "",
+          checking: false, fetchedAt: "", ageS: 0, nextS: 8, canManage: false, rotation: "",
           windows: [{ key: "five_hour", utilization: 50, resetsAt: "", observedAt: "" }],
           accounts: [
             { id: "a", label: "a", provider: "p", email: "", plan: "", status: "active", error: "", noUsage: false, current: false,
@@ -425,6 +425,8 @@ describe("ContextPopover — the hover readout holds its height", () => {
         },
       },
     });
+    // nextS is a snapshot taken when the reading was served; it must not
+    // leave the button dead after the cooldown has passed.
     const line = screen.getByTestId("context-usage");
     // The session's own account, not the instance headline.
     expect(line.textContent).toContain("93%");

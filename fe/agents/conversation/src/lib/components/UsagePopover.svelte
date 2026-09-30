@@ -294,7 +294,7 @@
             type="button"
             data-testid="usage-recheck"
             class="rounded px-1.5 py-0.5 text-[11px] text-link-400 hover:bg-white-300 dark:hover:bg-navy-600 disabled:opacity-50"
-            disabled={rechecking || data.checking || data.nextS > 0}
+            disabled={rechecking || data.checking}
             title="Check this account's usage now"
             onclick={onRecheck}
           >{rechecking || data.checking ? "Checking…" : "Re-check"}</button>
