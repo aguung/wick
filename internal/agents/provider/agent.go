@@ -90,6 +90,12 @@ type Agent struct {
 	// turnMsg is the message the current respawn turn started with;
 	// retriedMsg the last one re-run after a quota hit (once per message).
 	turnMsg, retriedMsg string
+	// modelOverride replaces cfg.ModelID once an auto-retry moved this
+	// agent off a refused model (modelretry.go); modelRetryMsg is the
+	// message being retried, modelRetries/modelTried its retries so far.
+	modelOverride, modelRetryMsg string
+	modelRetries                 int
+	modelTried                   []string
 	// turnActive is true for RespawnOnSend agents between a respawn and
 	// its turn completing (lifecycle returns to idle). Gates whether a
 	// fresh Send respawns now or just appends to pendingQueue.
@@ -388,7 +394,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		MaxTurns:         a.cfg.MaxTurns,
 		IdleTimeout:      a.cfg.IdleTimeout,
 		ThinkingTokens:   a.cfg.ThinkingTokens,
-		ModelID:          a.cfg.ModelID,
+		ModelID:          a.spawnModelIDLocked(),
 		MemGuard:         a.cfg.MemGuard,
 		SpawnSeq:         nextSpawnSeq(),
 		ToolMemoryMaxMB:  a.cfg.ToolMemoryMaxMB,
@@ -621,7 +627,7 @@ func (a *Agent) respawnWithMessage(text string) error {
 		MaxTurns:         a.cfg.MaxTurns,
 		IdleTimeout:      a.cfg.IdleTimeout,
 		ThinkingTokens:   a.cfg.ThinkingTokens,
-		ModelID:          a.cfg.ModelID,
+		ModelID:          a.spawnModelIDLocked(),
 		MemGuard:         a.cfg.MemGuard,
 		SpawnSeq:         nextSpawnSeq(),
 		ToolMemoryMaxMB:  a.cfg.ToolMemoryMaxMB,
@@ -965,7 +971,10 @@ func (a *Agent) run(ctx context.Context) {
 	// the orphaned Scan goroutine is still parked; it unparks and exits
 	// when the OS eventually tears the pipe down after process reap.
 	lineCh := make(chan string)
-	watch := newModelTurnWatch(a.cfg.Instance, a.cfg.ModelID)
+	a.mu.Lock()
+	pin := a.spawnModelIDLocked()
+	a.mu.Unlock()
+	watch := newModelTurnWatch(a.cfg.Instance, pin)
 	if watch != nil {
 		a.mu.Lock()
 		turnMsg := a.turnMsg
@@ -1055,6 +1064,10 @@ func (a *Agent) run(ctx context.Context) {
 	// Error event. A one-shot CLI then exits non-zero (opencode run on a
 	// bad model), and that exit is the same failure, not a second one.
 	turnErrored := false
+	// produced: this turn already streamed text or ran a tool, so a model
+	// refusal after it must not re-run the turn (modelretry.go); retried
+	// latches the one re-queue a turn may make.
+	produced, retried := false, false
 	// Separates the assistant messages of one turn (text → tool → text) so
 	// they do not arrive glued together. Per-run state; the loop below is
 	// the only writer.
@@ -1123,6 +1136,10 @@ func (a *Agent) run(ctx context.Context) {
 			if ev.Type == event.TextDelta {
 				ev.Text = joiner.breakBefore(ev.Text) + ev.Text
 			}
+			switch ev.Type {
+			case event.TextDelta, event.ToolUse, event.ToolResult:
+				produced = true
+			}
 
 			switch ev.Type {
 			case event.ToolUse:
@@ -1154,6 +1171,9 @@ func (a *Agent) run(ctx context.Context) {
 			case event.Done, event.Error:
 				if ev.Type == event.Error {
 					turnErrored = true
+					if !retried {
+						retried = a.retryRefusedModel(watch, produced)
+					}
 				}
 				// Turn ended (normally or via error) — always reset
 				// toolInFlight so a crash mid-tool doesn't leave the idle
@@ -1217,6 +1237,8 @@ func (a *Agent) run(ctx context.Context) {
 	}
 
 drained:
+	// A refusal no Error event carried is still owed its notice.
+	a.retryRefusedModel(watch, true)
 	// Reader exited — wait for process so resources are reaped.
 	waitErr := proc.Wait()
 	a.state.MarkIdle()

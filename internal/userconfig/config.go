@@ -264,6 +264,9 @@ type ProviderInstance struct {
 	RunPerTurn         bool `json:"run_per_turn,omitempty"`
 	ServerIdleMinutes  int  `json:"server_idle_minutes,omitempty"`
 	LoadExternalSkills bool `json:"load_external_skills,omitempty"`
+	// AutoRetryModel (omp/opencode) re-runs a turn the account was refused
+	// on the next usable model instead of failing it. Off by default.
+	AutoRetryModel bool `json:"auto_retry_model,omitempty"`
 
 	// MaxConcurrent caps how many parallel spawns this instance may
 	// have running at once. 0 = unlimited (follows the global pool cap).

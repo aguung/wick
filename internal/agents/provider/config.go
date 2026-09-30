@@ -60,6 +60,14 @@ type ServerModeConfig struct {
 	ServerIdleMinutes int  `wick:"key=server_idle_minutes;desc=Minutes the server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = the pool idle timeout (Settings → General, default 2 minutes, same as claude/codex); it cannot be turned off."`
 }
 
+// ModelRetryConfig is the omp/opencode "refused model" fallback switch.
+type ModelRetryConfig struct {
+	AutoRetryModel bool `wick:"bool;key=auto_retry_model;desc=Auto-retry with the next model on access error: when the account is refused the model (model_not_found / no access) before the agent answered, run the same message again on the model that last worked, else the next usable one in the live list — at most 2 retries, with a note in the chat. Off = the turn fails and you pick another model."`
+}
+
+// SupportsAutoRetryModel reports whether t has the refused-model retry.
+func SupportsAutoRetryModel(t Type) bool { return t == TypeOpencode || t == TypeOMP }
+
 // ExternalSkillsConfig is opencode's host-skill switch (omp has none, so
 // it is not offered there rather than silently ignored).
 type ExternalSkillsConfig struct {
@@ -103,6 +111,9 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 			ServerMode:        !ins.RunPerTurn,
 			ServerIdleMinutes: ins.ServerIdleMinutes,
 		})...)
+	}
+	if SupportsAutoRetryModel(ins.Type) {
+		rows = append(rows, pkgentity.StructToConfigs(ModelRetryConfig{AutoRetryModel: ins.AutoRetryModel})...)
 	}
 	if ins.Type == TypeOpencode {
 		rows = append(rows, pkgentity.StructToConfigs(ExternalSkillsConfig{LoadExternalSkills: ins.LoadExternalSkills})...)
@@ -162,6 +173,8 @@ func ApplyInstanceConfigKey(ins *Instance, key, value string) {
 		ins.RunPerTurn = !(value == "true" || value == "on")
 	case "load_external_skills":
 		ins.LoadExternalSkills = value == "true" || value == "on"
+	case "auto_retry_model":
+		ins.AutoRetryModel = value == "true" || value == "on"
 	}
 }
 

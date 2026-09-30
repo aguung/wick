@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // modelwatch.go feeds modelavail.go from real turns: the agent's stdout
@@ -34,6 +35,13 @@ type modelTurnWatch struct {
 	// returns false when the turn was already a retry.
 	rotate  func() bool
 	noticed bool
+
+	// mu guards what the reader loop reads from another goroutine (see
+	// refusal): the model and whether this turn was refused it, with the
+	// plan the refusal named.
+	mu      sync.Mutex
+	refused bool
+	plan    string
 }
 
 // AccountPlanLabel names the plan of a provider account for messages
@@ -98,7 +106,39 @@ func (w *modelTurnWatch) learnModel(line string) {
 			model = p[1] + "/" + model
 		}
 	}
+	w.mu.Lock()
 	w.model, w.key = model, modelPrefix(model)
+	w.mu.Unlock()
+}
+
+// takeRefusal reports the model this turn was refused and its availability
+// key, once: a second call (another Error event of the same turn, or the
+// reader's exit) sees ok=false, so a refusal is acted on a single time.
+func (w *modelTurnWatch) takeRefusal() (model, key string, ok bool) {
+	if w == nil {
+		return "", "", false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ok = w.refused && w.model != ""
+	w.refused = false
+	return w.model, w.key, ok
+}
+
+// announceRefusal posts the "not available — pick another model" line.
+// The plan lookup may exec the CLI (omp usage, cached): never on the line
+// reader's goroutine.
+func (w *modelTurnWatch) announceRefusal() {
+	w.mu.Lock()
+	ins, model, plan, say := w.ins, w.model, w.plan, w.say
+	w.mu.Unlock()
+	prov, acct := modelPrefix(model), w.account()
+	go func() {
+		if label := AccountPlanLabel(ins, prov, acct); label != "" {
+			plan = label
+		}
+		say(ModelUnavailableMessage(model, plan))
+	}()
 }
 
 // account is the pool account the turn ran on, "" when Auto/unknown.
@@ -162,15 +202,14 @@ func (w *modelTurnWatch) observe(line string) {
 			MarkModelUnavailable(w.ins, w.key, w.model, reason)
 			if !w.noticed {
 				w.noticed = true
-				// The plan lookup may exec the CLI (omp usage, cached):
-				// never on the line reader's goroutine.
-				ins, model, prov, acct, say, plan := w.ins, w.model, modelPrefix(w.model), w.account(), w.say, plan
-				go func() {
-					if label := AccountPlanLabel(ins, prov, acct); label != "" {
-						plan = label
-					}
-					say(ModelUnavailableMessage(model, plan))
-				}()
+				w.mu.Lock()
+				w.refused, w.plan = true, plan
+				w.mu.Unlock()
+				// With auto-retry on, the reader decides what to say: a
+				// retry note, or this same line when no model is left.
+				if !autoRetryModelOn(&w.ins) {
+					w.announceRefusal()
+				}
 			}
 		}
 		return

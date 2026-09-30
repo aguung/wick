@@ -256,10 +256,12 @@
     server_mode: "Server mode",
     server_idle_minutes: "Server idle (minutes)",
     load_external_skills: "Load Claude/Codex skills",
+    auto_retry_model: "Auto-retry with the next model on access error",
   };
   const SWITCH_TESTIDS: Record<string, string> = {
     server_mode: "server-mode-toggle",
     load_external_skills: "load-skills-toggle",
+    auto_retry_model: "auto-retry-model-toggle",
   };
 
   let simpleFields = $derived(data ? data.ConfigFields.filter((f) => isSimpleField(f) && !isModelField(f)) : []);

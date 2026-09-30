@@ -293,6 +293,9 @@ func saveProviderDetail(c *tool.Ctx) {
 		if provider.SupportsServerMode(t) {
 			keys = append(keys, "server_mode", "server_idle_minutes")
 		}
+		if provider.SupportsAutoRetryModel(t) {
+			keys = append(keys, "auto_retry_model")
+		}
 		for _, k := range keys {
 			if _, present := c.R.Form[k]; !present {
 				continue

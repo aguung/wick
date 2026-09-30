@@ -541,6 +541,20 @@ describe("ProviderDetail - server mode + Load Claude/Codex skills toggles", () =
     expect(server.getAttribute("aria-checked")).toBe("false");
     expect(screen.getByTestId("run-per-turn-note")).toBeTruthy();
   });
+
+  it("renders auto_retry_model as a labelled switch, off by default", async () => {
+    const d = makeDetail();
+    d.Instance = { ...d.Instance, Type: "omp", Name: "o" };
+    d.ConfigFields = [
+      { Key: "auto_retry_model", Value: "false", Type: "bool", Options: "", IsSecret: false, Description: "retry", Required: false },
+    ];
+    vi.mocked(api.apiGetProviderDetail).mockResolvedValue(d);
+    render(ProviderDetail, { props: { ...defaultProps, type: "omp", name: "o" } });
+    await fireEvent.click(await screen.findByText("Configuration"));
+    const sw = await screen.findByTestId("auto-retry-model-toggle");
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("field-label-auto_retry_model").textContent).toBe("Auto-retry with the next model on access error");
+  });
 });
 
 describe("ProviderDetail - layout", () => {

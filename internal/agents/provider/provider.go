@@ -102,6 +102,10 @@ type Instance struct {
 	RunPerTurn         bool
 	ServerIdleMinutes  int
 	LoadExternalSkills bool
+	// AutoRetryModel (omp/opencode): a turn refused its model before the
+	// agent produced anything runs again on the next usable model (see
+	// modelretry.go). Off = the turn just fails, as before.
+	AutoRetryModel bool
 
 	// Hooks holds the user's enable/disable intent per hook event
 	// (PreToolUse, SessionStart, …). Spawners read this on every
@@ -1004,6 +1008,7 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 			ins.ExtraMCPServers = raw.ExtraMCPServers
 			ins.LiveModels, ins.LiveModelFilter, ins.LiveModelDefault = boolOr(raw.LiveModels, true), raw.LiveModelFilter, raw.LiveModelDefault
 			ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills = raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills
+			ins.AutoRetryModel = raw.AutoRetryModel
 			if t == TypeOpencode && ins.OpencodeConfig == nil {
 				ins.OpencodeConfig = &OpencodeConfig{}
 			}
@@ -1087,6 +1092,7 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 	raw.ExtraMCPServers = ins.ExtraMCPServers
 	raw.LiveModels, raw.LiveModelFilter, raw.LiveModelDefault = boolPtr(ins.LiveModels), ins.LiveModelFilter, ins.LiveModelDefault
 	raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills = ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills
+	raw.AutoRetryModel = ins.AutoRetryModel
 	if ins.OpencodeConfig != nil {
 		raw.OpencodeModel = ins.OpencodeConfig.Model
 		raw.OpencodeAllowHosted = boolPtr(ins.OpencodeConfig.AllowHosted)
