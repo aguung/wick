@@ -257,6 +257,7 @@
     server_idle_minutes: "Server idle (minutes)",
     load_external_skills: "Load Claude/Codex skills",
     auto_retry_model: "Auto-retry with the next model on access error",
+    auth_from: "Use login of",
   };
   const SWITCH_TESTIDS: Record<string, string> = {
     server_mode: "server-mode-toggle",
@@ -910,7 +911,16 @@
                     <span class="rounded-full bg-green-100 dark:bg-green-900 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 dark:text-green-300">stored</span>
                   {/if}
                 </div>
-                {#if (f.Type === "dropdown" || f.Type === "select") && f.Options}
+                {#if f.Key === "auth_from"}
+                  <!-- Owners it may take the login from (same type, not
+                       sharing themselves); "" = its own login. -->
+                  <Select
+                    ariaLabel={f.Key}
+                    value={fieldValues[f.Key] ?? ""}
+                    options={[{ label: "Its own login", value: "" }, ...(f.Options ?? "").split("|").map((o) => o.trim()).filter(Boolean).map((o) => ({ label: o, value: o }))]}
+                    onChange={(v) => { fieldValues[f.Key] = v; }}
+                  />
+                {:else if (f.Type === "dropdown" || f.Type === "select") && f.Options}
                   <Select
                     ariaLabel={f.Key}
                     value={fieldValues[f.Key] ?? ""}
@@ -967,6 +977,11 @@
                 {#if f.Key === "opencode_allow_hosted" && fieldValues[f.Key] === "true"}
                   <p data-testid="opencode-hosted-warning" class="mt-1.5 rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">
                     Hosted opencode models are ON: every prompt, file and tool output of sessions on this instance is sent to opencode's servers.
+                  </p>
+                {/if}
+                {#if f.Key === "auth_from" && type === "opencode" && (fieldValues[f.Key] ?? "") !== ""}
+                  <p data-testid="auth-from-race-warning" class="mt-1.5 rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">
+                    opencode has no lock on a shared auth.json: concurrent turns on instances sharing a ChatGPT login may occasionally hit a token-refresh race.
                   </p>
                 {/if}
                 {#if f.Key === "server_mode" && fieldValues[f.Key] !== "true"}

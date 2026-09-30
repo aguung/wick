@@ -296,6 +296,7 @@ func saveProviderDetail(c *tool.Ctx) {
 		if provider.SupportsAutoRetryModel(t) {
 			keys = append(keys, "auto_retry_model")
 		}
+		keys = append(keys, "auth_from")
 		for _, k := range keys {
 			if _, present := c.R.Form[k]; !present {
 				continue

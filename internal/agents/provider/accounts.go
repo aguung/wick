@@ -201,7 +201,15 @@ var accountEnvKeys = map[Type][]string{
 //
 // This is what the login TTY, the account probe and the usage probe hand
 // around, so they resolve the same store the spawner does.
-func AccountEnv(ins Instance) []string {
+//
+// A sharer (AuthFrom) resolves to its owner's store: its login IS the
+// owner's, so account, usage and login read and write there, and the
+// usage probe is the owner's (same identity).
+func AccountEnv(ins Instance) []string { return OwnAccountEnv(authOwnerOrSelf(ins)) }
+
+// OwnAccountEnv is AccountEnv without following AuthFrom: the instance's
+// own store (its terminal opens its own profile / data dir).
+func OwnAccountEnv(ins Instance) []string {
 	keys := accountEnvKeys[ins.Type]
 	if len(keys) == 0 {
 		return ins.Env

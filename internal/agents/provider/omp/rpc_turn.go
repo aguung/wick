@@ -47,8 +47,9 @@ func newRPCManager() *cliserver.Manager[*rpcConn] {
 	return m
 }
 
-// ShutdownServers kills every omp RPC process (wick shutdown / upgrade).
-func ShutdownServers() { rpcServers.Shutdown() }
+// ShutdownServers kills every omp RPC process and auth broker (wick
+// shutdown / upgrade).
+func ShutdownServers() { rpcServers.Shutdown(); ShutdownBrokers() }
 
 // revoker is the pool's RevokeMCPToken (SetMCPTokenRevoker); nil = tokens
 // just expire at their TTL.

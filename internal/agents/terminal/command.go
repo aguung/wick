@@ -95,7 +95,7 @@ func GottyArgs(s Spec) []string {
 // config overrides blanked the same way a spawn blanks them. Any GOTTY_*
 // var is dropped: gotty reads every flag from env too.
 func Env(ins provider.Instance) []string {
-	env := append(envscrub.ScrubOSEnv(), provider.AccountEnv(ins)...)
+	env := append(envscrub.ScrubOSEnv(), provider.OwnAccountEnv(ins)...)
 	if ins.Type == provider.TypeOpencode {
 		env = append(env, "OPENCODE_CONFIG=", "OPENCODE_CONFIG_DIR=")
 	}

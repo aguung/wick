@@ -182,9 +182,16 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		}
 	}
 
+	// A sharer (AuthFrom) reads its owner's login through omp's auth
+	// broker; see broker.go. Released once the turn is over.
+	brokerVars, releaseBroker, err := brokerEnv(ctx, ins, opt, bin)
+	if err != nil {
+		return nil, fmt.Errorf("omp instance %s: %w", ins.Name, err)
+	}
+
 	soul, overlay := writeSoul(opt), writeOverlay(opt)
 	if useServer(ins, s.ExtraArgs, opt.ExtraArgs) {
-		return s.spawnRPC(ctx, opt, ins, bin, soul, overlay, mcpVars)
+		return s.spawnRPC(ctx, opt, ins, bin, soul, overlay, mcpVars, brokerVars, releaseBroker)
 	}
 	// Server mode off: a plain -p run, and an RPC process the instance no
 	// longer uses stops once it has no turn.
@@ -201,6 +208,7 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	// and PI_CONFIG_FILES adds config overlays — neither may leak in from
 	// wick's own environment.
 	cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR=", "PI_CONFIG_FILES=")
+	cmd.Env = append(cmd.Env, brokerVars...)
 	hideConsole(cmd)
 	procgroup.Apply(cmd)
 
@@ -208,11 +216,13 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		releaseBroker()
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		releaseBroker()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	cmd.Stderr = os.Stderr
@@ -221,6 +231,7 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		Str("resume", opt.ResumeID).Str("profile", profile).Msg("agents.spawn: starting (omp)")
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		releaseBroker()
 		return nil, fmt.Errorf("start omp: %w", err)
 	}
 	opt.MemGuard.BiasChild(cmd.Process.Pid)
@@ -229,8 +240,12 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 
 	log.Info().Int("pid", cmd.Process.Pid).Str("scope", scopeUnit).Msg("agents.spawn: started (omp)")
 	proc := &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}
-	if s.RevocableToken {
-		proc.onExit = func() { revokeLater(s.MCPToken) }
+	revoke := s.RevocableToken
+	proc.onExit = func() {
+		releaseBroker()
+		if revoke {
+			revokeLater(s.MCPToken)
+		}
 	}
 	return proc, nil
 }

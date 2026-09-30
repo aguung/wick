@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -54,6 +55,10 @@ type LoginTTYStatusResponse struct {
 	// APIKeys are the API-key login choices (omp/opencode), each marked
 	// set when the instance Env already carries its var.
 	APIKeys []logintty.APIKeyProvider `json:"api_keys,omitempty"`
+	// AuthFrom is the instance whose login this one uses (omp/opencode
+	// shared login); account and usage above are that owner's, and the
+	// card hides login / logout / add-account.
+	AuthFrom string `json:"auth_from,omitempty"`
 }
 
 func loginTTYSessionDTO(s *logintty.Session) *LoginTTYSessionDTO {
@@ -71,6 +76,25 @@ func loginTTYSessionDTO(s *logintty.Session) *LoginTTYSessionDTO {
 
 // findLoginInstance resolves the {type}/{name} path pair to an
 // instance, writing the 404 itself on miss.
+// authOwnerName is the owner of ins's shared login, "" when it has its own.
+func authOwnerName(ins provider.Instance) string {
+	if o, ok := provider.AuthOwner(ins); ok {
+		return o.Name
+	}
+	return ""
+}
+
+// refuseSharer answers 409 for a login write on an instance that uses
+// another's login: it is done on the owner.
+func refuseSharer(c *tool.Ctx, ins provider.Instance) bool {
+	owner := authOwnerName(ins)
+	if owner == "" {
+		return false
+	}
+	c.JSON(http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s uses the login of %s — log in or out there", ins.Name, owner)})
+	return true
+}
+
 func findLoginInstance(c *tool.Ctx) (provider.Instance, bool) {
 	t := provider.Type(c.PathValue("type"))
 	name := c.PathValue("name")
@@ -109,6 +133,7 @@ func apiProviderLoginTTYStatus(c *tool.Ctx) {
 		AccountStore: accountStoreLabel(ins),
 		Accounts:     statusAccounts(ins),
 		APIKeys:      logintty.APIKeyProviders(ins),
+		AuthFrom:     authOwnerName(ins),
 	})
 }
 
@@ -245,7 +270,7 @@ func apiProviderLoginTTYStart(c *tool.Ctx) {
 	if !ok {
 		return
 	}
-	if !requireProviderManage(c, ins.Type, ins.Name) {
+	if !requireProviderManage(c, ins.Type, ins.Name) || refuseSharer(c, ins) {
 		return
 	}
 	bin, found := provider.ResolveBinary(ins)

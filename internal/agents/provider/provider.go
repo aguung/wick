@@ -107,6 +107,12 @@ type Instance struct {
 	// modelretry.go). Off = the turn just fails, as before.
 	AutoRetryModel bool
 
+	// AuthFrom (omp/opencode only) is the name of another instance of the
+	// same type that owns the login this one uses; empty = its own login.
+	// Profile, config, soul and sessions stay this instance's own. See
+	// authshare.go.
+	AuthFrom string
+
 	// Hooks holds the user's enable/disable intent per hook event
 	// (PreToolUse, SessionStart, …). Spawners read this on every
 	// Spawn to decide whether to install / remove the per-workspace
@@ -564,6 +570,15 @@ func Save(ins Instance) error {
 		return err
 	}
 	list := pickList(&cfg.Providers, ins.Type)
+	prevAuthFrom := ""
+	for _, raw := range *list {
+		if raw.Name == ins.Name {
+			prevAuthFrom = raw.AuthFrom
+		}
+	}
+	if err := applyAuthFromChange(mergeWithDefaults(cfg.Providers), ins, prevAuthFrom); err != nil {
+		return err
+	}
 	updated := false
 	for i := range *list {
 		if (*list)[i].Name == ins.Name {
@@ -644,6 +659,12 @@ func Rename(t Type, oldName, newName string) error {
 	for i := range *list {
 		if (*list)[i].Name == oldName {
 			(*list)[i].Name = newName
+			// Instances using its login follow the new name.
+			for j := range *list {
+				if (*list)[j].AuthFrom == oldName {
+					(*list)[j].AuthFrom = newName
+				}
+			}
 			if err := userconfig.Save(AppName(), cfg); err != nil {
 				return err
 			}
@@ -736,6 +757,11 @@ func Delete(t Type, name string) error {
 		return err
 	}
 	list := pickList(&cfg.Providers, t)
+	for _, raw := range *list {
+		if raw.AuthFrom == name {
+			return fmt.Errorf("instance %s/%s uses the login of %s — clear its \"Use login of\" first", t, raw.Name, name)
+		}
+	}
 	for i := range *list {
 		if (*list)[i].Name == name {
 			*list = append((*list)[:i], (*list)[i+1:]...)
@@ -1009,6 +1035,7 @@ func mergeWithDefaults(c userconfig.ProvidersConfig) []Instance {
 			ins.LiveModels, ins.LiveModelFilter, ins.LiveModelDefault = boolOr(raw.LiveModels, true), raw.LiveModelFilter, raw.LiveModelDefault
 			ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills = raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills
 			ins.AutoRetryModel = raw.AutoRetryModel
+			ins.AuthFrom = raw.AuthFrom
 			if t == TypeOpencode && ins.OpencodeConfig == nil {
 				ins.OpencodeConfig = &OpencodeConfig{}
 			}
@@ -1093,6 +1120,7 @@ func toUserInstance(ins Instance) userconfig.ProviderInstance {
 	raw.LiveModels, raw.LiveModelFilter, raw.LiveModelDefault = boolPtr(ins.LiveModels), ins.LiveModelFilter, ins.LiveModelDefault
 	raw.RunPerTurn, raw.ServerIdleMinutes, raw.LoadExternalSkills = ins.RunPerTurn, ins.ServerIdleMinutes, ins.LoadExternalSkills
 	raw.AutoRetryModel = ins.AutoRetryModel
+	raw.AuthFrom = ins.AuthFrom
 	if ins.OpencodeConfig != nil {
 		raw.OpencodeModel = ins.OpencodeConfig.Model
 		raw.OpencodeAllowHosted = boolPtr(ins.OpencodeConfig.AllowHosted)

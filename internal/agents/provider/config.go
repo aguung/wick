@@ -68,6 +68,12 @@ type ModelRetryConfig struct {
 // SupportsAutoRetryModel reports whether t has the refused-model retry.
 func SupportsAutoRetryModel(t Type) bool { return t == TypeOpencode || t == TypeOMP }
 
+// AuthShareConfig is the omp/opencode shared-login section. The FE renders
+// it as a dropdown of the instances this one may take its login from.
+type AuthShareConfig struct {
+	AuthFrom string `wick:"key=auth_from;desc=Use the login of another instance of the same type instead of logging in here. This instance keeps its own profile, config, soul and sessions; only the credentials are shared (omp: wick runs an auth broker for the owner; opencode: auth.json is linked to the owner's). Empty = its own login. The owner cannot itself use another's login."`
+}
+
 // ExternalSkillsConfig is opencode's host-skill switch (omp has none, so
 // it is not offered there rather than silently ignored).
 type ExternalSkillsConfig struct {
@@ -114,6 +120,18 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 	}
 	if SupportsAutoRetryModel(ins.Type) {
 		rows = append(rows, pkgentity.StructToConfigs(ModelRetryConfig{AutoRetryModel: ins.AutoRetryModel})...)
+	}
+	if SharesAuth(ins.Type) {
+		share := pkgentity.StructToConfigs(AuthShareConfig{AuthFrom: ins.AuthFrom})
+		// A dropdown of the instances it may take the login from ("" =
+		// its own login; the FE adds that choice).
+		if all, err := loadInstances(); err == nil {
+			for i := range share {
+				share[i].Type = "dropdown"
+				share[i].Options = strings.Join(AuthOwnerChoices(all, ins), "|")
+			}
+		}
+		rows = append(rows, share...)
 	}
 	if ins.Type == TypeOpencode {
 		rows = append(rows, pkgentity.StructToConfigs(ExternalSkillsConfig{LoadExternalSkills: ins.LoadExternalSkills})...)
@@ -175,6 +193,8 @@ func ApplyInstanceConfigKey(ins *Instance, key, value string) {
 		ins.LoadExternalSkills = value == "true" || value == "on"
 	case "auto_retry_model":
 		ins.AutoRetryModel = value == "true" || value == "on"
+	case "auth_from":
+		ins.AuthFrom = strings.TrimSpace(value)
 	}
 }
 

@@ -113,7 +113,13 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	// A second account of a provider lives in its own data folder: a pin
 	// naming it (or Auto rotation away from a quota-hit one) runs there —
 	// its auth.json, its sessions, its own server (the key hashes the env).
-	if prov, acct := provider.OpencodeSpawnAccount(ins, opt.ModelID); acct != "" {
+	prov, acct := provider.OpencodeSpawnAccount(ins, opt.ModelID)
+	// A sharer's folder for that account holds a link to its owner's
+	// auth.json (see provider/authshare.go); made here for extra accounts.
+	if err := provider.EnsureOpencodeAuthLink(ins, acct); err != nil {
+		return nil, err
+	}
+	if acct != "" {
 		if acc, aerr := provider.WithOpencodeAccount(ins, acct); aerr == nil {
 			log.Info().Str("provider", prov).Str("account", acct).Msg("agents.spawn: opencode account folder")
 			ins = acc

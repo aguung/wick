@@ -291,4 +291,28 @@ describe("ReconnectPanel", () => {
     const call = vi.mocked(logintty.apiLoginTTYStart).mock.calls.at(-1)!;
     expect([call[0], call[1], call[2], call[4]]).toEqual(["", "opencode", "oc", "new"]);
   });
+
+  it("shared login: names the owner with a link and hides login controls", async () => {
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(
+      makeStatus({
+        authFrom: "oc-main",
+        accountStore: "/data/oc",
+        accounts: [{ id: "openai", provider: "openai", label: "openai", email: "", plan: "", active: true, disabled: false } as never],
+        loginChoices: [{ id: "openai", label: "OpenAI", warning: "", default: true, beta: false } as never],
+        apiKeys: [{ id: "anthropic", label: "Anthropic", env: "ANTHROPIC_API_KEY", set: false }],
+      }),
+    );
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage());
+    render(ReconnectPanel, { props: { base: "/tools/agents", type: "opencode", name: "oc2", defaultExpanded: true } });
+    const note = await screen.findByTestId("panel-shared-login");
+    expect(note.textContent).toContain("Uses the login of");
+    expect(screen.getByTestId("panel-shared-login-owner").getAttribute("href")).toBe("/tools/agents/opencode/oc-main");
+    expect(screen.getByTestId("panel-shared-login-race")).toBeTruthy();
+    expect(screen.queryByTestId("panel-login-choice")).toBeNull();
+    expect(screen.queryByTestId("panel-api-key")).toBeNull();
+    expect(screen.queryByTestId("panel-add-account-folder")).toBeNull();
+    expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+    // Usage (the owner's) still shows.
+    expect(screen.getByText("Session (5hr)")).toBeTruthy();
+  });
 });

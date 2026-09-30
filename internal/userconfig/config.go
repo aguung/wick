@@ -268,6 +268,10 @@ type ProviderInstance struct {
 	// on the next usable model instead of failing it. Off by default.
 	AutoRetryModel bool `json:"auto_retry_model,omitempty"`
 
+	// AuthFrom (omp/opencode) names another instance of the same type whose
+	// login this one uses; empty = its own login. See provider/authshare.go.
+	AuthFrom string `json:"auth_from,omitempty"`
+
 	// MaxConcurrent caps how many parallel spawns this instance may
 	// have running at once. 0 = unlimited (follows the global pool cap).
 	MaxConcurrent int `json:"max_concurrent,omitempty"`

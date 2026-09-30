@@ -43,6 +43,9 @@ export type LoginTTYStatus = {
   /* API-key login choices (omp/opencode); set = the instance Env already
      carries that provider's key var. */
   apiKeys: APIKeyChoice[];
+  /* Instance whose login this one uses (omp/opencode shared login); ""
+     = its own. Account and usage are then the owner's. */
+  authFrom?: string;
 };
 
 export type LoginChoice = {
@@ -151,6 +154,7 @@ interface WireLoginStatus {
     usage?: Array<{ key?: string; utilization?: number; resets_at?: string }> | null;
   }> | null;
   api_keys?: Array<{ id?: string; label?: string; env?: string; set?: boolean }> | null;
+  auth_from?: string;
 }
 
 interface WireUsage {
@@ -217,6 +221,7 @@ export function normalizeLoginStatus(w: WireLoginStatus): LoginTTYStatus {
       usage: (a.usage ?? []).map((x) => ({ key: x.key ?? "", utilization: x.utilization ?? 0, resetsAt: x.resets_at ?? "" })),
     })),
     apiKeys: (w.api_keys ?? []).map((k) => ({ id: k.id ?? "", label: k.label ?? k.id ?? "", env: k.env ?? "", set: k.set ?? false })),
+    authFrom: w.auth_from ?? "",
   };
 }
 

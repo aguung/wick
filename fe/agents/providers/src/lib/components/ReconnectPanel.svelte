@@ -47,10 +47,13 @@
   let loggingOut = $state("");
 
   let connected = $derived(status?.account.connected ?? false);
+  /* Shared login: the owner instance; login controls live there. */
+  let sharedFrom = $derived(status?.authFrom ?? "");
   /* Reconnect shows while collapsed ONLY when a login is actually
      needed; expanded always offers it (deliberate re-login). */
   let showReconnect = $derived.by(() => {
     if (!status?.supported) return false;
+    if (status.authFrom) return false;
     if (status.session?.state === "running") return false;
     return expanded || (!connected && !status.account.unknown);
   });
@@ -299,6 +302,14 @@
            The connect badge lives in the summary row, not repeated here. -->
       <div class="space-y-2">
         <p class="text-[11px] font-semibold tracking-wide text-black-700 dark:text-black-600">ACCOUNT</p>
+        {#if sharedFrom}
+          <p data-testid="panel-shared-login" class="rounded-lg bg-white-200 dark:bg-navy-800 px-3 py-2 text-[11px] text-black-900 dark:text-white-100 break-words">
+            Uses the login of <a href={`${base}/${type}/${encodeURIComponent(sharedFrom)}`} data-testid="panel-shared-login-owner" class="font-mono text-link-400 hover:underline">{sharedFrom}</a> — log in, log out and add accounts there.
+          </p>
+          {#if type === "opencode"}
+            <p data-testid="panel-shared-login-race" class="rounded-lg border border-cau-400 bg-cau-100 dark:bg-cau-400/20 px-3 py-2 text-[11px] text-black-900 dark:text-white-100">Instances sharing a ChatGPT login can occasionally hit a token-refresh race when turns run on both at once; the turn that loses fails and can be retried.</p>
+          {/if}
+        {/if}
         {#each accountRows as row (row.label)}
           <div class="flex items-baseline justify-between gap-4 text-xs">
             <span class="shrink-0 text-black-800 dark:text-black-600">{row.label}</span>
@@ -324,6 +335,9 @@
         {/if}
       </div>
 
+      {#if sharedFrom}
+        <!-- A sharer's accounts are the owner's; managed on the owner. -->
+      {:else}
       {#if (status.accounts ?? []).length > 0}
         <AccountList
           accounts={status.accounts ?? []}
@@ -409,6 +423,8 @@
       {/if}
 
       <!-- USAGE — one block per window: name + %, bar, resets-in -->
+      {/if}
+
       {#if usage && !usage.supported && type === "opencode"}
         <p class="text-[11px] text-black-700 dark:text-black-600">Usage not available — opencode has no usage command.</p>
       {/if}

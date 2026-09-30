@@ -104,13 +104,16 @@ var startRPCFn startFn = startRPC
 
 // spawnRPC runs one turn on the wick session's omp RPC process, starting
 // it (with --resume when the session has one) when there is none.
-func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins provider.Instance, bin, soul, overlay string, mcpVars []string) (provider.Process, error) {
+func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins provider.Instance, bin, soul, overlay string, mcpVars, brokerVars []string, releaseBroker func()) (provider.Process, error) {
 	args := buildRPCArgs(ins, opt, soul, overlay, s.ExtraArgs)
 	env := append(envscrub.ScrubOSEnv(), opt.ExtraEnv...)
 	env = append(env, mcpVars...)
 	// Same as -p: no ~/.claude MCP/config source, no config overlays from
 	// wick's own environment.
 	env = append(env, "CLAUDE_CONFIG_DIR=", "PI_CONFIG_FILES=")
+	// A sharer's broker URL + token: part of the key, so a broker that
+	// came back on another port gets a fresh process.
+	env = append(env, brokerVars...)
 	key := rpcKey(ins.Name, opt.SessionID, s.MCPOwner, bin, opt.Workspace, env, args)
 
 	// A live process serving another omp session than this turn resumes
@@ -142,6 +145,7 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 	addedEnv := provider.MaskSpawnEnv(append(append([]string{}, opt.ExtraEnv...), mcpVars...))
 	if err != nil {
 		if errors.Is(err, cliserver.ErrShuttingDown) || ctx.Err() != nil {
+			releaseBroker()
 			return nil, err
 		}
 		// A process that would not start (no model, not logged in, bad
@@ -149,6 +153,7 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 		// exits on the same error — not the spawn, which the pool would
 		// read as a crash and retry.
 		revokeLater(token)
+		releaseBroker()
 		p := newRPCProcess(addedEnv, bin, args)
 		go func() { p.emit(headerLine("", opt.Workspace)); p.emit(errorLines(err.Error())); p.finish(nil) }()
 		return p, nil
@@ -167,6 +172,7 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 	log.Info().Str("instance", ins.Name).Int("rpc_pid", l.H.Pid()).Bool("started", l.Fresh).
 		Str("resume", opt.ResumeID).Str("cwd", opt.Workspace).Msg("agents.spawn: starting (omp rpc turn)")
 	go func() {
+		defer releaseBroker()
 		defer cancel()
 		p.run(rctx, l, rpcTurnSpec{prompt: opt.InitialMessage, cwd: opt.Workspace, fresh: fresh, account: pinnedAccount(opt)})
 	}()

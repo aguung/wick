@@ -25,7 +25,7 @@ func apiProviderLoginTTYLogout(c *tool.Ctx) {
 	if !ok {
 		return
 	}
-	if !requireProviderManage(c, ins.Type, ins.Name) {
+	if !requireProviderManage(c, ins.Type, ins.Name) || refuseSharer(c, ins) {
 		return
 	}
 	prov := strings.TrimSpace(c.Query("login_provider"))
@@ -57,7 +57,7 @@ func apiProviderAPIKeySet(c *tool.Ctx) {
 		return
 	}
 	ins, ok := findLoginInstance(c)
-	if !ok {
+	if !ok || refuseSharer(c, ins) {
 		return
 	}
 	var body struct {

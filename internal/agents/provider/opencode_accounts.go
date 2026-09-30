@@ -40,8 +40,11 @@ func OpencodeAccountsRoot(ins Instance) (string, error) {
 }
 
 // OpencodeAccountIDs lists the account folders: "main" first, then the
-// extra folders in creation order (a2, a3, …).
+// extra folders in creation order (a2, a3, …). A sharer lists its owner's:
+// WithOpencodeAccount still derives the sharer's own folder, which spawn
+// links to the owner's (EnsureOpencodeAuthLink).
 func OpencodeAccountIDs(ins Instance) []string {
+	ins = authOwnerOrSelf(ins)
 	out := []string{OpencodeMainAccount}
 	root, err := OpencodeAccountsRoot(ins)
 	if err != nil {
@@ -92,6 +95,9 @@ func WithOpencodeAccount(ins Instance, id string) (Instance, error) {
 // NewOpencodeAccount creates the next account folder (0700) and returns
 // its id and the derived instance to log in with.
 func NewOpencodeAccount(ins Instance) (string, Instance, error) {
+	if owner, ok := AuthOwner(ins); ok {
+		return "", ins, fmt.Errorf("opencode instance %s uses the login of %s — add the account there", ins.Name, owner.Name)
+	}
 	root, err := OpencodeAccountsRoot(ins)
 	if err != nil {
 		return "", ins, err
@@ -113,7 +119,7 @@ func NewOpencodeAccount(ins Instance) (string, Instance, error) {
 // OpencodeAuthProviders lists the provider ids logged in to one account
 // folder (auth.json keys only; credential values are never decoded).
 func OpencodeAuthProviders(ins Instance, id string) []string {
-	acc, err := WithOpencodeAccount(ins, id)
+	acc, err := WithOpencodeAccount(authOwnerOrSelf(ins), id)
 	if err != nil {
 		return nil
 	}
@@ -160,7 +166,9 @@ var (
 	exhaustedNow = time.Now
 )
 
+// exhaustedKey is per login: a sharer marks and skips its owner's accounts.
 func exhaustedKey(ins Instance, prov, account string) string {
+	ins = authOwnerOrSelf(ins)
 	return string(ins.Type) + "/" + ins.Name + "/" + prov + "/" + account
 }
 
