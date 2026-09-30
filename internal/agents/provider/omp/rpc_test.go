@@ -313,3 +313,26 @@ func TestRPCProcessKillWithoutTurnDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A result arriving once the turn stopped reading must not block the
+// shared stdout reader.
+func TestTurnSinkDoesNotBlockAfterTurnEnds(t *testing.T) {
+	frames := make(chan []byte, 1)
+	results := make(chan rpcFrame, 1)
+	done := make(chan struct{})
+	sink := turnSink(frames, results, done)
+	close(done)
+	returned := make(chan struct{})
+	go func() {
+		for i := 0; i < 3; i++ {
+			sink(nil, rpcFrame{Type: "session_settled"})
+			sink([]byte("x"), rpcFrame{Type: "message_update"})
+		}
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sink blocked on a full results channel after the turn ended")
+	}
+}

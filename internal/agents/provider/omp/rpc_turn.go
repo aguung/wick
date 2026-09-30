@@ -314,6 +314,27 @@ func (p *rpcProcess) finish(err error) {
 	close(p.done)
 }
 
+// turnSink routes the shared reader's frames to one turn. It runs on the
+// process's stdout reader, so no send may block past the turn's end: a
+// surplus result after the turn stopped reading would wedge every later
+// turn on the same process.
+func turnSink(frames chan<- []byte, results chan<- rpcFrame, done <-chan struct{}) func(line []byte, f rpcFrame) {
+	return func(line []byte, f rpcFrame) {
+		switch f.Type {
+		case "prompt_result", "session_settled":
+			select {
+			case results <- f:
+			case <-done:
+			}
+		default:
+			select {
+			case frames <- line:
+			case <-done:
+			}
+		}
+	}
+}
+
 // run drives one turn to the end. It owns the lease.
 func (p *rpcProcess) run(ctx context.Context, l *cliserver.Lease[*rpcConn], t rpcTurnSpec) {
 	defer l.Release()
@@ -359,17 +380,7 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	// a slow consumer for long (buffered), and emit is the only sink.
 	frames := make(chan []byte, 256)
 	results := make(chan rpcFrame, 4)
-	unsub := c.subscribe(func(line []byte, f rpcFrame) {
-		switch f.Type {
-		case "prompt_result", "session_settled":
-			results <- f
-		default:
-			select {
-			case frames <- line:
-			case <-p.done:
-			}
-		}
-	})
+	unsub := c.subscribe(turnSink(frames, results, p.done))
 	defer unsub()
 	p.emit(headerLine(state.SessionID, t.cwd))
 
