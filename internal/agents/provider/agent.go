@@ -944,9 +944,11 @@ func (a *Agent) run(ctx context.Context) {
 	// the orphaned Scan goroutine is still parked; it unparks and exits
 	// when the OS eventually tears the pipe down after process reap.
 	lineCh := make(chan string)
+	watch := newModelTurnWatch(a.cfg.Instance, a.cfg.ModelID)
 	go func() {
 		defer close(lineCh)
 		for scanner.Scan() {
+			watch.observe(scanner.Text())
 			select {
 			case lineCh <- scanner.Text():
 			case <-ctx.Done():

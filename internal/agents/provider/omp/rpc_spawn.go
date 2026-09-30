@@ -2,9 +2,9 @@ package omp
 
 import (
 	"context"
-	"errors"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -163,8 +163,17 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 		Str("resume", opt.ResumeID).Str("cwd", opt.Workspace).Msg("agents.spawn: starting (omp rpc turn)")
 	go func() {
 		defer cancel()
-		p.run(rctx, l, rpcTurnSpec{prompt: opt.InitialMessage, cwd: opt.Workspace, fresh: fresh})
+		p.run(rctx, l, rpcTurnSpec{prompt: opt.InitialMessage, cwd: opt.Workspace, fresh: fresh, account: pinnedAccount(opt)})
 	}()
 	return p, nil
 }
 
+// pinnedAccount is the account of a picker pin ("<provider>/<n>@<model>"),
+// "" for Auto / a flat model. RPC mode only: `omp -p` has no session to pin,
+// so a -p turn always runs on Auto.
+func pinnedAccount(opt provider.SpawnOptions) string {
+	if p, ok := provider.ResolvePin(opt.Instance, opt.ModelID); ok {
+		return p.Account
+	}
+	return ""
+}

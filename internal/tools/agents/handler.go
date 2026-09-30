@@ -2569,6 +2569,8 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 		Desc    string          `json:"desc,omitempty"`
 		Live    bool            `json:"live,omitempty"`
 		Caps    json.RawMessage `json:"caps,omitempty"`
+		// Unavailable: listed, but this account was refused the model.
+		Unavailable bool `json:"unavailable,omitempty"`
 	}
 	typ := provider.Type(strings.TrimSpace(c.PathValue("type")))
 	name := strings.TrimSpace(c.PathValue("name"))
@@ -2586,11 +2588,40 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 		return out
 	}
 
-	// Level 4: expand a single live set by its entry id (filter stays server-side).
+	fromChoices := func(ms []provider.ModelChoice) []modelDTO {
+		out := make([]modelDTO, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, modelDTO{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps, Unavailable: m.Unavailable})
+		}
+		return out
+	}
+
+	// Grouped levels come from the type's registered ModelSets (wick: live
+	// set → vendor model; omp/opencode: provider → [account] → model).
+	// `?entry=` is an escaped path ("openai-codex/2") of any depth; the
+	// response shape is the same at every level. Errors are non-fatal: an
+	// empty level, the picker shows its empty state.
 	entry := strings.TrimSpace(c.Query("entry"))
-	if entry != "" && ins.Type == provider.TypeWick {
-		c.JSON(http.StatusOK, map[string]any{"models": toDTO(expandLiveWickSet(c.Context(), ins, entry, ""))})
+	sets, grouped := provider.ModelSetsFor(ins.Type)
+	if grouped && entry != "" {
+		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
+		defer cancel()
+		rows, err := sets.Expand(ctx, ins, provider.DecodePath(entry))
+		if err != nil {
+			log.Ctx(c.Context()).Debug().Err(err).Str("entry", entry).Msg("model set expand failed")
+		}
+		c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
 		return
+	}
+	if grouped && ins.Type != provider.TypeWick {
+		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
+		defer cancel()
+		if rows, err := sets.Sets(ctx, ins); err == nil && len(rows) > 0 {
+			c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
+			return
+		}
+		// No grouping for this instance (live models off, not logged in):
+		// the flat list below still applies.
 	}
 
 	// Level 3: the instance's model choices (live sets stay as expandable rows).

@@ -286,10 +286,16 @@ export async function apiLoginTTYStart(
   type: string,
   name: string,
   loginProvider = "",
+  account = "",
 ): Promise<LoginTTYSession | null> {
   // omp/opencode: the OAuth provider picked in the panel. The server checks
   // it against its own allowlist; it never reaches argv unvalidated.
-  const q = loginProvider ? `?login_provider=${encodeURIComponent(loginProvider)}` : "";
+  // opencode `account`: "new" logs in to a fresh data folder (a second
+  // account of a provider it already has), "aN" re-logs that folder.
+  const params = new URLSearchParams();
+  if (loginProvider) params.set("login_provider", loginProvider);
+  if (account) params.set("account", account);
+  const q = params.size ? `?${params.toString()}` : "";
   const r = await post<{ session?: WireLoginSession }>(`${ttyPath(base, type, name)}/start${q}`);
   return mapSession(r?.session);
 }

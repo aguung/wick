@@ -109,6 +109,15 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	if opt.Instance != nil {
 		ins = *opt.Instance
 	}
+	// A second account of a provider lives in its own data folder: a pin
+	// naming it (or Auto rotation away from a quota-hit one) runs there —
+	// its auth.json, its sessions, its own server (the key hashes the env).
+	if prov, acct := provider.OpencodeSpawnAccount(ins, opt.ModelID); acct != "" {
+		if acc, aerr := provider.WithOpencodeAccount(ins, acct); aerr == nil {
+			log.Info().Str("provider", prov).Str("account", acct).Msg("agents.spawn: opencode account folder")
+			ins = acc
+		}
+	}
 	model, inArgs, err := resolveModel(ctx, ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
 	if err != nil {
 		return nil, err

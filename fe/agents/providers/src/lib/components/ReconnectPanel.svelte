@@ -102,10 +102,15 @@
     }
   });
 
-  async function reconnect() {
+  // Also bound directly as an onclick handler, so the argument may be the
+  // click event: only a string names an opencode account folder.
+  async function reconnect(accountArg?: unknown) {
+    const account = typeof accountArg === "string" ? accountArg : "";
     starting = true;
     try {
-      const s = await apiLoginTTYStart(base, type, name, loginChoice);
+      const s = account
+        ? await apiLoginTTYStart(base, type, name, loginChoice, account)
+        : await apiLoginTTYStart(base, type, name, loginChoice);
       if (s) {
         session = s;
         showTerminal = true;
@@ -294,7 +299,7 @@
           {#if type === "omp"}
             <p data-testid="panel-multi-account-note" class="text-[11px] text-black-700 dark:text-black-600">One instance can hold several accounts: omp rotates to the next one automatically when an account hits its usage limit. Separate instances still work if you want accounts kept apart.</p>
           {:else}
-            <p data-testid="panel-multi-provider-note" class="text-[11px] text-black-700 dark:text-black-600">One instance can hold many providers, one login each. For two accounts of the same provider, add a separate instance.</p>
+            <p data-testid="panel-multi-provider-note" class="text-[11px] text-black-700 dark:text-black-600">One instance can hold many providers, one login each. For two accounts of the same provider, use "Second account of a provider" (or a separate instance).</p>
           {/if}
         {/if}
         {#if !status.supported}
@@ -309,17 +314,26 @@
           removing={loggingOut}
           canAdd={status.supported && status.session?.state !== "running"}
           adding={starting}
-          onAdd={reconnect}
+          onAdd={() => void reconnect()}
           onRemove={(prov) => void logoutProvider(prov)}
         >
           {#snippet note()}
             {#if type === "omp"}
               "Add another account" runs the login below again into this same profile. omp has no single-account removal outside its own TUI, so logout here is per provider.
             {:else}
-              One instance can hold many providers (one login each). Two accounts of the same provider need separate instances. "Add another account" logs in to another provider — pick it below, or use an API key.
+              One instance can hold many providers (one login each). "Add another account" logs in to another provider — pick it below, or use an API key. "Second account of a provider" logs in to a new data folder of this instance; the model picker then offers Auto (wick rotates on usage limits) or that account.
             {/if}
           {/snippet}
         </AccountList>
+        {#if type === "opencode" && status.supported && status.session?.state !== "running"}
+          <button
+            type="button"
+            data-testid="panel-add-account-folder"
+            disabled={starting}
+            onclick={() => void reconnect("new")}
+            class="self-start rounded-lg border border-white-400 dark:border-navy-600 px-3 py-1.5 text-xs text-black-900 dark:text-white-100 hover:border-green-500 disabled:opacity-50"
+          >Second account of a provider</button>
+        {/if}
       {/if}
 
       {#if status.supported && (status.loginChoices ?? []).length > 0}

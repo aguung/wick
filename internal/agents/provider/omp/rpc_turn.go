@@ -154,6 +154,46 @@ type rpcTurnSpec struct {
 	// fresh: the wick session has no omp session yet (no resume id) but
 	// the process already served one — start a new omp session first.
 	fresh bool
+	// account pins one OAuth account of the model's provider for the omp
+	// session (`/session pin <n>`); "" = Auto, omp rotates natively.
+	account string
+}
+
+// pinAccount pins account for the omp session before its prompt. omp's RPC
+// `prompt` runs built-in slash commands (their text arrives as
+// command_output frames), and `/session pin` binds an OAuth account of the
+// CURRENT model's provider to this session id — so it is redone after
+// new_session. A pin that does not take (unknown account, single-account
+// provider, older omp) is logged and the turn runs on Auto: a wrong pin
+// must never block the answer.
+func pinAccount(ctx context.Context, c *rpcConn, sessionID, account string) {
+	var out strings.Builder
+	unsub := c.subscribe(func(_ []byte, f rpcFrame) {
+		if f.Type == "command_output" {
+			out.WriteString(f.Text)
+		}
+	})
+	pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	f, err := c.call(pctx, map[string]any{"type": "prompt", "message": "/session pin " + account})
+	cancel()
+	unsub()
+	text := strings.TrimSpace(out.String())
+	if err != nil || !f.Success || !strings.HasPrefix(text, "Pinned ") {
+		log.Warn().Err(err).Str("account", account).Str("omp", firstLineOf(text)).
+			Msg("omp: account pin did not take; this turn runs on Auto")
+		return
+	}
+	c.mu.Lock()
+	c.pinned = sessionID + "#" + account
+	c.mu.Unlock()
+	log.Info().Str("account", account).Msg("omp: account pinned for the session")
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // rpcProcess implements provider.Process (and provider.Injector) for one turn.
@@ -306,7 +346,11 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	c.mu.Lock()
 	c.sessionID = state.SessionID
 	c.turns++
+	needPin := t.account != "" && c.pinned != state.SessionID+"#"+t.account
 	c.mu.Unlock()
+	if needPin {
+		pinAccount(ctx, c, state.SessionID, t.account)
+	}
 
 	// Frames of this turn, in order; the reader goroutine never blocks on
 	// a slow consumer for long (buffered), and emit is the only sink.

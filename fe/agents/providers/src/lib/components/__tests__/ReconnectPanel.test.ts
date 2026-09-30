@@ -278,5 +278,15 @@ describe("ReconnectPanel", () => {
     await fireEvent.click(screen.getByTestId("panel-logout-openrouter"));
     expect(vi.mocked(logintty.apiLoginTTYLogout)).toHaveBeenCalledWith("", "opencode", "oc", "openrouter");
   });
-});
 
+  it("opencode: a second account of a provider logs in to a new data folder", async () => {
+    const row = (id: string) => ({ id, label: id, provider: id, email: "", plan: "", org: "", kind: "oauth", status: "active", disabledCause: "", disabledAt: "" });
+    vi.mocked(logintty.apiLoginTTYStatus).mockResolvedValue(makeStatus({ accountStore: "data dir x", accounts: [row("openai")] }));
+    vi.mocked(logintty.apiLoginTTYUsage).mockResolvedValue(makeUsage({ supported: false, windows: [] }));
+    vi.mocked(logintty.apiLoginTTYStart).mockResolvedValue(null);
+    render(ReconnectPanel, { props: { base: "", type: "opencode", name: "oc", defaultExpanded: true } });
+    await fireEvent.click(await screen.findByTestId("panel-add-account-folder"));
+    const call = vi.mocked(logintty.apiLoginTTYStart).mock.calls.at(-1)!;
+    expect([call[0], call[1], call[2], call[4]]).toEqual(["", "opencode", "oc", "new"]);
+  });
+});

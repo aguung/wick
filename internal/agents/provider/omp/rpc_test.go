@@ -96,6 +96,17 @@ func (f *fakeOMP) serve(in io.Reader) {
 			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
 			close(f.aborted)
 		case "prompt":
+			if msg, _ := c["message"].(string); strings.HasPrefix(msg, "/session pin ") {
+				// omp runs the slash command; its text is a command_output frame.
+				acct := strings.TrimPrefix(msg, "/session pin ")
+				text := "Pinned acct" + acct + " to this session for openai-codex."
+				if acct == "9" {
+					text = `No openai-codex account matches "9".`
+				}
+				f.write(map[string]any{"type": "command_output", "text": text})
+				f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
+				continue
+			}
 			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
 			go f.turn(id, c["message"].(string))
 		default:
@@ -240,5 +251,55 @@ func TestUseServerDefaultsOn(t *testing.T) {
 	}
 	if !provider.SupportsServerMode(provider.TypeOMP) {
 		t.Fatal("omp has no server mode toggle")
+	}
+}
+
+func TestRPCPinAccount(t *testing.T) {
+	f := &fakeOMP{}
+	c := fakeConn(f)
+	defer c.kill()
+	pinAccount(context.Background(), c, "omp-s1", "2")
+	if c.pinned != "omp-s1#2" {
+		t.Fatalf("pin not recorded: %q", c.pinned)
+	}
+	// omp refused the account: nothing recorded, the turn runs on Auto.
+	c.pinned = ""
+	pinAccount(context.Background(), c, "omp-s1", "9")
+	if c.pinned != "" {
+		t.Fatalf("refused pin recorded: %q", c.pinned)
+	}
+}
+
+func TestRPCTurnPinsAccountOncePerSession(t *testing.T) {
+	f := &fakeOMP{}
+	m := cliserver.New[*rpcConn]("omp-test", 1)
+	m.Every = time.Hour
+	defer m.Shutdown()
+	var conn *rpcConn
+	for turn := 0; turn < 2; turn++ {
+		l, err := m.Acquire(context.Background(), cliserver.Spec{Instance: "o", Key: "k"}, func(context.Context) (*rpcConn, error) { conn = fakeConn(f); return conn, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := newRPCProcess(nil, "omp", nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		p.cancel = cancel
+		go func() { defer cancel(); p.run(ctx, l, rpcTurnSpec{prompt: "hi", cwd: "/w", account: "2"}) }()
+		readAll(t, p)
+		if err := p.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	prompts := 0
+	for _, c := range f.cmds {
+		if c == "prompt" {
+			prompts++
+		}
+	}
+	f.mu.Unlock()
+	// 1 pin + 2 real prompts: the pin is not repeated for the same session.
+	if prompts != 3 {
+		t.Fatalf("prompts = %d, want 3 (%v)", prompts, f.cmds)
 	}
 }

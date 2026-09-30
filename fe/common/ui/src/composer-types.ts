@@ -37,6 +37,9 @@ export type ComposerModelOption = {
   /** Vendor-reported capabilities for this model (raw). Present only for rows
       that came from live discovery (live-set expansion); undefined otherwise. */
   caps?: ModelCaps;
+  /** Listed, but the account behind this level was refused it
+      (model_not_found / no access): shown greyed out, not selectable. */
+  unavailable?: boolean;
 };
 
 /* A themed dropdown in the Composer toolbar (provider / project / preset).
@@ -62,9 +65,10 @@ export type ComposerSelect = {
      composer show the vendor's live models without prefetching every
      provider up front.
 
-     For a 4th level (opening a LIVE SET row), it's called again with `opts`
-     identifying the set — `entry` (the set's model id) — and returns that
-     set's expanded models. */
+     Opening a LIVE row (any depth: a wick live set, an omp/opencode provider
+     or account) calls it again with `opts.entry` = the escaped PATH of opened
+     rows (encodePath, e.g. "openai-codex/2"); a leaf picked there is pinned
+     as encodePin(path, model) = "<path>@<model>". */
   loadModels?: (
     optionValue: string,
     opts?: { entry?: string },

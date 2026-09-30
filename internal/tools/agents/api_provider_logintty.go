@@ -231,6 +231,21 @@ func apiProviderLoginTTYStart(c *tool.Ctx) {
 		c.JSON(http.StatusConflict, map[string]string{"error": "binary not found: " + bin})
 		return
 	}
+	// opencode keeps one credential per provider per data folder, so a
+	// second account of a provider logs in to its own folder:
+	// ?account=new creates <data dir>/accounts/aN, ?account=aN re-logs one.
+	if acct := strings.TrimSpace(c.Query("account")); acct != "" && ins.Type == provider.TypeOpencode {
+		var aerr error
+		if acct == "new" {
+			_, ins, aerr = provider.NewOpencodeAccount(ins)
+		} else {
+			ins, aerr = provider.WithOpencodeAccount(ins, acct)
+		}
+		if aerr != nil {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": aerr.Error()})
+			return
+		}
+	}
 	// omp/opencode: which OAuth provider to log in to, picked in the UI.
 	// Validated against an allowlist inside logintty; never raw argv.
 	s, err := loginTTY.StartWith(ins, bin, strings.TrimSpace(c.Query("login_provider")))
@@ -466,7 +481,13 @@ func apiProviderCLIModels(c *tool.Ctx) {
 	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
 	defer cancel()
 	// Served from the per-instance cache (~10 min); ?refresh=1 re-execs.
-	seeds, fetchedAt, err := provider.CachedCLIModels(ctx, ins, c.Query("refresh") == "1")
+	refresh := c.Query("refresh") == "1"
+	if refresh {
+		// "Refresh" is also the operator's retry for models an account was
+		// refused: forget the refusals, keep the last model that worked.
+		provider.ResetModelAvailability(ins)
+	}
+	seeds, fetchedAt, err := provider.CachedCLIModels(ctx, ins, refresh)
 	if err != nil && len(seeds) == 0 {
 		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return

@@ -338,3 +338,68 @@ func TestStartServeRetriesPort(t *testing.T) {
 		t.Fatalf("non-port error retried: calls=%d err=%v", calls, err)
 	}
 }
+
+// Two account folders of one instance each keep their own server: a turn
+// on a2 must not mark main's server stale (they used to kill each other on
+// every alternation), while a config change inside one folder still does.
+func TestManagerAccountFoldersKeepOwnServers(t *testing.T) {
+	fs := &fakeStarter{}
+	m, _ := newTestManager(fs)
+	main := spec(time.Hour)
+	main.dir = "/a"
+	a2 := spec(time.Hour)
+	a2.dir, a2.env = "/a/accounts/a2", []string{"XDG_DATA_HOME=/a/accounts/a2"}
+	for i := 0; i < 3; i++ {
+		for _, sp := range []serverSpec{main, a2} {
+			l, err := m.acquire(context.Background(), sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.release()
+		}
+	}
+	if st, k := fs.counts(); st != 2 || k != 0 {
+		t.Fatalf("alternating accounts: started=%d killed=%d, want 2/0", st, k)
+	}
+	changed := a2
+	changed.env = append([]string{"OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1"}, a2.env...)
+	l, _ := m.acquire(context.Background(), changed)
+	l.release()
+	if st, k := fs.counts(); st != 3 || k != 1 {
+		t.Fatalf("config change in a2: started=%d killed=%d, want 3/1 (only a2's old server)", st, k)
+	}
+}
+
+// A shut-down manager refuses every later lease: tests that share the
+// package-global one must swap in a fresh manager (useFreshServers)
+// instead of shutting the global down, or every later server-mode test in
+// the same process fails to spawn.
+func TestManagerShutdownIsTerminalAndFreshServersIsolates(t *testing.T) {
+	fs := &fakeStarter{}
+	for i := 0; i < 2; i++ { // two tests in a row, same process
+		t.Run("", func(t *testing.T) {
+			useFreshServers(t, fs.start)
+			l, err := servers.acquire(context.Background(), spec(time.Hour))
+			if err != nil {
+				t.Fatalf("acquire after a previous test: %v", err)
+			}
+			l.release()
+		})
+	}
+	m, _ := newTestManager(fs)
+	m.shutdown()
+	if _, err := m.acquire(context.Background(), spec(time.Hour)); err == nil {
+		t.Fatal("a shut-down manager must refuse leases")
+	}
+}
+
+// useFreshServers gives the test its own server manager and restores the
+// package one afterwards (shutting down only the test's).
+func useFreshServers(t *testing.T, start startFunc) {
+	t.Helper()
+	prev := servers
+	m := newManager(start)
+	m.Every = time.Hour
+	servers = m
+	t.Cleanup(func() { m.shutdown(); servers = prev })
+}

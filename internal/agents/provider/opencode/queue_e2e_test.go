@@ -37,7 +37,7 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			// One CLI process at a time: the server this subtest started
 			// goes down before the next subtest.
-			t.Cleanup(servers.shutdown)
+			useFreshServers(t, startServe)
 			ins := provider.Instance{Type: provider.TypeOpencode, Name: "e2e", RunPerTurn: mode.runPerTurn,
 				OpencodeConfig: &provider.OpencodeConfig{DataDir: filepath.Join(dir, "data-e2e"), Model: "opencode/big-pickle", AllowHosted: true}}
 

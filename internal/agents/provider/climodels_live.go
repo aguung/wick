@@ -206,8 +206,7 @@ func LiveDefaultModel(ctx context.Context, ins Instance) string {
 	if err != nil && len(models) == 0 {
 		return strings.TrimSpace(ins.LiveModelDefault)
 	}
-	if list := LiveDefaultFirst(FilterLiveModels(ins, models), ins.LiveModelDefault); len(list) > 0 {
-		return list[0].ID
-	}
-	return ""
+	// Refused models are skipped and the last model that worked wins over
+	// list order (modelwatch.go); with no evidence this is list[0] as before.
+	return pickLiveDefault(ins, LiveDefaultFirst(FilterLiveModels(ins, models), ins.LiveModelDefault))
 }

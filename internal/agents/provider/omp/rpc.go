@@ -48,18 +48,20 @@ const (
 
 // rpcFrame is the envelope fields wick routes on.
 type rpcFrame struct {
-	Type    string          `json:"type"`
-	ID      string          `json:"id"`
-	Command string          `json:"command"`
-	Success bool            `json:"success"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
 	// Error is a string on a failed response, an object
 	// ({message,...}) on prompt_result — see errText.
 	Error json.RawMessage `json:"error"`
-	Data    json.RawMessage `json:"data"`
+	Data  json.RawMessage `json:"data"`
 	// prompt_result
 	AgentInvoked   bool   `json:"agentInvoked"`
 	Status         string `json:"status"`
 	SessionSettled bool   `json:"sessionSettled"`
+	// command_output (a slash command's text)
+	Text string `json:"text"`
 }
 
 // errText is the frame's error as text, whichever shape it came in.
@@ -92,7 +94,9 @@ type rpcConn struct {
 	wmu sync.Mutex
 	w   io.WriteCloser
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// pinned is "<omp session id>#<account>" once `/session pin` took.
+	pinned  string
 	nextID  int
 	pending map[string]chan rpcFrame
 	sub     func(line []byte, f rpcFrame)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -55,7 +56,14 @@ func buildArgs(ins provider.Instance, opt provider.SpawnOptions, soulPath, overl
 	}
 	args = append(args, extra...)
 	args = append(args, opt.ExtraArgs...)
-	args = append(args, provider.ModelArgs(opt, args)...)
+	if m := provider.ModelArgs(opt, args); len(m) > 0 {
+		args = append(args, m...)
+	} else if d := provider.ProvenDefaultModel(ins); d != "" && !slices.Contains(args, "--model") && (opt.Instance == nil || !opt.Instance.UseAIRouter) {
+		// No pin: omp would run its own default (the first listed model,
+		// which may be one this account is refused). Only once wick has
+		// seen a model work or fail does it pick instead.
+		args = append(args, "--model", d)
+	}
 	if opt.ResumeID != "" {
 		args = append(args, "--resume", opt.ResumeID)
 	}

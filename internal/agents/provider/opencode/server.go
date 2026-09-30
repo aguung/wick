@@ -78,6 +78,9 @@ func (s serverSpec) key() string {
 	return s.instance + "/" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// group is the sweep group: one per instance data folder (account).
+func (s serverSpec) group() string { return s.instance + "\x00" + s.dir }
+
 // serverHandle is a started server as the manager sees it.
 type serverHandle struct {
 	url      string
@@ -132,7 +135,11 @@ func (l *lease) waitSlot(ctx context.Context) error { return l.s.l.WaitSlot(ctx)
 // is none (or the previous one died). A failed start is not cached: the
 // next turn tries again.
 func (m *manager) acquire(ctx context.Context, spec serverSpec) (*lease, error) {
-	cs := cliserver.Spec{Instance: spec.instance, Key: spec.key(), Idle: spec.idle, Turns: spec.turns}
+	// Group = instance + data folder: a new key sweeps the stale servers
+	// of ITS folder only (config changed), while each account folder of
+	// the instance keeps its own server — without the folder, a turn on
+	// account a2 marked main's server stale and they killed each other.
+	cs := cliserver.Spec{Instance: spec.instance, Group: spec.group(), Key: spec.key(), Idle: spec.idle, Turns: spec.turns}
 	cl, err := m.Acquire(ctx, cs, func(ctx context.Context) (*serverHandle, error) {
 		return m.start(ctx, spec, randomPassword())
 	})
