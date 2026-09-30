@@ -861,11 +861,19 @@ func (s *Service) accountAccessToken(ctx context.Context, meta *oauthClientMeta,
 // by someone who has not connected their own account yet.
 var ErrNoOAuthAccount = fmt.Errorf("no connected account")
 
-// callerAccount resolves the account an SSO-mode call runs as: the
-// explicit @accountId when the caller owns it, else the caller's own
-// account (most recently updated first). Never another user's — the
-// framework's visibility gate lets shared-pool / tag-shared accounts
-// through, but seeing an account is not running as it.
+// ErrOAuthAccountGone is returned when a call names an account (@accountId)
+// that is no longer connected to the instance.
+var ErrOAuthAccountGone = fmt.Errorf("account not connected to this instance")
+
+// callerAccount resolves the account an SSO-mode call runs as.
+//
+// An explicit @accountId is the account the framework already resolved AND
+// cleared for this caller (connectors.Service.Execute runs AccountVisibleTo
+// before stamping Ctx.AccountID): the caller's own, or one the instance
+// shares on purpose (AllowOthersSeeAccounts, a tag share, an ownerless
+// legacy row, or the caller administers the instance). That gate is the
+// policy; this only looks the row up. Without an explicit account the call
+// runs as the caller's own account and never falls back to someone else's.
 func (s *Service) callerAccount(ctx context.Context, instanceID, accountID, callerUserID string) (*entity.ConnectorAccount, error) {
 	accs, err := s.conns.ListAccounts(ctx, instanceID)
 	if err != nil {
@@ -873,11 +881,11 @@ func (s *Service) callerAccount(ctx context.Context, instanceID, accountID, call
 	}
 	if accountID != "" {
 		for i := range accs {
-			if accs[i].ID == accountID && callerUserID != "" && accs[i].WickUserID == callerUserID {
+			if accs[i].ID == accountID {
 				return &accs[i], nil
 			}
 		}
-		return nil, ErrNoOAuthAccount
+		return nil, ErrOAuthAccountGone
 	}
 	var best *entity.ConnectorAccount
 	for i := range accs {

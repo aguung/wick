@@ -255,18 +255,26 @@ func TestPerUserTwoUsersEachUseTheirOwnToken(t *testing.T) {
 	if got := f.lastCaller(); got != "Bearer at-A" {
 		t.Errorf("explicit account call used %q", got)
 	}
-	// …but never runs as another user's, even when the pool is shared.
+	// With the pool shared on purpose (AllowOthersSeeAccounts — "every user
+	// with tag access sees, and can run as, every connected account") the
+	// framework clears B's explicit pick of A's account, so it runs as A.
+	// Keeping accounts private is the framework's AccountVisibleTo gate,
+	// covered in the connectors package.
 	if err := f.svc.conns.SetAccessPolicy(context.Background(), instanceID, connectors.AccessPolicy{
 		EnableSSO: true, AllowOthersConnectSSO: true, MultiAccount: true, AllowOthersSeeAccounts: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	before := len(f.callers)
-	if err := f.call(t, srv.ID, instanceID, "user-b", byUser["user-a"].ID); err == nil {
-		t.Fatal("user-b ran as user-a's account")
+	if err := f.call(t, srv.ID, instanceID, "user-b", byUser["user-a"].ID); err != nil {
+		t.Fatalf("shared pool: user-b picking user-a's account: %v", err)
 	}
-	if len(f.callers) != before {
-		t.Errorf("a tools/call went out as %q", f.lastCaller())
+	if got := f.lastCaller(); got != "Bearer at-A" {
+		t.Errorf("shared-pool explicit account call used %q", got)
+	}
+	// A named account that is no longer connected gets its own error, not
+	// the "connect your own account" one.
+	if err := f.call(t, srv.ID, instanceID, "user-b", "gone-account"); err == nil || !strings.Contains(err.Error(), "no longer connected") {
+		t.Fatalf("gone account error = %v", err)
 	}
 
 	// The shared op list syncs under the caller's account.
