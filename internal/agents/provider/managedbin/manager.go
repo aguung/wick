@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // Manager owns every managed type's directory. One process-wide Default.
@@ -258,6 +259,8 @@ func (m *Manager) StartInstall(typ, tag string, activate bool) (*JobInfo, error)
 	}
 	j := &JobInfo{ID: fmt.Sprintf("%s-%d", typ, time.Now().UnixNano()), Type: typ, Tag: tag, Activate: activate, Phase: PhaseResolve, StartedAt: time.Now()}
 	m.jobs[typ] = j
+	// Copied before the job starts: install mutates j under m.mu.
+	c := *j
 	m.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
@@ -265,7 +268,6 @@ func (m *Manager) StartInstall(typ, tag string, activate bool) (*JobInfo, error)
 		err := m.install(ctx, typ, tag, j)
 		m.finish(typ, j, err)
 	}()
-	c := *j
 	return &c, nil
 }
 
@@ -520,7 +522,7 @@ func (m *Manager) runVersion(ctx context.Context, typ, bin string) (raw, parsed 
 		execBin, argv, release = m.Wrap(bin, c.Args)
 	}
 	defer release()
-	cmd := exec.CommandContext(cctx, execBin, argv...)
+	cmd := safeexec.CommandContext(cctx, execBin, argv...)
 	cmd.Dir = scratch
 	cmd.Env = []string{
 		"HOME=" + scratch, "TMPDIR=" + scratch,

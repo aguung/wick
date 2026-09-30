@@ -219,3 +219,28 @@ func TestStartInstallReturnsRunningJob(t *testing.T) {
 		t.Fatalf("want the running job + ErrJobRunning, got %+v %v", j, err)
 	}
 }
+
+// The returned job is a snapshot taken under m.mu; the install goroutine
+// mutates the live one concurrently (go test -race).
+func TestStartInstallSnapshotDoesNotRaceTheJob(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.scripts["v1.2.3"] = script(filepath.Join(t.TempDir(), "a"), "fakecli 1.2.3")
+	m, _ := newTestManager(t, gh)
+	j, err := m.StartInstall("fake", "v1.2.3", true)
+	if err != nil || j == nil || j.Phase != PhaseResolve {
+		t.Fatalf("start: %+v %v", j, err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		m.mu.Lock()
+		running := m.jobs["fake"].Running()
+		m.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("job never finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

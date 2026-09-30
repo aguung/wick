@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // Host is what asset selection keys on. Mirrors the official installers
@@ -72,7 +73,13 @@ func detectMusl() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "ldd", "--version").CombinedOutput()
+	// Resolved first: a bare name makes exec.Cmd call LookPath (faccessat2,
+	// SIGSYS on old Android kernels). No ldd = not musl.
+	ldd, err := safeexec.ResolveBin("ldd")
+	if err != nil {
+		return false
+	}
+	out, _ := safeexec.CommandContext(ctx, ldd, "--version").CombinedOutput()
 	return bytes.Contains(bytes.ToLower(out), []byte("musl"))
 }
 
