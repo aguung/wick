@@ -22,6 +22,8 @@ type process struct {
 	// after the wrong command.
 	realBin  string
 	realArgv []string
+	// onExit runs once after Wait returns (MCP token revocation).
+	onExit func()
 }
 
 // ScopeUnit implements provider.ScopedProcess. Empty when this spawn was
@@ -31,7 +33,14 @@ func (p *process) ScopeUnit() string { return p.scopeUnit }
 func (p *process) Stdout() io.Reader     { return p.stdout }
 func (p *process) Stdin() io.WriteCloser { return noopWriteCloser{} }
 func (p *process) Env() []string         { return p.env }
-func (p *process) Wait() error           { return p.cmd.Wait() }
+func (p *process) Wait() error {
+	err := p.cmd.Wait()
+	if p.onExit != nil {
+		p.onExit()
+		p.onExit = nil
+	}
+	return err
+}
 func (p *process) Pid() int {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return 0

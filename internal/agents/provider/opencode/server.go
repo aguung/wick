@@ -15,11 +15,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/yogasw/wick/internal/agents/provider/cliserver"
 	"github.com/yogasw/wick/internal/agents/provider/procgroup"
 	"github.com/yogasw/wick/pkg/safeexec"
 )
@@ -44,7 +44,7 @@ import (
 
 const (
 	// DefaultServerIdle is the idle window when the instance sets none.
-	DefaultServerIdle = 10 * time.Minute
+	DefaultServerIdle = cliserver.DefaultIdle
 	// DefaultServerTurns caps turns running at once on one server; the
 	// rest queue. Two keeps a server under ~800 MB on the 3.6 GB host.
 	DefaultServerTurns = 2
@@ -52,7 +52,6 @@ const (
 	serverUser     = "opencode"
 	serverBootWait = 60 * time.Second
 	serverKillWait = 3 * time.Second
-	reapInterval   = 30 * time.Second
 )
 
 // serverSpec is what one server is started from.
@@ -89,52 +88,21 @@ type serverHandle struct {
 	done     <-chan struct{} // closed when the process has exited
 }
 
+func (h *serverHandle) Pid() int              { return h.pid }
+func (h *serverHandle) Kill()                 { h.kill() }
+func (h *serverHandle) Done() <-chan struct{} { return h.done }
+
 type startFunc func(ctx context.Context, spec serverSpec, password string) (*serverHandle, error)
 
-// server is one managed opencode serve.
-type server struct {
-	key      string
-	instance string
-	ready    chan struct{} // closed once h / err are set
-	h        *serverHandle
-	err      error
-	slots    chan struct{}
-
-	// guarded by manager.mu
-	active   int // leases held (queued or running)
-	lastUsed time.Time
-	idle     time.Duration
-	// stale: the instance's settings moved on (other env, server mode
-	// off). It finishes the turns it has and is killed once it has none.
-	stale bool
-}
-
-func (s *server) dead() bool {
-	if s.h == nil {
-		return false
-	}
-	select {
-	case <-s.h.done:
-		return true
-	default:
-		return false
-	}
-}
-
-// manager owns every opencode server of this wick process.
+// manager is the shared cliserver.Manager (lazy start, idle reaper, crash
+// restart, stale sweep, turn slots) fed with opencode's HTTP servers.
 type manager struct {
-	mu      sync.Mutex
-	servers map[string]*server
-	now     func() time.Time
-	start   startFunc
-	every   time.Duration
-	once    sync.Once
-	stop    chan struct{}
-	closed  bool
+	*cliserver.Manager[*serverHandle]
+	start startFunc
 }
 
 func newManager(start startFunc) *manager {
-	return &manager{servers: map[string]*server{}, now: time.Now, start: start, every: reapInterval, stop: make(chan struct{})}
+	return &manager{Manager: cliserver.New[*serverHandle]("opencode", DefaultServerTurns), start: start}
 }
 
 var servers = newManager(startServe)
@@ -143,238 +111,48 @@ var servers = newManager(startServe)
 // no server outlives the process that supervises it.
 func ShutdownServers() { servers.shutdown() }
 
+// leaseServer is the server a lease holds.
+type leaseServer struct {
+	h *serverHandle
+	l *cliserver.Lease[*serverHandle]
+}
+
+func (s *leaseServer) dead() bool { return s.l.Dead() }
+
 // lease is one turn's hold on a server: while held the server is never
 // reaped. release exactly once.
 type lease struct {
-	m       *manager
-	s       *server
-	slot    bool
-	release func()
+	s *leaseServer
 }
+
+func (l *lease) release()                           { l.s.l.Release() }
+func (l *lease) waitSlot(ctx context.Context) error { return l.s.l.WaitSlot(ctx) }
 
 // acquire returns a lease on the server for spec, starting it when there
 // is none (or the previous one died). A failed start is not cached: the
 // next turn tries again.
 func (m *manager) acquire(ctx context.Context, spec serverSpec) (*lease, error) {
-	m.once.Do(func() { go m.reapLoop() })
-	key := spec.key()
-	idle := spec.idle
-	if idle <= 0 {
-		idle = DefaultServerIdle
-	}
-	turns := spec.turns
-	if turns <= 0 {
-		turns = DefaultServerTurns
-	}
-
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return nil, errors.New("opencode: shutting down")
-	}
-	s := m.servers[key]
-	if s != nil {
-		select {
-		case <-s.ready:
-			if s.err != nil || s.dead() {
-				delete(m.servers, key)
-				s = nil
-			}
-		default:
+	cs := cliserver.Spec{Instance: spec.instance, Key: spec.key(), Idle: spec.idle, Turns: spec.turns}
+	cl, err := m.Acquire(ctx, cs, func(ctx context.Context) (*serverHandle, error) {
+		return m.start(ctx, spec, randomPassword())
+	})
+	if err != nil {
+		if errors.Is(err, cliserver.ErrShuttingDown) {
+			return nil, errors.New("opencode: shutting down")
 		}
+		return nil, err
 	}
-	starting := false
-	if s == nil {
-		s = &server{key: key, instance: spec.instance, ready: make(chan struct{}), slots: make(chan struct{}, turns)}
-		m.servers[key] = s
-		starting = true
-	}
-	s.active++
-	s.idle = idle
-	s.lastUsed = m.now()
-	idleOld := m.retireLocked(spec.instance, key)
-	m.mu.Unlock()
-	killAll(idleOld)
-
-	if starting {
-		h, err := m.start(ctx, spec, randomPassword())
-		m.mu.Lock()
-		s.h, s.err = h, err
-		if err != nil && m.servers[key] == s {
-			delete(m.servers, key)
-		}
-		m.mu.Unlock()
-		close(s.ready)
-		if h != nil {
-			log.Info().Str("instance", spec.instance).Str("key", key).Int("pid", h.pid).
-				Str("url", h.url).Dur("idle", idle).Msg("agents.opencode: server started")
-		}
-	}
-	select {
-	case <-s.ready:
-	case <-ctx.Done():
-		m.put(s)
-		return nil, ctx.Err()
-	}
-	if s.err != nil {
-		m.put(s)
-		return nil, s.err
-	}
-	l := &lease{m: m, s: s}
-	var once sync.Once
-	l.release = func() { once.Do(func() { l.dropSlot(); m.put(s) }) }
-	return l, nil
-}
-
-// put gives a lease back and stamps the server as used now.
-func (m *manager) put(s *server) {
-	m.mu.Lock()
-	s.active--
-	s.lastUsed = m.now()
-	var victims []*server
-	if s.stale && s.active == 0 {
-		victims = m.dropLocked(s)
-	}
-	m.mu.Unlock()
-	killAll(victims)
+	return &lease{s: &leaseServer{h: cl.H, l: cl}}, nil
 }
 
 // retire marks every server of instance stale (server mode switched off):
 // idle ones die now, busy ones when their last turn ends.
-func (m *manager) retire(instance string) {
-	m.mu.Lock()
-	victims := m.retireLocked(instance, "")
-	m.mu.Unlock()
-	killAll(victims)
-}
+func (m *manager) retire(instance string) { m.Retire(instance) }
 
-// retireLocked marks instance's servers other than keep stale and returns
-// the ones with no turn, already removed from the map.
-func (m *manager) retireLocked(instance, keep string) []*server {
-	var victims []*server
-	for k, s := range m.servers {
-		if s.instance != instance || k == keep {
-			continue
-		}
-		s.stale = true
-		if s.active == 0 {
-			victims = append(victims, m.dropLocked(s)...)
-		}
-	}
-	return victims
-}
+// reap kills idle servers; see cliserver.Manager.Reap.
+func (m *manager) reap() []string { return m.Reap() }
 
-// dropLocked forgets s; returns it for killing when it is a live server.
-func (m *manager) dropLocked(s *server) []*server {
-	if m.servers[s.key] == s {
-		delete(m.servers, s.key)
-	}
-	select {
-	case <-s.ready:
-		if s.h != nil {
-			return []*server{s}
-		}
-	default:
-	}
-	return nil
-}
-
-func killAll(ss []*server) {
-	for _, s := range ss {
-		log.Info().Str("key", s.key).Int("pid", s.h.pid).Msg("agents.opencode: stale server stopped")
-		s.h.kill()
-	}
-}
-
-// waitSlot blocks until the server has room for one more running turn.
-func (l *lease) waitSlot(ctx context.Context) error {
-	select {
-	case l.s.slots <- struct{}{}:
-		l.slot = true
-		return nil
-	case <-l.s.h.done:
-		return errors.New("opencode server exited")
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (l *lease) dropSlot() {
-	if l.slot {
-		l.slot = false
-		<-l.s.slots
-	}
-}
-
-// reapLoop runs for the life of the process: it is the only thing that
-// ever stops an idle server, so there is no switch to turn it off.
-func (m *manager) reapLoop() {
-	t := time.NewTicker(m.every)
-	defer t.Stop()
-	for {
-		select {
-		case <-m.stop:
-			return
-		case <-t.C:
-			m.reap()
-		}
-	}
-}
-
-// reap kills every server no lease has touched for its idle window, and
-// forgets servers that died on their own. Returns the keys it killed.
-func (m *manager) reap() []string {
-	now := m.now()
-	var victims []*server
-	m.mu.Lock()
-	for k, s := range m.servers {
-		select {
-		case <-s.ready:
-		default:
-			continue // still starting
-		}
-		if s.err != nil || s.dead() {
-			if s.active == 0 {
-				delete(m.servers, k)
-			}
-			continue
-		}
-		if s.active == 0 && now.Sub(s.lastUsed) >= s.idle {
-			delete(m.servers, k)
-			victims = append(victims, s)
-		}
-	}
-	m.mu.Unlock()
-	var keys []string
-	for _, s := range victims {
-		log.Info().Str("key", s.key).Int("pid", s.h.pid).Msg("agents.opencode: idle server killed")
-		s.h.kill()
-		keys = append(keys, s.key)
-	}
-	return keys
-}
-
-func (m *manager) shutdown() {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return
-	}
-	m.closed = true
-	close(m.stop)
-	all := make([]*server, 0, len(m.servers))
-	for _, s := range m.servers {
-		all = append(all, s)
-	}
-	m.servers = map[string]*server{}
-	m.mu.Unlock()
-	for _, s := range all {
-		<-s.ready
-		if s.h != nil {
-			s.h.kill()
-		}
-	}
-}
+func (m *manager) shutdown() { m.Shutdown() }
 
 func freePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -393,12 +171,38 @@ func randomPassword() string {
 
 var listenLine = regexp.MustCompile(`listening on (https?://\S+)`)
 
-// startServe execs `opencode serve` on a kernel-chosen port and waits until
-// it answers /global/health.
+// serveAttempts bounds how many ports one start tries.
+const serveAttempts = 3
+
+// errNotListening: serve exited before it printed "listening" — most
+// often the port freePort picked was taken in between. Worth a new port.
+var errNotListening = errors.New("opencode serve exited before listening")
+
+// serveOnce is one start attempt; swapped in tests.
+var serveOnce = startServeOnce
+
+// startServe starts `opencode serve`, trying a fresh port up to
+// serveAttempts times when the server dies before listening, so a port
+// race costs a retry inside this start instead of failing the turn.
 func startServe(ctx context.Context, spec serverSpec, password string) (*serverHandle, error) {
+	var err error
+	for i := 0; i < serveAttempts; i++ {
+		var h *serverHandle
+		h, err = serveOnce(ctx, spec, password)
+		if err == nil || !errors.Is(err, errNotListening) || ctx.Err() != nil {
+			return h, err
+		}
+		log.Warn().Err(err).Int("attempt", i+1).Str("instance", spec.instance).Msg("agents.opencode: serve did not listen; retrying on a new port")
+	}
+	return nil, err
+}
+
+// startServeOnce execs `opencode serve` on a kernel-chosen port and waits
+// until it answers /global/health.
+func startServeOnce(ctx context.Context, spec serverSpec, password string) (*serverHandle, error) {
 	// --port 0 is not "any port" to opencode (it falls back to 4096), so
-	// the kernel picks one here; the tiny reuse race only costs a retry on
-	// the next turn.
+	// the kernel picks one here; the tiny reuse race costs a retry (see
+	// startServe).
 	port, err := freePort()
 	if err != nil {
 		return nil, err
@@ -449,7 +253,7 @@ func startServe(ctx context.Context, spec serverSpec, password string) (*serverH
 	select {
 	case url = <-urlCh:
 	case <-done:
-		return nil, errors.New("opencode serve exited before listening")
+		return nil, errNotListening
 	case <-time.After(serverBootWait):
 		kill()
 		return nil, errors.New("opencode serve did not start listening in time")

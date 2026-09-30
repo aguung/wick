@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -186,7 +187,23 @@ type remoteProcess struct {
 	spec     turnSpec
 	early    []string
 	injected int
+
+	// orderMu serialises Inject calls while each waits for the server to
+	// take in the previous prompt: prompt_async answers before the
+	// message is stored, and prompts sent back to back are stored in
+	// whatever order the server gets to them — a fresh server stored
+	// "bravo", "charlie", then the first prompt "alpha", and the model
+	// answered only the last one. sent counts prompts sent; userSeen the
+	// user messages the event stream has shown.
+	orderMu  sync.Mutex
+	sent     int
+	userSeen int
 }
+
+// injectOrderWait bounds how long an injection waits for the previous
+// prompt to be taken in (a fresh server loads its catalog first, ~8 s
+// on the 2 vCPU host); past it the prompt is sent anyway.
+const injectOrderWait = 30 * time.Second
 
 func newRemoteProcess(env []string, bin string, argv []string, dir string) *remoteProcess {
 	pr, pw := io.Pipe()
@@ -258,16 +275,46 @@ var errTurnOver = errors.New("opencode turn is over")
 // mid-turn. Before the first prompt is out the text is folded into it.
 func (p *remoteProcess) Inject(text string) error {
 	p.injMu.Lock()
-	defer p.injMu.Unlock()
 	p.mu.Lock()
 	if p.killed || p.finished {
 		p.mu.Unlock()
+		p.injMu.Unlock()
 		return errTurnOver
 	}
 	if !p.prompted {
 		p.early = append(p.early, text)
 		p.mu.Unlock()
+		p.injMu.Unlock()
 		return nil
+	}
+	p.mu.Unlock()
+	p.injMu.Unlock()
+
+	// One injection at a time, each after the server has stored the
+	// prompt before it (see orderMu). The wait holds no lock the event
+	// loop needs, so the stream keeps being read meanwhile.
+	p.orderMu.Lock()
+	defer p.orderMu.Unlock()
+	deadline := time.Now().Add(injectOrderWait)
+	for {
+		p.mu.Lock()
+		over, taken := p.killed || p.finished, p.userSeen >= p.sent
+		p.mu.Unlock()
+		if over {
+			return errTurnOver
+		}
+		if taken || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	p.injMu.Lock()
+	defer p.injMu.Unlock()
+	p.mu.Lock()
+	if p.killed || p.finished {
+		p.mu.Unlock()
+		return errTurnOver
 	}
 	c, sid, t := p.client, p.sessionID, p.spec
 	p.mu.Unlock()
@@ -279,6 +326,7 @@ func (p *remoteProcess) Inject(text string) error {
 	}
 	p.mu.Lock()
 	p.injected++
+	p.sent++
 	p.mu.Unlock()
 	return nil
 }
@@ -304,6 +352,11 @@ func stillBusy(c *apiClient, sid string) bool {
 	s, ok := st[sid]
 	return ok && s.Type != "" && s.Type != "idle"
 }
+
+// errNoReply ends a turn that went idle with nothing at all: no step,
+// text, tool call or error. Reported as the turn's error so it is not
+// taken for an empty answer.
+var errNoReply = errors.New("opencode ended the turn without a reply (no text, tool call or error came back)")
 
 // errTurnKilled is what a killed turn's Wait reports. It wraps
 // context.Canceled because the agent reads that as a stop it asked for,
@@ -367,6 +420,13 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	if err := l.waitSlot(ctx); err != nil {
 		return err
 	}
+	if p.dir != "" {
+		// opencode takes a prompt for a directory that does not exist and
+		// then ends the run without a word; say so instead.
+		if st, err := os.Stat(p.dir); err != nil || !st.IsDir() {
+			return fmt.Errorf("opencode workspace %s is not a directory", p.dir)
+		}
+	}
 	c := p.clientFor(l)
 	sid, err := ensureSession(ctx, c, t.resumeID, t.title)
 	if err != nil {
@@ -422,6 +482,7 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	}
 	p.mu.Lock()
 	p.prompted = true
+	p.sent = 1
 	killed := p.killed
 	p.mu.Unlock()
 	p.injMu.Unlock()
@@ -434,6 +495,9 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	finished := false
 	err = readSSE(resp.Body, func(ev sseEvent) bool {
 		lines, done := tr.feed(ev)
+		p.mu.Lock()
+		p.userSeen = tr.userCount()
+		p.mu.Unlock()
 		for _, ln := range lines {
 			p.emit(ln)
 		}
@@ -444,6 +508,9 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		return !done
 	})
 	if finished {
+		if !tr.replied {
+			return errNoReply
+		}
 		return nil
 	}
 	if ctx.Err() != nil {
@@ -509,3 +576,4 @@ func ensureSession(ctx context.Context, c *apiClient, resumeID, title string) (s
 	}
 	return s.ID, nil
 }
+

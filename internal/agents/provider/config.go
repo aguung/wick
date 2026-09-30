@@ -22,7 +22,7 @@ type InstanceConfig struct {
 	// turn, mid-turn messages wait then run in order (none lost). spawn =
 	// one-shot, every message its own parallel process (no queue, contexts
 	// independent — only safe where turns don't need shared history).
-	SendMode string `wick:"key=send_mode;dropdown=default|append|queue|spawn;desc=How a message reaches the CLI.\ndefault — follow the provider type (claude=append; codex, omp, opencode=queue).\nappend — one persistent process, the CLI queues input itself (claude). Not supported by codex, omp or opencode: they read the prompt once, so append runs as queue there.\nqueue — one process per turn; messages sent while busy wait and then run TOGETHER as one turn. Context continues (resume). Nothing is dropped. opencode server mode takes them into the running turn instead.\nspawn — one process per message, all in parallel. No queue, each runs in its own session, so contexts do NOT share history."`
+	SendMode string `wick:"key=send_mode;dropdown=default|append|queue|spawn;desc=How a message reaches the CLI.\ndefault — follow the provider type (claude=append; codex, omp, opencode=queue).\nappend — one persistent process, the CLI queues input itself (claude). Not supported by codex, omp or opencode: they read the prompt once, so append runs as queue there.\nqueue — one process per turn; messages sent while busy wait and then run TOGETHER as one turn. Context continues (resume). Nothing is dropped. omp and opencode in server mode take them into the running turn instead (omp: steer), so append is supported there.\nspawn — one process per message, all in parallel. No queue, each runs in its own session, so contexts do NOT share history."`
 }
 
 // CLIModelConfig is the model-picker section for CLI providers
@@ -56,13 +56,18 @@ type OpencodeModelConfig struct {
 // ServerModeConfig is the shared-CLI-server section (opencode today, omp
 // next). Generic keys so one FE toggle serves every provider that has it.
 type ServerModeConfig struct {
-	ServerMode         bool `wick:"bool;key=server_mode;desc=Run turns on one shared CLI server per instance (fast: ~2 s per turn, one ~500 MB process shared by all sessions). Off = one process per turn (the old path: ~6 s and up to ~800 MB each). A change applies from the next turn; a server no longer needed stops once no turn is running."`
-	ServerIdleMinutes  int  `wick:"key=server_idle_minutes;desc=Minutes the shared server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = 10; it cannot be turned off."`
+	ServerMode        bool `wick:"bool;key=server_mode;desc=Keep the CLI running between turns instead of one process per turn. opencode: one shared server per instance (~2 s per turn, ~500 MB shared by all sessions). omp: one RPC process per session (no boot per turn, messages sent mid-turn steer the running turn). Off = one process per turn (the old path: ~6 s and up to ~800 MB each; messages sent mid-turn queue and join the next turn). A change applies from the next turn; a server no longer needed stops once no turn is running."`
+	ServerIdleMinutes int  `wick:"key=server_idle_minutes;desc=Minutes the server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = 10; it cannot be turned off."`
+}
+
+// ExternalSkillsConfig is opencode's host-skill switch (omp has none, so
+// it is not offered there rather than silently ignored).
+type ExternalSkillsConfig struct {
 	LoadExternalSkills bool `wick:"bool;key=load_external_skills;desc=Load Claude/Codex skills: let the CLI scan the host's ~/.claude/skills and ~/.agents skill dirs. Off = only the instance's own skills."`
 }
 
 // SupportsServerMode reports whether t has the shared-server mode.
-func SupportsServerMode(t Type) bool { return t == TypeOpencode }
+func SupportsServerMode(t Type) bool { return t == TypeOpencode || t == TypeOMP }
 
 // SeedInstanceConfig returns populated entity.Config rows for an Instance.
 func SeedInstanceConfig(ins Instance) []pkgentity.Config {
@@ -95,10 +100,12 @@ func SeedInstanceConfig(ins Instance) []pkgentity.Config {
 	}
 	if SupportsServerMode(ins.Type) {
 		rows = append(rows, pkgentity.StructToConfigs(ServerModeConfig{
-			ServerMode:         !ins.RunPerTurn,
-			ServerIdleMinutes:  ins.ServerIdleMinutes,
-			LoadExternalSkills: ins.LoadExternalSkills,
+			ServerMode:        !ins.RunPerTurn,
+			ServerIdleMinutes: ins.ServerIdleMinutes,
 		})...)
+	}
+	if ins.Type == TypeOpencode {
+		rows = append(rows, pkgentity.StructToConfigs(ExternalSkillsConfig{LoadExternalSkills: ins.LoadExternalSkills})...)
 	}
 	// CLI model picker — claude/codex/gemini only (wick uses WickModels).
 	if ins.Type != TypeWick {

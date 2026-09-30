@@ -146,6 +146,13 @@ type fakeOpencode struct {
 	// gate, when set, holds the first prompt's idle until closed; later
 	// prompts join that run (as opencode does for a busy session).
 	gate chan struct{}
+	// storeDelay delays storing (publishing) the FIRST prompt's user
+	// message, as a fresh server does while it loads its catalog.
+	storeDelay time.Duration
+	// stored is the order user messages were stored in (prompt texts).
+	stored []string
+	// silent: the run goes busy then idle with nothing in between.
+	silent bool
 }
 
 func (f *fakeOpencode) publish(typ string, props any) {
@@ -206,8 +213,32 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		var body struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		}
+		_ = json.Unmarshal(b, &body)
+		text := ""
+		if len(body.Parts) > 0 {
+			text = body.Parts[0].Text
+		}
+		f.mu.Lock()
+		n, delay, silent := len(f.prompts), f.storeDelay, f.silent
+		f.mu.Unlock()
 		go func() {
+			if first && delay > 0 {
+				time.Sleep(delay)
+			}
+			f.mu.Lock()
+			f.stored = append(f.stored, text)
+			f.mu.Unlock()
+			f.publish("message.updated", map[string]any{"info": map[string]any{"id": fmt.Sprintf("msg_user%d", n), "role": "user", "sessionID": sid}})
 			f.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "busy"}})
+			if silent {
+				f.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
+				return
+			}
 			if hang {
 				return
 			}
@@ -256,13 +287,13 @@ func startFake(t *testing.T, f *fakeOpencode, ts turnSpec) (*remoteProcess, *fak
 		}
 		return h, err
 	})
-	m.every = time.Hour
+	m.Every = time.Hour
 	t.Cleanup(m.shutdown)
 	l, err := m.acquire(context.Background(), spec(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := newRemoteProcess(nil, "opencode", nil, "/ws")
+	p := newRemoteProcess(nil, "opencode", nil, t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	go func() { defer cancel(); p.run(ctx, l, ts) }()
@@ -466,5 +497,80 @@ func TestRemoteInjectJoinsRunningTurn(t *testing.T) {
 	}
 	if err := p.Inject("late"); err == nil {
 		t.Fatal("Inject after the turn ended must fail so the agent queues it")
+	}
+}
+
+// Prompts injected while the server has not stored the first one yet
+// wait for it: prompt_async answers before storing, and a fresh server
+// stored the injected ones first, so the model answered only the last.
+func TestRemoteInjectWaitsForPreviousPrompt(t *testing.T) {
+	f := &fakeOpencode{gate: make(chan struct{}), storeDelay: 300 * time.Millisecond}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "alpha"})
+	// The agent reads stdout all along; so does this test, or the event
+	// loop blocks on the pipe and never sees the prompt stored.
+	read := make(chan []string, 1)
+	go func() { read <- readAll(t, p) }()
+	waitPrompted(t, f)
+	start := time.Now()
+	errs := make(chan error, 2)
+	go func() { errs <- p.Inject("bravo") }()
+	time.Sleep(20 * time.Millisecond)
+	go func() { errs <- p.Inject("charlie") }()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("Inject: %v", err)
+		}
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("injections waited %s (the order wait timed out instead of seeing the prompt stored)", d)
+	}
+	close(f.gate)
+	<-read
+	_ = p.Wait()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.stored) != 3 || f.stored[0] != "alpha" {
+		t.Fatalf("stored order = %q, want alpha first", f.stored)
+	}
+}
+
+// A run that goes idle with nothing at all is the turn's error, not an
+// empty answer.
+func TestRemoteSilentIdleIsTurnError(t *testing.T) {
+	f := &fakeOpencode{silent: true}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "hi"})
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if len(lines) == 0 || !strings.Contains(lines[len(lines)-1], "without a reply") {
+		t.Fatalf("lines = %v", lines)
+	}
+}
+
+// A workspace that does not exist fails the turn with that reason.
+func TestRemoteMissingWorkspaceIsTurnError(t *testing.T) {
+	f := &fakeOpencode{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	m := newManager(func(ctx context.Context, spec serverSpec, pw string) (*serverHandle, error) {
+		f.mu.Lock()
+		f.password = pw
+		f.mu.Unlock()
+		return &serverHandle{url: srv.URL, password: pw, pid: 1, kill: func() {}, done: make(chan struct{})}, nil
+	})
+	m.Every = time.Hour
+	t.Cleanup(m.shutdown)
+	l, err := m.acquire(context.Background(), spec(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newRemoteProcess(nil, "opencode", nil, t.TempDir()+"/missing")
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	go func() { defer cancel(); p.run(ctx, l, turnSpec{prompt: "hi"}) }()
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil || len(lines) != 1 || !strings.Contains(lines[0], "is not a directory") {
+		t.Fatalf("err=%v lines=%v", err, lines)
 	}
 }

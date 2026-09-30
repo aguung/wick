@@ -62,8 +62,8 @@ func (c *fakeClock) add(d time.Duration) {
 func newTestManager(fs *fakeStarter) (*manager, *fakeClock) {
 	m := newManager(fs.start)
 	clk := &fakeClock{t: time.Unix(1_000_000, 0)}
-	m.now = clk.now
-	m.every = time.Hour // the tests drive reap() themselves
+	m.Now = clk.now
+	m.Every = time.Hour // the tests drive reap() themselves
 	return m, clk
 }
 
@@ -85,7 +85,7 @@ func TestManagerLazyStartAndReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l1.s != l2.s {
+	if l1.s.h != l2.s.h {
 		t.Fatal("same spec got two servers")
 	}
 	if n, _ := fs.counts(); n != 1 {
@@ -98,7 +98,7 @@ func TestManagerLazyStartAndReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l3.s == l1.s {
+	if l3.s.h == l1.s.h {
 		t.Fatal("different env shared a server")
 	}
 	l1.release()
@@ -166,7 +166,7 @@ func TestManagerIdleZeroMeansDefault(t *testing.T) {
 func TestManagerReapLoopRuns(t *testing.T) {
 	fs := &fakeStarter{}
 	m := newManager(fs.start)
-	m.every = 10 * time.Millisecond
+	m.Every = 10 * time.Millisecond
 	l, err := m.acquire(context.Background(), spec(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +302,39 @@ func TestManagerRetire(t *testing.T) {
 	if _, k := fs.counts(); k != 2 {
 		t.Fatal("retired server not stopped after its turn")
 	}
-	if len(m.servers) != 0 {
-		t.Fatalf("servers left: %d", len(m.servers))
+	if m.Len() != 0 {
+		t.Fatalf("servers left: %d", m.Len())
+	}
+}
+
+// A serve that dies before listening (port taken) is retried on a new
+// port inside the same start, up to serveAttempts.
+func TestStartServeRetriesPort(t *testing.T) {
+	prev := serveOnce
+	t.Cleanup(func() { serveOnce = prev })
+	calls := 0
+	serveOnce = func(ctx context.Context, spec serverSpec, pw string) (*serverHandle, error) {
+		calls++
+		if calls < serveAttempts {
+			return nil, errNotListening
+		}
+		return &serverHandle{url: "http://ok", pid: 7, kill: func() {}, done: make(chan struct{})}, nil
+	}
+	h, err := startServe(context.Background(), spec(time.Minute), "pw")
+	if err != nil || h == nil || calls != serveAttempts {
+		t.Fatalf("h=%v err=%v calls=%d", h, err, calls)
+	}
+	calls = -10 // every attempt fails
+	if _, err := startServe(context.Background(), spec(time.Minute), "pw"); !errors.Is(err, errNotListening) {
+		t.Fatalf("want errNotListening after %d attempts, got %v", serveAttempts, err)
+	}
+	// Other failures are not retried.
+	calls = 0
+	serveOnce = func(context.Context, serverSpec, string) (*serverHandle, error) {
+		calls++
+		return nil, errors.New("health timeout")
+	}
+	if _, err := startServe(context.Background(), spec(time.Minute), "pw"); err == nil || calls != 1 {
+		t.Fatalf("non-port error retried: calls=%d err=%v", calls, err)
 	}
 }

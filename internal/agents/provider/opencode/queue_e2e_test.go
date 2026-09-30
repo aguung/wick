@@ -2,8 +2,10 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +42,7 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 				OpencodeConfig: &provider.OpencodeConfig{DataDir: filepath.Join(dir, "data-e2e"), Model: "opencode/big-pickle", AllowHosted: true}}
 
 			t.Run("rapid messages", func(t *testing.T) {
+				watchdog(t, 4*time.Minute)
 				r := newE2ERun(t, bin, dir, ins)
 				_ = r.a.Send("Reply with exactly the word: alpha")
 				r.waitSpawns(t, 1)
@@ -49,6 +52,14 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 				r.settle(t)
 				r.log(t)
 				r.noCrash(t)
+				// Every message must be answered, not just accepted: a turn
+				// that ends with no text (or loses the injected ones) fails.
+				if d := r.dones(); d < 1 {
+					t.Fatalf("no turn finished (dones=%d)", d)
+				}
+				if txt := strings.ToLower(r.text()); !strings.Contains(txt, "alpha") || !strings.Contains(txt, "bravo") || !strings.Contains(txt, "charlie") {
+					t.Fatalf("reply must carry alpha, bravo and charlie; got %q", r.text())
+				}
 				spawns := r.spawnMsgs()
 				if mode.runPerTurn {
 					if len(spawns) != 2 || !strings.Contains(spawns[1], "bravo") || !strings.Contains(spawns[1], "charlie") {
@@ -60,6 +71,7 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 			})
 
 			t.Run("kill mid-turn", func(t *testing.T) {
+				watchdog(t, 2*time.Minute)
 				r := newE2ERun(t, bin, dir, ins)
 				_ = r.a.Send("Use the bash tool to run `sleep 30`, then reply done.")
 				r.waitSpawns(t, 1)
@@ -73,8 +85,8 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 				time.Sleep(8 * time.Second)
 				r.log(t)
 				r.noCrash(t)
-				if n := len(r.spawnMsgs()); n != before {
-					t.Fatalf("spawned after kill: %d → %d", before, n)
+				if n := len(r.spawnMsgs()); n != before || n != 1 {
+					t.Fatalf("spawned after kill: %d → %d (want exactly the one turn)", before, n)
 				}
 				if r.a.QueuedCount() != 0 {
 					t.Fatalf("queue survived the kill: %d", r.a.QueuedCount())
@@ -82,6 +94,7 @@ func TestE2EQueueAndKillRealBinary(t *testing.T) {
 			})
 
 			t.Run("model error", func(t *testing.T) {
+				watchdog(t, 4*time.Minute)
 				bad := ins
 				cfg := *ins.OpencodeConfig
 				cfg.Model = "opencode/no-such-model-e2e"
@@ -110,6 +123,11 @@ type e2eRun struct {
 }
 
 func newE2ERun(t *testing.T, bin, dir string, ins provider.Instance) *e2eRun {
+	// The workspace must exist: opencode serve takes a prompt for a
+	// missing directory and ends the run with nothing.
+	if err := os.MkdirAll(filepath.Join(dir, "ws"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	r := &e2eRun{last: time.Now()}
 	r.a = provider.New(provider.Options{
 		Workspace:     filepath.Join(dir, "ws"),
@@ -173,6 +191,44 @@ func (r *e2eRun) settle(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatal("agent never settled")
+}
+
+func (r *e2eRun) dones() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.events {
+		if e.Type == event.Done {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *e2eRun) text() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var b strings.Builder
+	for _, e := range r.events {
+		if e.Type == event.TextDelta {
+			b.WriteString(e.Text)
+		}
+	}
+	return b.String()
+}
+
+// watchdog turns a hung subtest into a fast failure: past d it panics
+// with every goroutine's stack (t.Fatal cannot be called off the test
+// goroutine). It covers the subtest's cleanups too (registered first,
+// so it is stopped last).
+func watchdog(t *testing.T, d time.Duration) {
+	name := t.Name()
+	tm := time.AfterFunc(d, func() {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		panic(fmt.Sprintf("E2E subtest %s hung for more than %s\n%s", name, d, buf[:n]))
+	})
+	t.Cleanup(func() { tm.Stop() })
 }
 
 func (r *e2eRun) errors() int {

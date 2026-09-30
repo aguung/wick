@@ -66,7 +66,15 @@ type translator struct {
 	now       func() time.Time
 	userMsgs  map[string]bool
 	started   bool // the session went busy (or failed) since the prompt
+	// replied: the turn produced something — a step, text, tool call or
+	// error. An idle with nothing before it is a run opencode dropped
+	// without a word (seen with a cwd that does not exist).
+	replied bool
 }
+
+// userCount is how many of this session's user messages the stream has
+// shown — i.e. how many prompts the server has actually taken in.
+func (t *translator) userCount() int { return len(t.userMsgs) }
 
 func newTranslator(sessionID string) *translator {
 	return &translator{sessionID: sessionID, now: time.Now, userMsgs: map[string]bool{}}
@@ -131,6 +139,7 @@ func (t *translator) feed(ev sseEvent) (lines [][]byte, done bool) {
 		}
 		if kind != "" {
 			t.started = true
+			t.replied = true
 			lines = append(lines, t.line(kind, "part", p.Part))
 		}
 	case "session.error":
@@ -140,6 +149,7 @@ func (t *translator) feed(ev sseEvent) (lines [][]byte, done bool) {
 		}
 		if json.Unmarshal(ev.Properties, &p) == nil && p.SessionID == t.sessionID {
 			t.started = true
+			t.replied = true
 			lines = append(lines, t.line("error", "error", p.Error))
 		}
 	case "session.status":

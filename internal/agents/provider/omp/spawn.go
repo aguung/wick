@@ -24,6 +24,13 @@ type Spawner struct {
 	// MCPToken is the per-session credential for wick's MCP server. Empty =
 	// no wick tools (the mcp.json entry is left alone).
 	MCPToken string
+	// RevocableToken: MCPToken is a per-session credential omp revokes
+	// when the process using it is gone (SetMCPTokenRevoker). False for
+	// the shared per-boot token, which must never be revoked.
+	RevocableToken bool
+	// MCPOwner is who MCPToken speaks for (the caller). Part of the RPC
+	// process key: another caller gets its own process and identity.
+	MCPOwner string
 }
 
 // homeDir is swapped in tests so mcp.json lands in a temp dir.
@@ -167,7 +174,14 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		}
 	}
 
-	args := buildArgs(ins, opt, writeSoul(opt), writeOverlay(opt), s.ExtraArgs)
+	soul, overlay := writeSoul(opt), writeOverlay(opt)
+	if useServer(ins, s.ExtraArgs, opt.ExtraArgs) {
+		return s.spawnRPC(ctx, opt, ins, bin, soul, overlay, mcpVars)
+	}
+	// Server mode off: a plain -p run, and an RPC process the instance no
+	// longer uses stops once it has no turn.
+	rpcServers.Retire(ins.Name)
+	args := buildArgs(ins, opt, soul, overlay, s.ExtraArgs)
 
 	execBin, execArgs, scopeUnit := opt.MemGuard.Wrap(bin, args, "omp", opt.SpawnSeq)
 	cmd := safeexec.CommandContext(ctx, execBin, execArgs...)
@@ -206,7 +220,11 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	go writePrompt(stdin, opt.InitialMessage)
 
 	log.Info().Int("pid", cmd.Process.Pid).Str("scope", scopeUnit).Msg("agents.spawn: started (omp)")
-	return &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}, nil
+	proc := &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}
+	if s.RevocableToken {
+		proc.onExit = func() { revokeLater(s.MCPToken) }
+	}
+	return proc, nil
 }
 
 func writePrompt(w io.WriteCloser, prompt string) {

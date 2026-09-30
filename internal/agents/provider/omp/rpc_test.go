@@ -1,0 +1,244 @@
+package omp
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"io"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	provider "github.com/yogasw/wick/internal/agents/provider"
+	"github.com/yogasw/wick/internal/agents/provider/cliserver"
+)
+
+func TestTranslateFrameMatchesPrintMode(t *testing.T) {
+	out, ok := translateFrame([]byte(`{"type":"message_update","messageId":"msg-1","message":{"big":1},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi","partial":{"x":1}}}`))
+	if !ok || strings.Contains(string(out), "partial") || strings.Contains(string(out), "messageId") || strings.Contains(string(out), `"big"`) || !strings.Contains(string(out), `"delta":"Hi"`) {
+		t.Fatalf("message_update = %s", out)
+	}
+	out, _ = translateFrame([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"done","reason":"stop","message":{}}}`))
+	if string(out) != `{"assistantMessageEvent":{"reason":"stop","type":"done"},"type":"message_update"}`+"\n" {
+		t.Fatalf("done = %s", out)
+	}
+	for _, typ := range []string{"response", "prompt_result", "session_settled", "ready", "extension_ui_request", "subagent_event"} {
+		if _, ok := translateFrame([]byte(`{"type":"` + typ + `"}`)); ok {
+			t.Fatalf("%s forwarded", typ)
+		}
+	}
+	if out, ok := translateFrame([]byte(`{"type":"agent_end","messages":[]}`)); !ok || !strings.Contains(string(out), "agent_end") {
+		t.Fatal("agent_end dropped")
+	}
+}
+
+func TestBuildRPCArgsKeepsIsolation(t *testing.T) {
+	ins := provider.Instance{Type: provider.TypeOMP, Name: "work", OMPConfig: &provider.OMPConfig{Profile: "wick-work"}}
+	opt := provider.SpawnOptions{Workspace: "/w", ResumeID: "sid-1", ModelID: "a/b", Instance: &ins}
+	got := buildRPCArgs(ins, opt, "/s/soul.md", "/s/wick-settings.yml", nil)
+	want := []string{"--profile", "wick-work", "--mode", "rpc", "--no-ui", "--no-title", "--auto-approve",
+		"--config", "/s/wick-settings.yml", "--cwd", "/w", "--append-system-prompt", "/s/soul.md",
+		"--model", "a/b", "--resume", "sid-1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("argv\n got %q\nwant %q", got, want)
+	}
+	k1 := rpcKey("work", "s", "u", "/omp", "/w", []string{"A=1", "WICK_MCP_TOKEN=t1"}, got)
+	k2 := rpcKey("work", "s", "u", "/omp", "/w", []string{"WICK_MCP_TOKEN=t2", "A=1"}, append(got[:len(got)-1:len(got)-1], "sid-2"))
+	if k1 != k2 {
+		t.Fatal("per-turn token / resume id split the process")
+	}
+	if rpcKey("work", "s", "other", "/omp", "/w", []string{"A=1"}, got) == k1 {
+		t.Fatal("another caller shared the process")
+	}
+}
+
+// fakeOMP is an in-process RPC peer: it answers commands the way
+// rpc-mode.ts does and streams a scripted turn.
+type fakeOMP struct {
+	mu      sync.Mutex
+	cmds    []string
+	steers  []string
+	aborted chan struct{}
+	// hang: the turn runs until abort.
+	hang bool
+	// failPrompt: prompt_result error before the agent runs.
+	failPrompt string
+	out      *io.PipeWriter
+	done     chan struct{}
+}
+
+func (f *fakeOMP) write(v any) {
+	b, _ := json.Marshal(v)
+	_, _ = f.out.Write(append(b, '\n'))
+}
+
+func (f *fakeOMP) serve(in io.Reader) {
+	sc := bufio.NewScanner(in)
+	for sc.Scan() {
+		var c map[string]any
+		_ = json.Unmarshal(sc.Bytes(), &c)
+		typ, _ := c["type"].(string)
+		id, _ := c["id"].(string)
+		f.mu.Lock()
+		f.cmds = append(f.cmds, typ)
+		f.mu.Unlock()
+		switch typ {
+		case "get_state":
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true, "data": map[string]any{"sessionId": "omp-s1"}})
+		case "steer":
+			f.mu.Lock()
+			f.steers = append(f.steers, c["message"].(string))
+			f.mu.Unlock()
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
+		case "abort":
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
+			close(f.aborted)
+		case "prompt":
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
+			go f.turn(id, c["message"].(string))
+		default:
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true})
+		}
+	}
+}
+
+func (f *fakeOMP) turn(id, msg string) {
+	if f.failPrompt != "" {
+		f.write(map[string]any{"type": "prompt_result", "id": id, "agentInvoked": false, "status": "error", "sessionSettled": true, "error": map[string]any{"message": f.failPrompt, "retryable": false}})
+		return
+	}
+	f.write(map[string]any{"type": "agent_start"})
+	f.write(map[string]any{"type": "message_update", "messageId": "msg-1", "assistantMessageEvent": map[string]any{"type": "text_delta", "delta": "echo:" + msg, "partial": map[string]any{}}})
+	if f.hang {
+		<-f.aborted
+		f.write(map[string]any{"type": "agent_end", "messages": []any{}})
+		f.write(map[string]any{"type": "prompt_result", "id": id, "agentInvoked": true, "status": "aborted", "sessionSettled": true})
+		return
+	}
+	f.write(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "stopReason": "stop"}})
+	f.write(map[string]any{"type": "agent_end", "messages": []any{}})
+	f.write(map[string]any{"type": "prompt_result", "id": id, "agentInvoked": true, "status": "completed", "sessionSettled": false})
+	f.write(map[string]any{"type": "session_settled"})
+}
+
+// fakeConn wires a fakeOMP to an rpcConn through pipes.
+func fakeConn(f *fakeOMP) *rpcConn {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	f.out, f.done, f.aborted = outW, make(chan struct{}), make(chan struct{})
+	c := &rpcConn{pid: 4242, done: f.done, w: inW, pending: map[string]chan rpcFrame{}}
+	var once sync.Once
+	c.kill = func() { once.Do(func() { _ = inW.Close(); _ = outW.Close(); close(f.done) }) }
+	go f.serve(inR)
+	ready := make(chan struct{})
+	go c.readLoop(outR, ready)
+	f.write(map[string]any{"type": "ready", "protocolVersion": 1})
+	<-ready
+	return c
+}
+
+func runFakeTurn(t *testing.T, f *fakeOMP, prompt string) (*rpcProcess, *cliserver.Manager[*rpcConn]) {
+	t.Helper()
+	m := cliserver.New[*rpcConn]("omp-test", 1)
+	m.Every = time.Hour
+	l, err := m.Acquire(context.Background(), cliserver.Spec{Instance: "o", Key: "k"}, func(context.Context) (*rpcConn, error) { return fakeConn(f), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newRPCProcess(nil, "omp", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	go func() { defer cancel(); p.run(ctx, l, rpcTurnSpec{prompt: prompt, cwd: "/w"}) }()
+	return p, m
+}
+
+func readAll(t *testing.T, p *rpcProcess) string {
+	t.Helper()
+	b, _ := io.ReadAll(p.Stdout())
+	return string(b)
+}
+
+func TestRPCTurnStreamsPrintModeLines(t *testing.T) {
+	f := &fakeOMP{}
+	p, m := runFakeTurn(t, f, "hello")
+	defer m.Shutdown()
+	out := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if !strings.Contains(lines[0], `"type":"session"`) || !strings.Contains(lines[0], `"id":"omp-s1"`) {
+		t.Fatalf("no session header: %q", lines[0])
+	}
+	if !strings.Contains(out, `"delta":"echo:hello"`) || !strings.Contains(out, "agent_end") || strings.Contains(out, "prompt_result") || strings.Contains(out, "messageId") {
+		t.Fatalf("stream = %s", out)
+	}
+	if p.Inject("late") == nil {
+		t.Fatal("inject accepted after the turn ended")
+	}
+	if m.Len() != 1 {
+		t.Fatal("process not kept for the next turn")
+	}
+}
+
+func TestRPCTurnSteerAndAbort(t *testing.T) {
+	f := &fakeOMP{hang: true}
+	p, m := runFakeTurn(t, f, "long")
+	defer m.Shutdown()
+	r := bufio.NewReader(p.Stdout())
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(line, "echo:long") {
+			break
+		}
+	}
+	if err := p.Inject("more"); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Wait(); err == nil || !strings.Contains(err.Error(), "aborted") {
+		t.Fatalf("wait after kill = %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Equal(f.steers, []string{"more"}) || !slices.Contains(f.cmds, "abort") {
+		t.Fatalf("steers=%v cmds=%v", f.steers, f.cmds)
+	}
+	select {
+	case <-f.done:
+		t.Fatal("abort killed the RPC process")
+	default:
+	}
+}
+
+func TestRPCTurnPromptErrorIsTurnError(t *testing.T) {
+	f := &fakeOMP{failPrompt: "No API key for provider"}
+	p, m := runFakeTurn(t, f, "x")
+	defer m.Shutdown()
+	out := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("model error surfaced as a process failure: %v", err)
+	}
+	if !strings.Contains(out, `"stopReason":"error"`) || !strings.Contains(out, "No API key") || !strings.Contains(out, "agent_end") {
+		t.Fatalf("stream = %s", out)
+	}
+}
+
+func TestUseServerDefaultsOn(t *testing.T) {
+	if !useServer(provider.Instance{}, []string{"--model", "x"}) {
+		t.Fatal("server mode not the default")
+	}
+	if useServer(provider.Instance{RunPerTurn: true}) || useServer(provider.Instance{}, []string{"--thinking", "high"}) {
+		t.Fatal("run-only cases went to the RPC process")
+	}
+	if !provider.SupportsServerMode(provider.TypeOMP) {
+		t.Fatal("omp has no server mode toggle")
+	}
+}

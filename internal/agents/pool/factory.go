@@ -331,12 +331,15 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 			// approvals off unconditionally: there is no gate hook for
 			// them, and a headless run cannot answer a prompt.
 			tok := f.mcpTokenFor(opt.SessionID, opt.CallerUserID)
-			if tok != f.MCPToken {
-				claudeMCPToken = tok
-			}
 			if pType == provider.TypeOMP {
-				spawner = omppkg.Spawner{Binary: bin, MCPToken: tok}
+				// omp revokes its own per-session token: in server mode it
+				// lives as long as the session's RPC process, not one turn
+				// (omp.SetMCPTokenRevoker), so it is not reported here.
+				spawner = omppkg.Spawner{Binary: bin, MCPToken: tok, RevocableToken: tok != f.MCPToken, MCPOwner: opt.CallerUserID}
 			} else {
+				if tok != f.MCPToken {
+					claudeMCPToken = tok
+				}
 				spawner = opencodepkg.Spawner{Binary: bin, MCPToken: tok}
 			}
 		case provider.TypeWick:

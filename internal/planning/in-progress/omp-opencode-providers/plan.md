@@ -364,3 +364,8 @@ func RegisterModelSets(t Type, s ModelSets)
 - Hapus env instance tak berguna di host Yoga (`BUN_ARGUMENTS`, `NODE_OPTIONS`) — manual oleh Yoga.
 - Revoke key Zen testing; hapus entri `opencode` di auth.json instance bila sudah di-revoke.
 - Setelah semua irisan OK di host: squash-free push branch + SATU PR ke master, pindahkan plan ke `done/`.
+
+### Tambahan — model yang terdaftar tapi tak bisa dipakai akun (Yoga 30 Sep, sesi e1e6a2a1 & fbccd99b)
+- omp/yoga (akun ChatGPT plan free): default = model pertama `omp models` = `openai-codex/gpt-5.5` → Codex `model_not_found`. `omp models --json` tak punya flag akses per model (hanya id/context/cost/thinking; `accountAccess` cuma program cyber & multi-akun). Jadi daftar ≠ jaminan bisa dipakai.
+- Rencana: (1) error `model_not_found`/no-access menandai model itu "tak tersedia untuk akun ini" per instance/akun (cache, reset lewat refresh) → abu-abu di picker, tak jadi default; (2) default = model terakhir yang terbukti jalan di instance, bukan urutan pertama; (3) pesan error jelas + plan akun (omp sudah memberi plan_type).
+- Crash-loop 4× karena error model sudah diperbaiki di 63408bcb (error model = error turn biasa).
