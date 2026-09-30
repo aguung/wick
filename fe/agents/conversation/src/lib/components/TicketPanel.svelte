@@ -22,6 +22,7 @@
     runTicketAction,
     updateTicket,
   } from "../api/tickets.js";
+  import { rankTickets, shortTicketId } from "../ticketPick.js";
   import { toastError, toastOk } from "@wick-fe/common-stores";
   import { Effect } from "effect";
   import { WickClientLayer } from "@wick-fe/common-api";
@@ -139,13 +140,19 @@
   let picking = $state(false);
   let options = $state<TicketCard[]>([]);
   let loadingOptions = $state(false);
+  /* A project collects dozens of open tickets, and scrolling a short list
+     for one is the slow way — the picker is searched, by id or title. */
+  let pickQuery = $state("");
+  const shownOptions = $derived(rankTickets(options, pickQuery));
 
   function startPick() {
     picking = true;
     creating = false;
+    pickQuery = "";
     if (!projectId) return;
     loadingOptions = true;
-    Effect.runPromise(getProjectTickets(base, projectId).pipe(Effect.provide(WickClientLayer)))
+    // rows: 0 — the picker needs ids and titles, not each card's chat rows.
+    Effect.runPromise(getProjectTickets(base, projectId, { rows: 0 }).pipe(Effect.provide(WickClientLayer)))
       .then((b) => {
         // Done tickets are not where live work goes, so they are left out of
         // the picker rather than padding a long list.
@@ -298,19 +305,66 @@
   }
 </script>
 
+{#snippet pickList(emptyText: string)}
+  {#if loadingOptions}
+    <p class="text-[11px] text-black-700 dark:text-black-600">Loading tickets…</p>
+  {:else if options.length === 0}
+    <p class="text-[11px] text-black-700 dark:text-black-600">{emptyText}</p>
+  {:else}
+    <input
+      use:focusOnMount
+      bind:value={pickQuery}
+      data-testid="ticket-pick-search"
+      aria-label="Search tickets by id or title"
+      placeholder="Search id or title…"
+      onkeydown={(e) => {
+        if (e.key === "Escape") { picking = false; }
+        // Enter takes the top hit — an exact id pasted in is one keystroke.
+        else if (e.key === "Enter" && shownOptions.length > 0 && !busy) { e.preventDefault(); pick(shownOptions[0].id); }
+      }}
+      class="mb-1.5 w-full rounded-lg border border-white-400 bg-white-100 px-2 py-1.5 text-xs text-black-900 outline-none focus:border-green-500 dark:border-navy-600 dark:bg-navy-700 dark:text-white-100"
+    />
+    {#if shownOptions.length === 0}
+      <p class="text-[11px] text-black-700 dark:text-black-600">No ticket matches “{pickQuery.trim()}”.</p>
+    {:else}
+      <ul class="flex max-h-60 flex-col gap-1 overflow-y-auto" data-testid="ticket-pick-list">
+        {#each shownOptions as t (t.id)}
+          <li>
+            <button
+              type="button"
+              disabled={busy}
+              onclick={() => pick(t.id)}
+              title={t.id + " — " + t.title}
+              class="flex w-full items-center gap-2 rounded border border-white-300 bg-white-100 px-2 py-1.5 text-left text-[11px] transition-colors hover:border-green-500 disabled:opacity-40 dark:border-navy-600 dark:bg-navy-700"
+            >
+              <!-- Shortened: a 32-character id would otherwise take the whole
+                   row and leave the title — the part people read — as "…". -->
+              <span class="shrink-0 font-mono text-[10px] text-black-700 dark:text-black-600">{shortTicketId(t.id)}</span>
+              <span class="min-w-0 flex-1 truncate text-black-900 dark:text-white-100">{t.title}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+{/snippet}
+
 <div class="flex h-full flex-col overflow-y-auto p-4">
   <h3 class="text-sm font-semibold text-black-900 dark:text-white-100">Ticket</h3>
 
   {#if ticket}
     <div class="mt-2 rounded-lg border border-white-300 bg-white-200 p-3 dark:border-navy-600 dark:bg-navy-800">
-      <div class="flex items-center gap-2">
+      <div class="flex min-w-0 items-center gap-2">
+        <!-- An adopted external id runs 32+ characters: shortened, so it
+             never shoves the buttons and status pill off the header. The
+             full id is the tooltip and the ticket's page. -->
         <button
           type="button"
           onclick={() => onOpenTicket?.(ticket.id)}
-          title="Open this ticket's page"
-          class="rounded bg-white-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-black-800 transition-colors hover:text-green-600 dark:bg-navy-700 dark:text-black-600 dark:hover:text-green-400"
-        >{ticket.id}</button>
-        <span class="ml-auto flex items-center gap-1.5">
+          title={"Open this ticket's page — " + ticket.id}
+          class="min-w-0 truncate rounded bg-white-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-black-800 transition-colors hover:text-green-600 dark:bg-navy-700 dark:text-black-600 dark:hover:text-green-400"
+        >{shortTicketId(ticket.id)}</button>
+        <span class="ml-auto flex shrink-0 items-center gap-1.5">
           {#if buttons && buttons.length > 0}
             <!-- Custom buttons ("Sync from Notion") sit in the header, quiet
                  until hovered: an action on the ticket, not content of it. -->
@@ -491,27 +545,7 @@
 
       {#if picking}
         <div class="mt-3">
-          {#if loadingOptions}
-            <p class="text-[11px] text-black-700 dark:text-black-600">Loading tickets…</p>
-          {:else if options.length === 0}
-            <p class="text-[11px] text-black-700 dark:text-black-600">No other open ticket to move to.</p>
-          {:else}
-            <ul class="flex max-h-40 flex-col gap-1 overflow-y-auto">
-              {#each options as t (t.id)}
-                <li>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onclick={() => pick(t.id)}
-                    class="flex w-full items-center gap-2 rounded border border-white-300 bg-white-100 px-2 py-1.5 text-left text-[11px] transition-colors hover:border-green-500 disabled:opacity-40 dark:border-navy-600 dark:bg-navy-700"
-                  >
-                    <span class="shrink-0 font-mono text-[10px] text-black-700 dark:text-black-600">{t.id}</span>
-                    <span class="min-w-0 flex-1 truncate text-black-900 dark:text-white-100">{t.title}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
+          {@render pickList("No other open ticket to move to.")}
           <button
             type="button"
             onclick={() => { picking = false; }}
@@ -569,27 +603,7 @@
         </form>
       {:else if picking}
         <div class="mt-2">
-          {#if loadingOptions}
-            <p class="text-[11px] text-black-700 dark:text-black-600">Loading tickets…</p>
-          {:else if options.length === 0}
-            <p class="text-[11px] text-black-700 dark:text-black-600">No open ticket yet — create one.</p>
-          {:else}
-            <ul class="flex max-h-40 flex-col gap-1 overflow-y-auto">
-              {#each options as t (t.id)}
-                <li>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onclick={() => pick(t.id)}
-                    class="flex w-full items-center gap-2 rounded border border-white-300 bg-white-100 px-2 py-1.5 text-left text-[11px] transition-colors hover:border-green-500 disabled:opacity-40 dark:border-navy-600 dark:bg-navy-700"
-                  >
-                    <span class="shrink-0 font-mono text-[10px] text-black-700 dark:text-black-600">{t.id}</span>
-                    <span class="min-w-0 flex-1 truncate text-black-900 dark:text-white-100">{t.title}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
+          {@render pickList("No open ticket yet — create one.")}
           <button
             type="button"
             onclick={() => { picking = false; }}

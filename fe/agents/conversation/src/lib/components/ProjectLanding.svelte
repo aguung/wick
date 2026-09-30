@@ -16,7 +16,7 @@
     saveTicketPrefs,
     type EmptiedTicket,
   } from "../api/tickets.js";
-  import type { TicketBoard, TicketFilter } from "../types/agents.js";
+  import type { TicketBoard, TicketFilter, TicketSessionRow } from "../types/agents.js";
   import { Composer } from "@wick-fe/common-ui";
   import { NOTIFY_KEY } from "../notify-pref.js";
   import SessionList from "./SessionList.svelte";
@@ -169,9 +169,13 @@
      every visit to a project board starts back at "yours" — widening to
      everyone's loose chats is a per-look choice, not a standing one. */
   let untrackedOwner = $state<"me" | "all">("me");
-  /* One page of the rail; scrolling its end raises the limit (the server
-     caps at 200), and the raised limit re-keys the board request below. */
-  let untrackedLimit = $state(25);
+  /* The poll asks for the rail's FIRST page only. Older pages are fetched
+     once each, on scroll, and kept here — so a rail scrolled back through a
+     few hundred chats does not re-send all of them every 30 seconds. */
+  const UNTRACKED_PAGE = 25;
+  const UNTRACKED_MORE_PAGE = 50;
+  let untrackedMore = $state<TicketSessionRow[]>([]);
+  let loadingMoreUntracked = false;
 
   /* The filter IS the request: statuses, assignee and the untracked rail all
      decide what the server builds, so a switched-off column costs nothing to
@@ -192,7 +196,7 @@
       statuses,
       assignee: ticketFilter.assignee || undefined,
       untracked: ticketFilter.show_untracked === true,
-      untrackedLimit,
+      untrackedLimit: UNTRACKED_PAGE,
       /* Your own loose chats by default — "all" is an explicit choice, and
          the count follows the scope so the rail's number and its rows always
          describe the same set. */
@@ -220,6 +224,9 @@
   $effect(() => {
     if (!filterLoaded) return;
     boardRequestKey; // the sole dependency: re-fetch when the request changes
+    // A different request (scope, filter, project) is a different list:
+    // the pages loaded under the old one no longer continue it.
+    untrackedMore = [];
     reloadBoard();
   });
 
@@ -249,6 +256,41 @@
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
+  });
+
+  /* Next page of the untracked rail, appended. The offset is what the rail
+     already holds, and rows it already has are dropped — the order moves as
+     chats are used, so a page boundary can repeat a row. */
+  function loadMoreUntracked() {
+    if (loadingMoreUntracked || !board) return;
+    loadingMoreUntracked = true;
+    const key = boardRequestKey;
+    const offset = board.untracked.length + untrackedMore.length;
+    Effect.runPromise(
+      getProjectTickets(base, project.id, {
+        rows: 0,
+        statuses: [], // rows only — no cards
+        untracked: true,
+        untrackedLimit: UNTRACKED_MORE_PAGE,
+        untrackedOffset: offset,
+        untrackedOwner,
+      }).pipe(Effect.provide(WickClientLayer)),
+    )
+      .then((b) => {
+        if (key !== boardRequestKey) return; // the request changed meanwhile
+        const have = new Set([...(board?.untracked ?? []), ...untrackedMore].map((r) => r.id));
+        untrackedMore = [...untrackedMore, ...b.untracked.filter((r) => !have.has(r.id))];
+      })
+      .catch(() => { /* the sentinel offers it again on the next scroll */ })
+      .finally(() => { loadingMoreUntracked = false; });
+  }
+
+  /* The board as drawn: the polled first page, then the pages loaded on
+     scroll, minus any row the fresh first page now holds itself. */
+  const boardView = $derived.by(() => {
+    if (!board || untrackedMore.length === 0) return board;
+    const first = new Set(board.untracked.map((r) => r.id));
+    return { ...board, untracked: [...board.untracked, ...untrackedMore.filter((r) => !first.has(r.id))] };
   });
 
   function reloadBoard() {
@@ -507,15 +549,15 @@
           onNewSession={newSessionInTicket}
         />
       </div>
-    {:else if ticketEnabled && viewMode === "card" && board}
+    {:else if ticketEnabled && viewMode === "card" && boardView}
       <KanbanBoard
         {base}
         projectId={project.id}
-        {board}
+        board={boardView}
         filter={ticketFilter}
         {untrackedOwner}
-        onUntrackedOwner={(v) => { untrackedOwner = v; untrackedLimit = 25; }}
-        onUntrackedMore={() => { untrackedLimit = Math.min(200, untrackedLimit + 25); }}
+        onUntrackedOwner={(v) => { untrackedOwner = v; }}
+        onUntrackedMore={loadMoreUntracked}
         onFilter={applyFilter}
         onOpen={(id) => { gotoTicket(id); }}
         onOpenSession={onSelectSession}

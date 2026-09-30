@@ -282,3 +282,36 @@ describe("TicketPanel — custom buttons (Sync)", () => {
     release();
   });
 });
+
+/* The move/attach picker is searched: a project holds dozens of open
+   tickets, and an id pasted in must land on its ticket, not on whatever
+   title shares a few characters with it. */
+describe("TicketPanel — ticket picker search", () => {
+  test("typing an id puts that ticket first and hides non-matches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            tickets: [
+              { id: "3eb1f07f4ae081c38ec0edde28a0604e", title: "Paragon webhook", status: "open", updated_at: "2026-09-30T10:00:00Z" },
+              { id: "3eb1f07f4ae08125bf4bff60a77bce2f", title: "MTI changes", status: "open", updated_at: "2026-09-30T09:00:00Z" },
+              { id: "T-2", title: "Unrelated", status: "open", updated_at: "2026-09-30T11:00:00Z" },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    renderPanel({ ticket: null });
+    await fireEvent.click(screen.getByText("Attach to existing…"));
+    const search = (await screen.findByTestId("ticket-pick-search")) as HTMLInputElement;
+    await fireEvent.input(search, { target: { value: "bce2f" } });
+    const rows = screen.getByTestId("ticket-pick-list").querySelectorAll("button");
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain("MTI changes");
+    // Long id shown shortened, full id kept on the tooltip.
+    expect(rows[0].textContent).toContain("3eb1…7bce2f");
+    expect(rows[0].getAttribute("title")).toContain("3eb1f07f4ae08125bf4bff60a77bce2f");
+  });
+});
