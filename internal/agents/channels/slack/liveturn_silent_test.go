@@ -37,6 +37,17 @@ func TestHasLiveTurnFalseAfterError(t *testing.T) {
 	}
 }
 
+// A Warning (a stdout line the parser could not read, the child still
+// working) must not end the turn: Error does, and a truncated line used to
+// drop the banner while the agent worked on for minutes.
+func TestHasLiveTurnSurvivesWarning(t *testing.T) {
+	c := &Channel{turns: map[string]*turn{"slack-123": {running: true}}}
+	c.OnAgentEvent("slack-123", event.AgentEvent{Type: event.Warning, ErrorMsg: "claude parse: unexpected end of JSON input"})
+	if !c.HasLiveTurn("slack-123") {
+		t.Fatal("turn must stay live through a Warning")
+	}
+}
+
 // ── [silent] marker stripping ────────────────────────────────────────────
 // The marker is plumbing and must never be shown. The web UI already strips it
 // for the conversation view; Slack has to match rather than invent its own rule.

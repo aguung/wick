@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	_ "github.com/yogasw/wick/internal/agents/provider/claude"
 	_ "github.com/yogasw/wick/internal/agents/provider/codex"
 	_ "github.com/yogasw/wick/internal/agents/provider/gemini"
+	_ "github.com/yogasw/wick/internal/agents/provider/omp"
+	_ "github.com/yogasw/wick/internal/agents/provider/opencode"
 	// wick is imported (named) in handler.go for SetSecretDecryptor;
 	// that import also runs its init() catalog/capability registration.
 
@@ -276,6 +279,35 @@ func saveProviderDetail(c *tool.Ctx) {
 	ins.Env = splitLines(c.Form("env"))
 	ins.Disabled = c.Form("disabled") == "on"
 	ins.MaxConcurrent = parseIntForm(c.Form("max_concurrent"))
+	if msg := applyAccountForm(&ins, c); msg != "" {
+		c.Error(http.StatusBadRequest, msg)
+		return
+	}
+	// omp/opencode: extra MCP servers + opencode model/hosting. Validated
+	// here so a bad JSON (or a plaintext secret) never reaches the file.
+	if t == provider.TypeOMP || t == provider.TypeOpencode {
+		keys := []string{"extra_mcp_servers"}
+		if t == provider.TypeOpencode {
+			keys = append(keys, "opencode_model", "opencode_allow_hosted", "load_external_skills")
+		}
+		if provider.SupportsServerMode(t) {
+			keys = append(keys, "server_mode", "server_idle_minutes")
+		}
+		if provider.SupportsAutoRetryModel(t) {
+			keys = append(keys, "auto_retry_model")
+		}
+		keys = append(keys, "auth_from")
+		for _, k := range keys {
+			if _, present := c.R.Form[k]; !present {
+				continue
+			}
+			if err := provider.ValidateInstanceConfigKey(k, c.Form(k)); err != nil {
+				c.Error(http.StatusBadRequest, err.Error())
+				return
+			}
+			provider.ApplyInstanceConfigKey(&ins, k, c.Form(k))
+		}
+	}
 	if t == provider.TypeCodex {
 		if ins.CodexConfig == nil {
 			ins.CodexConfig = &provider.CodexConfig{}
@@ -319,6 +351,10 @@ func saveProviderConfigKey(c *tool.Ctx) {
 	ins, err := provider.Find(t, name)
 	if err != nil {
 		c.JSON(http.StatusNotFound, map[string]string{"error": "provider not found"})
+		return
+	}
+	if err := provider.ValidateInstanceConfigKey(key, c.Form("value")); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	provider.ApplyInstanceConfigKey(&ins, key, c.Form("value"))
@@ -446,8 +482,25 @@ func saveProviderInstance(c *tool.Ctx) {
 			SandboxMode: provider.CodexSandboxMode(strings.TrimSpace(c.Form("sandbox_mode"))),
 		}
 	}
+	if msg := applyAccountForm(&ins, c); msg != "" {
+		c.Error(http.StatusBadRequest, msg)
+		return
+	}
 	applyAIRouterForm(&ins, c)
-	if mode := strings.TrimSpace(c.Form("storage_mode")); mode != "" {
+	// A new omp/opencode instance offers every model its CLI lists; the
+	// operator narrows or turns that off in Detail afterwards.
+	if t == provider.TypeOMP || t == provider.TypeOpencode {
+		if _, err := provider.Find(t, name); err != nil {
+			ins.LiveModels = true
+			if t == provider.TypeOpencode {
+				if ins.OpencodeConfig == nil {
+					ins.OpencodeConfig = &provider.OpencodeConfig{}
+				}
+				ins.OpencodeConfig.AllowHosted = true
+			}
+		}
+	}
+	if mode :=strings.TrimSpace(c.Form("storage_mode")); mode != "" {
 		ins.Storage = &provider.StorageConfig{
 			Mode:            mode,
 			SyncPath:        strings.TrimSpace(c.Form("storage_path")),
@@ -1659,4 +1712,33 @@ func filenameOf(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// applyAccountForm reads the optional account-store override for omp
+// (`omp_profile`) and opencode (`opencode_data_dir`). Absent/empty = keep
+// what the instance has (or the default for a new one) — the store is
+// pinned at first save and must not silently follow a rename. Returns a
+// user-facing error message, "" when fine.
+func applyAccountForm(ins *provider.Instance, c *tool.Ctx) string {
+	switch ins.Type {
+	case provider.TypeOMP:
+		if p := strings.TrimSpace(c.Form("omp_profile")); p != "" {
+			if !provider.ValidOMPProfile(p) {
+				return "omp profile must match ^[a-z0-9][a-z0-9._-]{0,63}$"
+			}
+			ins.OMPConfig = &provider.OMPConfig{Profile: p}
+		}
+	case provider.TypeOpencode:
+		if d := strings.TrimSpace(c.Form("opencode_data_dir")); d != "" {
+			if !filepath.IsAbs(d) {
+				return "opencode data dir must be an absolute path"
+			}
+			// Only the data dir: Model / AllowHosted stay as saved.
+			if ins.OpencodeConfig == nil {
+				ins.OpencodeConfig = &provider.OpencodeConfig{}
+			}
+			ins.OpencodeConfig.DataDir = d
+		}
+	}
+	return ""
 }

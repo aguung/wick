@@ -53,9 +53,12 @@ type ProviderInstanceDTO struct {
 
 // ProviderStatusDTO is one provider card's data: instance config + live status.
 type ProviderStatusDTO struct {
-	Instance    ProviderInstanceDTO          `json:"instance"`
-	Path        string                       `json:"path"`
-	PathFound   bool                         `json:"path_found"`
+	Instance  ProviderInstanceDTO `json:"instance"`
+	Path      string              `json:"path"`
+	PathFound bool                `json:"path_found"`
+	// Source is where Path came from: "managed" (wick-managed version),
+	// "registry" (manual Binary path), "path", "scan", "miss".
+	Source      string                       `json:"source,omitempty"`
 	Version     string                       `json:"version"`
 	VersionErr  string                       `json:"version_err,omitempty"`
 	Probing     bool                         `json:"probing"`
@@ -318,19 +321,20 @@ type ProviderDetailResponse struct {
 	// the admin who owns the credential and not for a viewer.
 	SecretsHidden bool                         `json:"secrets_hidden,omitempty"`
 	Instance      ProviderInstanceDTO          `json:"instance"`
-	Path         string                       `json:"path"`
-	PathFound    bool                         `json:"path_found"`
-	Version      string                       `json:"version"`
-	VersionErr   string                       `json:"version_err,omitempty"`
-	Probing      bool                         `json:"probing"`
-	Hooks        map[string]HookCapabilityDTO `json:"hooks"`
-	HookEnabled  map[string]bool              `json:"hook_enabled"`
-	Gate         GateStatusDTO                `json:"gate"`
-	GlobalMax    int                          `json:"global_max"`
-	ActiveCount  int                          `json:"active_count"`
-	ActivePIDs   []LiveProcessDTO             `json:"active_pids"`
-	ConfigFields []ConfigFieldDTO             `json:"config_fields"`
-	AIRouter     AIRouterDetailDTO            `json:"airouter"`
+	Path          string                       `json:"path"`
+	PathFound     bool                         `json:"path_found"`
+	Source        string                       `json:"source,omitempty"`
+	Version       string                       `json:"version"`
+	VersionErr    string                       `json:"version_err,omitempty"`
+	Probing       bool                         `json:"probing"`
+	Hooks         map[string]HookCapabilityDTO `json:"hooks"`
+	HookEnabled   map[string]bool              `json:"hook_enabled"`
+	Gate          GateStatusDTO                `json:"gate"`
+	GlobalMax     int                          `json:"global_max"`
+	ActiveCount   int                          `json:"active_count"`
+	ActivePIDs    []LiveProcessDTO             `json:"active_pids"`
+	ConfigFields  []ConfigFieldDTO             `json:"config_fields"`
+	AIRouter      AIRouterDetailDTO            `json:"airouter"`
 	// DefaultModels are the per-type catalog seed models (id + description),
 	// shown in the model-selection card so the operator sees what's used when
 	// the curated list is empty, and can Load them as an editable starting
@@ -449,6 +453,7 @@ func providerStatusDTO(st provider.Status, caps map[string]view.ProviderCapVM) P
 		},
 		Path:        st.Path,
 		PathFound:   st.PathFound,
+		Source:      st.Source,
 		Version:     st.Version,
 		VersionErr:  st.VersionErr,
 		Probing:     st.Probing,
@@ -710,6 +715,7 @@ func apiProviderDetail(c *tool.Ctx) {
 		},
 		Path:          st.Path,
 		PathFound:     st.PathFound,
+		Source:        st.Source,
 		Version:       st.Version,
 		VersionErr:    st.VersionErr,
 		Probing:       st.Probing,

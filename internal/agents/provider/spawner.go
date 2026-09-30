@@ -19,6 +19,7 @@ package provider
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // Process is a started subprocess: stdout reader, stdin writer, and a
@@ -168,6 +169,12 @@ type SpawnOptions struct {
 	// back anonymous and a shared thread loses track of who said what.
 	// Providers that resume via the CLI's own transcript ignore this.
 	SenderVisibility string
+
+	// IdleTimeout is the pool's idle-kill window (Settings → General,
+	// IdleTimeoutSec). Server-mode providers (omp RPC, opencode serve) use
+	// it as their server idle window unless the instance sets its own, so
+	// a server sits idle no longer than a claude/codex process. 0 = unset.
+	IdleTimeout time.Duration
 
 	// MaxTurns caps agentic turns for this spawn (--max-turns on claude).
 	// 0 = no cap. Threaded from the agent node's max_turns.

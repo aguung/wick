@@ -408,6 +408,14 @@ func Register(r tool.Router) {
 
 	// JSON API — providers SPA endpoints (mirrors templ providers handlers).
 	r.GET("/api/providers", apiProvidersList)
+	r.GET("/api/managed-binaries", apiManagedBinariesList)
+	r.GET("/api/managed-binaries/{type}/releases", apiManagedBinaryReleases)
+	r.POST("/api/managed-binaries/{type}/check", apiManagedBinaryCheck)
+	r.POST("/api/managed-binaries/{type}/install", apiManagedBinaryInstall)
+	r.POST("/api/managed-binaries/{type}/download", apiManagedBinaryDownload)
+	r.POST("/api/managed-binaries/{type}/activate", apiManagedBinaryActivate)
+	r.POST("/api/managed-binaries/{type}/remove", apiManagedBinaryRemove)
+	r.POST("/api/managed-binaries/{type}/verify", apiManagedBinaryVerify)
 	r.GET("/api/providers/storage", apiProvidersStorage)
 	// Token ledger: fleet-wide report, and one provider's slice of it.
 	r.GET("/api/providers/usage", apiUsageReport)
@@ -422,11 +430,21 @@ func Register(r tool.Router) {
 	r.GET("/api/providers/{type}/{name}/usage", apiProviderUsage)
 	r.GET("/api/providers/{type}/{name}/logintty", apiProviderLoginTTYStatus)
 	r.GET("/api/providers/{type}/{name}/logintty/usage", apiProviderLoginTTYUsage)
+	r.GET("/api/providers/{type}/{name}/cli-models", apiProviderCLIModels)
 	r.POST("/api/providers/{type}/{name}/logintty/usage/refresh", apiProviderLoginTTYUsageRefresh)
 	r.POST("/api/providers/{type}/{name}/logintty/start", apiProviderLoginTTYStart)
 	r.POST("/api/providers/{type}/{name}/logintty/extend", apiProviderLoginTTYExtend)
 	r.POST("/api/providers/{type}/{name}/logintty/kill", apiProviderLoginTTYKill)
+	r.POST("/api/providers/{type}/{name}/logintty/logout", apiProviderLoginTTYLogout)
+	r.POST("/api/providers/{type}/{name}/logintty/apikey", apiProviderAPIKeySet)
 	r.GET("/api/providers/{type}/{name}/logintty/ws", apiProviderLoginTTYWS)
+
+	// Web terminal (gotty): one allowlisted command under the instance
+	// env, 127.0.0.1 only, reached through wick's proxy. Admin-only.
+	r.GET("/api/providers/{type}/{name}/terminal", apiProviderTerminalStatus)
+	r.POST("/api/providers/{type}/{name}/terminal", apiProviderTerminalStart)
+	r.POST("/api/providers/{type}/{name}/terminal/{id}/close", apiProviderTerminalClose)
+	r.GET("/api/providers/{type}/{name}/terminal/{id}/{path...}", apiProviderTerminalProxy)
 
 	// Git source control (session cwd, multi-repo).
 	registerSCM(r)
@@ -977,9 +995,6 @@ func sidebarVMScoped(c *tool.Ctx, activePage, activeSessionID, scopedProjectID s
 	if sidebarOwner == "me" {
 		ids = ownedSessionIDs(c, ids, allSessions, scopedProjectID)
 	}
-	if len(ids) > sidebarCap {
-		ids = ids[:sidebarCap]
-	}
 	lc := make(map[string]view.SessionLifecycleVM)
 	liveBySession := make(map[string]string)
 	for _, e := range globalPool.ActiveSnapshot() {
@@ -998,6 +1013,12 @@ func sidebarVMScoped(c *tool.Ctx, activePage, activeSessionID, scopedProjectID s
 		entry := lc[root]
 		entry.SubAgent = sub
 		lc[root] = entry
+	}
+	// Running first, then last use — and only then the cap, so a busy
+	// session never falls off the list for being touched eleventh.
+	ids = orderSidebarIDs(ids, allSessions, lc)
+	if len(ids) > sidebarCap {
+		ids = ids[:sidebarCap]
 	}
 	// Read labels concurrently — buffered channel = no goroutine leak.
 	type result struct{ id, label string }
@@ -1436,26 +1457,18 @@ func startNewSession(c *tool.Ctx) {
 	c.Redirect(c.Base()+"/sessions/"+id, http.StatusSeeOther)
 }
 
-// renderCompose re-renders the new-session SPA shell after a failed
-// startNewSession submit. The SPA owns compose state client-side, so
-// message/errMsg are accepted for call-site compatibility only.
-func renderCompose(c *tool.Ctx, _, _ string) {
-	scoped := c.Query("project")
-	if scoped != "" {
-		if _, ok := globalMgr.Registry().Project(scoped); !ok {
-			scoped = ""
-		}
+// renderCompose reports a failed startNewSession submit. The composer posts
+// with fetch and navigates to res.url on any 2xx, so re-rendering the
+// new-session shell here (what this used to do) read as success: the page
+// reloaded to an empty "New session" and the error was gone. A plain-text
+// 422 instead lands in the composer's catch, which toasts the body
+// (fe/agents/new-session createSession). The composer keeps its own text,
+// so message is unused.
+func renderCompose(c *tool.Ctx, _, errMsg string) {
+	if errMsg == "" {
+		errMsg = "Failed to create session."
 	}
-	if scoped == "" {
-		scoped = pinnedProjectID(c)
-	}
-	layout := sidebarVMScoped(c, "new", "", scoped)
-	layout.FullBleed = true
-	c.HTML(view.NewSessionSPA(view.NewSessionSPAVM{
-		Layout:   layout,
-		Base:     c.Base(),
-		AssetURL: spaAssetURL("new-session"),
-	}))
+	c.Error(http.StatusUnprocessableEntity, errMsg)
 }
 
 // ── Overview ──────────────────────────────────────────────────────────
@@ -2559,6 +2572,8 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 		Desc    string          `json:"desc,omitempty"`
 		Live    bool            `json:"live,omitempty"`
 		Caps    json.RawMessage `json:"caps,omitempty"`
+		// Unavailable: listed, but this account was refused the model.
+		Unavailable bool `json:"unavailable,omitempty"`
 	}
 	typ := provider.Type(strings.TrimSpace(c.PathValue("type")))
 	name := strings.TrimSpace(c.PathValue("name"))
@@ -2576,14 +2591,50 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 		return out
 	}
 
-	// Level 4: expand a single live set by its entry id (filter stays server-side).
+	fromChoices := func(ms []provider.ModelChoice) []modelDTO {
+		out := make([]modelDTO, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, modelDTO{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps, Unavailable: m.Unavailable})
+		}
+		return out
+	}
+
+	// Grouped levels come from the type's registered ModelSets (wick: live
+	// set → vendor model; omp/opencode: provider → [account] → model).
+	// `?entry=` is an escaped path ("openai-codex/2") of any depth; the
+	// response shape is the same at every level. Errors are non-fatal: an
+	// empty level, the picker shows its empty state.
 	entry := strings.TrimSpace(c.Query("entry"))
-	if entry != "" && ins.Type == provider.TypeWick {
-		c.JSON(http.StatusOK, map[string]any{"models": toDTO(expandLiveWickSet(c.Context(), ins, entry, ""))})
+	sets, grouped := provider.ModelSetsFor(ins.Type)
+	if grouped && entry != "" {
+		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
+		defer cancel()
+		rows, err := sets.Expand(ctx, ins, provider.DecodePath(entry))
+		if err != nil {
+			log.Ctx(c.Context()).Debug().Err(err).Str("entry", entry).Msg("model set expand failed")
+		}
+		c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
 		return
+	}
+	if grouped && ins.Type != provider.TypeWick {
+		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
+		defer cancel()
+		if rows, err := sets.Sets(ctx, ins); err == nil && len(rows) > 0 {
+			c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
+			return
+		}
+		// No grouping for this instance (live models off, not logged in):
+		// the flat list below still applies.
 	}
 
 	// Level 3: the instance's model choices (live sets stay as expandable rows).
+	// An omp/opencode live list is warmed first, so the drill-in shows the
+	// CLI's models even on a cold cache (render paths only peek).
+	if provider.LiveModelsEnabled(ins) && ins.ModelSelect {
+		ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
+		_, _, _ = provider.CachedCLIModels(ctx, ins, false)
+		cancel()
+	}
 	out := toDTO(modelChoicesFor(ins))
 	if out == nil {
 		out = []modelDTO{}

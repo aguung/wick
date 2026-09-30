@@ -57,6 +57,13 @@ export interface ConnectorMCPAuth {
   expired?: boolean;
   /* Per-instance auth probe endpoint; empty when the caller can't configure. */
   test_url?: string;
+  /* Per-user (SSO) instance: holds no credential itself, each user connects
+     their own account. account_count = accounts the viewer may see;
+     mine_connected = the viewer connected theirs. */
+  per_user?: boolean;
+  account_count?: number;
+  mine_connected?: boolean;
+  connect_mine_url?: string;
 }
 
 export interface InstanceAuthTestResult {
@@ -415,6 +422,9 @@ export interface McpServerForm {
   oauth: McpOAuthExtra;
   excluded: string[];
   oauth_login_id: string;
+  /* oauth scheme: "Users connect their own account (SSO)" — save needs no
+     Test, and the first instance turns Enable SSO on. */
+  oauth_per_user?: boolean;
 }
 
 export interface McpTool {

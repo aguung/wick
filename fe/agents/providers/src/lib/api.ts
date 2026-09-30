@@ -47,6 +47,7 @@ interface WireProviderStatus {
   instance: WireProviderInstance;
   path: string;
   path_found: boolean;
+  source?: string;
   version: string;
   version_err?: string;
   probing: boolean;
@@ -188,6 +189,7 @@ interface WireProviderDetailResponse {
   instance: WireProviderInstance;
   path: string;
   path_found: boolean;
+  source?: string;
   version: string;
   version_err?: string;
   probing: boolean;
@@ -377,6 +379,7 @@ function mapProviderStatus(w: WireProviderStatus): ProviderStatusDTO {
     Instance: mapInstance(w.instance),
     Path: w.path ?? "",
     PathFound: w.path_found ?? false,
+    Source: w.source ?? "",
     Version: w.version ?? "",
     VersionErr: w.version_err ?? "",
     Probing: w.probing ?? false,
@@ -498,10 +501,20 @@ export async function apiCreateProvider(fields: {
   airouter_models?: Record<string, string>;
   airouter_api_key?: string;
   airouter_raw_config?: string;
+  omp_profile?: string;
+  opencode_data_dir?: string;
 }): Promise<void> {
   const form = new URLSearchParams();
   form.set("type", fields.type);
   form.set("name", fields.name);
+  // Account-store override (omp/opencode). Empty = server default, pinned
+  // on first save.
+  if (fields.omp_profile) {
+    form.set("omp_profile", fields.omp_profile);
+  }
+  if (fields.opencode_data_dir) {
+    form.set("opencode_data_dir", fields.opencode_data_dir);
+  }
   if (fields.binary) {
     form.set("binary", fields.binary);
   }
@@ -580,6 +593,7 @@ export function normalizeProviderDetail(r: WireProviderDetailResponse): Provider
     Instance: mapInstance(r.instance),
     Path: r.path ?? "",
     PathFound: r.path_found ?? false,
+    Source: r.source ?? "",
     Version: r.version ?? "",
     VersionErr: r.version_err ?? "",
     Probing: r.probing ?? false,
@@ -1494,6 +1508,7 @@ interface WireProviderConnection {
   type: string;
   name: string;
   connected?: boolean;
+  account_unknown?: boolean;
   email?: string;
   plan?: string;
   org?: string;
@@ -1515,6 +1530,7 @@ export function normalizeConnections(
     type: c.type ?? "",
     name: c.name ?? "",
     connected: c.connected ?? false,
+    accountUnknown: c.account_unknown ?? false,
     email: c.email ?? "",
     plan: c.plan ?? "",
     org: c.org ?? "",
@@ -1543,4 +1559,45 @@ export async function apiGetConnections(): Promise<ProviderConnection[]> {
     getBase() + "/api/providers/connections",
   );
   return normalizeConnections(r);
+}
+
+/* ── omp/opencode live CLI model list ─────────────────────────────────── */
+
+export interface CLIModel {
+  id: string;
+  desc?: string;
+}
+
+/** GET /api/providers/{type}/{name}/cli-models — the CLI's own model list,
+    cached server-side ~10 min (refresh=true re-runs the CLI). `models` is
+    everything listed; `offered` is what the picker gets with the SAVED
+    filter (default first). `error` = a failed refresh over a stale list. */
+export interface CLIModelsResponse {
+  models: CLIModel[];
+  offered: CLIModel[];
+  default?: string;
+  hostedAllowed: boolean;
+  fetchedAt: string;
+  error?: string;
+}
+
+export async function apiGetCLIModels(base: string, type: string, name: string, refresh = false): Promise<CLIModelsResponse> {
+  const r = await get<{ models?: CLIModel[]; offered?: CLIModel[]; default?: string; hosted_allowed?: boolean; fetched_at?: string; error?: string }>(
+    `${base}/api/providers/${encodeURIComponent(type)}/${encodeURIComponent(name)}/cli-models${refresh ? "?refresh=1" : ""}`,
+  );
+  return {
+    models: r.models ?? [],
+    offered: r.offered ?? [],
+    default: r.default,
+    hostedAllowed: r.hosted_allowed ?? true,
+    fetchedAt: r.fetched_at ?? "",
+    error: r.error,
+  };
+}
+
+/** Hosted opencode models (opencode/…, opencode-go/…) — mirrors
+    provider.IsOpencodeHostedModel. */
+export function isOpencodeHostedModel(id: string): boolean {
+  const p = id.split("/")[0];
+  return p === "opencode" || p === "opencode-go";
 }

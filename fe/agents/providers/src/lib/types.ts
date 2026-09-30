@@ -33,6 +33,9 @@ export interface ProviderStatusDTO {
   Instance: ProviderInstanceDTO;
   Path: string;
   PathFound: boolean;
+  /* Where Path came from: "managed" (wick-managed version), "registry"
+     (manual Binary path), "path", "scan", "miss". */
+  Source?: string;
   Version: string;
   VersionErr: string;
   Probing: boolean;
@@ -192,7 +195,7 @@ export interface MCPStatusDTO {
 export interface GateStatusDTO {
   Enabled: boolean;
   Binary: string;
-  Source: string;
+  Source?: string;
   Reason: string;
   Note: string;
   PermissionMode: string;
@@ -255,6 +258,9 @@ export interface ProviderDetailResponse {
   Instance: ProviderInstanceDTO;
   Path: string;
   PathFound: boolean;
+  /* Where Path came from: "managed" (wick-managed version), "registry"
+     (manual Binary path), "path", "scan", "miss". */
+  Source?: string;
   Version: string;
   VersionErr: string;
   Probing: boolean;
@@ -287,6 +293,9 @@ export interface ProviderConnection {
   type: string;
   name: string;
   connected: boolean;
+  /* accountUnknown: the login could not be read this time (the CLI probe
+     failed or timed out). Not a logout — shown as "checking". */
+  accountUnknown: boolean;
   email: string;
   plan: string;
   org: string;

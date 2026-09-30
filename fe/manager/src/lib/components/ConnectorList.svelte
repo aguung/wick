@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, ConfirmDialog, KebabMenu, Modal, TextInput } from "@wick-fe/common-ui";
+  import { Button, ConfirmDialog, KebabMenu, Modal, ProgressBar, TextInput } from "@wick-fe/common-ui";
   import { toastOk, toastError } from "@wick-fe/common-stores";
   import { push } from "$lib/router.js";
   import {
@@ -631,18 +631,7 @@
           {#if updateProgress}
             {@const indeterminate = updateProgress.phase === "downloading" && updateProgress.pct < 0}
             {@const pct = updateProgress.phase === "downloading" && updateProgress.pct >= 0 ? updateProgress.pct : updateProgress.phase === "done" ? 100 : updateProgress.phase === "downloading" ? 0 : 100}
-            <div class="mt-2 max-w-xs">
-              <div class="flex items-center justify-between text-[11px] font-medium text-black-800 dark:text-black-600">
-                <span>{phaseLabel}</span>
-              </div>
-              <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-white-300 dark:bg-navy-600">
-                {#if indeterminate}
-                  <div class="h-full w-1/3 animate-pulse rounded-full bg-green-500"></div>
-                {:else}
-                  <div class="h-full rounded-full bg-green-500 transition-all duration-200" style={`width:${pct}%`}></div>
-                {/if}
-              </div>
-            </div>
+            <ProgressBar class="mt-2 max-w-xs" pct={indeterminate ? -1 : pct} label={phaseLabel} />
           {/if}
         </div>
       </div>
@@ -718,7 +707,27 @@
                     {/each}
                   {/if}
                   <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {chip.cls}">{chip.label}</span>
-                  {#if canConnect(row)}
+                  {#if row.mcp_auth?.per_user}
+                    <!-- Per-user (SSO) MCP instance: it holds no credential of
+                         its own, so it is never "not connected". Neutral count
+                         of the accounts the viewer may see, then the viewer's
+                         own state. -->
+                    <span class="inline-flex items-center rounded-md border border-white-400 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-2 py-0.5 text-[11px] text-black-800 dark:text-black-600" data-per-user-chip>
+                      Per-user login · {row.mcp_auth.account_count ?? 0} {(row.mcp_auth.account_count ?? 0) === 1 ? "account" : "accounts"}
+                    </span>
+                    {#if row.mcp_auth.mine_connected}
+                      <span class="inline-flex items-center gap-1 rounded-md border border-green-600/40 bg-green-900/20 px-2 py-0.5 text-[11px] font-medium text-green-500" data-mine-connected>
+                        <svg class="h-3 w-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>
+                        You: connected
+                      </span>
+                    {:else if canConnect(row)}
+                      <!-- Same look as the instance Connect button: secondary
+                           reads as bare text on the dark theme. -->
+                      <Button variant="primary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
+                        {connectingId === row.id ? "Connecting…" : "Connect my account"}
+                      </Button>
+                    {/if}
+                  {:else if canConnect(row)}
                     <Button variant="primary" size="sm" disabled={connectingId === row.id} onclick={() => connect(row)}>
                       {connectingId === row.id ? "Connecting…" : connectLabel(row)}
                     </Button>
@@ -729,7 +738,9 @@
                   <!-- Auth state is per instance. Broken auth wins over the
                        account chip: a reassuring identity next to a dead
                        token is worse than no chip at all. -->
-                  {#if row.mcp_auth && authBroken(row)}
+                  {#if row.mcp_auth?.per_user}
+                    <!-- chips rendered above -->
+                  {:else if row.mcp_auth && authBroken(row)}
                     <span
                       class="inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-md border border-neg-400 bg-neg-100 px-2 py-0.5 text-[11px] font-medium text-neg-400"
                       title={authBrokenReason(row)}

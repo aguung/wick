@@ -12,12 +12,14 @@ import (
 	"github.com/yogasw/wick/internal/agents/event"
 	"github.com/yogasw/wick/internal/agents/gate"
 	"github.com/yogasw/wick/internal/agents/preset"
-	"github.com/yogasw/wick/internal/agents/scm"
 	"github.com/yogasw/wick/internal/agents/provider"
 	"github.com/yogasw/wick/internal/agents/provider/claude"
 	codexpkg "github.com/yogasw/wick/internal/agents/provider/codex"
 	geminipkg "github.com/yogasw/wick/internal/agents/provider/gemini"
+	omppkg "github.com/yogasw/wick/internal/agents/provider/omp"
+	opencodepkg "github.com/yogasw/wick/internal/agents/provider/opencode"
 	wickpkg "github.com/yogasw/wick/internal/agents/provider/wick"
+	"github.com/yogasw/wick/internal/agents/scm"
 	"github.com/yogasw/wick/internal/agents/session"
 	"github.com/yogasw/wick/internal/agents/state"
 	"github.com/yogasw/wick/internal/agents/store"
@@ -324,6 +326,22 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 			spawner = codexpkg.Spawner{Binary: bin, MCPToken: tok}
 		case provider.TypeGemini:
 			spawner = geminipkg.Spawner{Binary: bin, YoloMode: bypassPerms}
+		case provider.TypeOMP, provider.TypeOpencode:
+			// Same per-session MCP credential codex gets. Both run with
+			// approvals off unconditionally: there is no gate hook for
+			// them, and a headless run cannot answer a prompt.
+			tok := f.mcpTokenFor(opt.SessionID, opt.CallerUserID)
+			if pType == provider.TypeOMP {
+				// omp revokes its own per-session token: in server mode it
+				// lives as long as the session's RPC process, not one turn
+				// (omp.SetMCPTokenRevoker), so it is not reported here.
+				spawner = omppkg.Spawner{Binary: bin, MCPToken: tok, RevocableToken: tok != f.MCPToken, MCPOwner: opt.CallerUserID}
+			} else {
+				if tok != f.MCPToken {
+					claudeMCPToken = tok
+				}
+				spawner = opencodepkg.Spawner{Binary: bin, MCPToken: tok}
+			}
 		case provider.TypeWick:
 			// In-process runtime — no binary. Must NOT fall through to
 			// the claude default: that would spawn a real claude CLI
@@ -469,6 +487,12 @@ func (f *ClaudeFactory) Build(opt FactoryOptions) (BuildResult, error) {
 				// turn-wide sum), so it has to be told where this
 				// instance keeps its state.
 				return event.NewCodexParserIn(envValue(resolvedIns.Env, "CODEX_HOME"))
+			}
+			switch pType {
+			case provider.TypeOMP:
+				return event.NewOMPParser(resolvedIns.Name)
+			case provider.TypeOpencode:
+				return event.NewOpencodeParser(resolvedIns.Name)
 			}
 			return event.NewClaudeParser()
 		},
@@ -634,10 +658,22 @@ func (f *ClaudeFactory) mcpTokenFor(sessionID, callerUserID string) string {
 }
 
 func sendModeFor(pType provider.Type, override string) provider.SendMode {
+	oneShot := false
+	switch pType {
+	case provider.TypeCodex, provider.TypeOMP, provider.TypeOpencode:
+		// One process per turn; a message sent mid-turn waits for it.
+		oneShot = true
+	}
 	if m, ok := provider.ParseSendMode(override); ok {
+		// These CLIs take the prompt once, at spawn, and never read stdin
+		// after it: "append" would write each message into a no-op pipe and
+		// lose it without a word. Queue-and-combine is the closest they get.
+		if m == provider.SendAppend && oneShot {
+			return provider.SendRespawnQueue
+		}
 		return m
 	}
-	if pType == provider.TypeCodex {
+	if oneShot {
 		return provider.SendRespawnQueue
 	}
 	return provider.SendAppend
@@ -694,8 +730,17 @@ func resolveProviderBinary(providerType, providerName string) (bin, source strin
 	if t == "" {
 		t = provider.TypeClaude
 	}
-	if ins, err := provider.Find(t, providerName); err == nil && ins.Binary != "" {
+	ins, err := provider.Find(t, providerName)
+	if err == nil && ins.Binary != "" {
 		return ins.Binary, "registry"
+	}
+	// Wick-managed current version (omp/opencode): resolved per spawn, so a
+	// switch takes effect on the next turn while a running process keeps the
+	// file it started from.
+	if err == nil {
+		if p, src := provider.ResolveBinarySource(ins); src == provider.BinSourceManaged {
+			return p, src
+		}
 	}
 	if p, err := safeexec.LookPath(string(t)); err == nil {
 		return p, "path"

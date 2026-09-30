@@ -29,10 +29,29 @@ func LoginCommand(t provider.Type, extraArgs []string) ([]string, bool) {
 	case provider.TypeCodex:
 		// extraArgs are deliberately dropped — see codexLoginCommand.
 		return codexLoginCommand(), true
+	case provider.TypeOMP, provider.TypeOpencode:
+		// Supported; the real argv needs the instance (profile / choice)
+		// — see LoginCommandFor.
+		return LoginCommandFor(provider.Instance{Type: t, Name: string(t)}, "")
 	default:
 		// gemini: TTY login lands in gemini.go later.
 		return nil, false
 	}
+}
+
+// LoginCommandFor is LoginCommand with the instance and the login choice
+// the user picked (omp: an OMPLoginProviders id; opencode: an
+// OpencodeLoginProviders id or a provider id). Empty choice = default.
+// omp/opencode need the instance because their argv names its account
+// store; other types ignore choice and defer to LoginCommand.
+func LoginCommandFor(ins provider.Instance, choice string) ([]string, bool) {
+	switch ins.Type {
+	case provider.TypeOMP:
+		return ompLoginCommand(provider.AccountEnv(ins), choice), true
+	case provider.TypeOpencode:
+		return opencodeLoginCommand(ins, choice), true
+	}
+	return LoginCommand(ins.Type, ins.ExtraArgs)
 }
 
 // LoginEnv returns extra env vars injected ONLY into the login TTY
@@ -59,6 +78,10 @@ func ConfigDir(t provider.Type, env []string) string {
 		return codexConfigDir(env)
 	case provider.TypeGemini:
 		return geminiConfigDir()
+	case provider.TypeOMP:
+		return ompConfigDir(env)
+	case provider.TypeOpencode:
+		return opencodeConfigDir(env)
 	default:
 		return ""
 	}
@@ -80,6 +103,47 @@ func ReadAccount(t provider.Type, env []string) Account {
 		return readCodexAccount(dir)
 	case provider.TypeGemini:
 		return readGeminiAccount(dir)
+	case provider.TypeOMP:
+		return readOMPAccount(env)
+	case provider.TypeOpencode:
+		return readOpencodeAccount(dir)
 	}
 	return Account{}
+}
+
+// LoginChoice is one entry of the UI login picker.
+type LoginChoice struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Warning string `json:"warning,omitempty"`
+	Default bool   `json:"default,omitempty"`
+}
+
+// LoginChoices lists the picker entries for t (nil = no picker).
+// omp asks its binary for the registry (with the instance's account env);
+// opencode asks its server (opencodeLoginChoices).
+func LoginChoices(ins provider.Instance) []LoginChoice {
+	var out []LoginChoice
+	switch ins.Type {
+	case provider.TypeOMP:
+		for _, p := range ompLoginProviders(provider.AccountEnv(ins)) {
+			out = append(out, LoginChoice{ID: p.ID, Label: p.Label, Warning: p.Warning, Default: p.Default})
+		}
+	case provider.TypeOpencode:
+		for _, p := range opencodeLoginChoices(ins) {
+			out = append(out, LoginChoice{ID: p.ID, Label: p.Label, Default: p.Default})
+		}
+	}
+	return out
+}
+
+// LoginNote is the caveat shown beside t's login picker.
+func LoginNote(t provider.Type) string {
+	switch t {
+	case provider.TypeOMP:
+		return "One instance can hold several accounts: log in again to add another, and omp rotates between them automatically when one hits its usage limit. Separate instances still work for keeping accounts apart."
+	case provider.TypeOpencode:
+		return OpencodeClaudeNote
+	}
+	return ""
 }

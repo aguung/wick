@@ -1278,50 +1278,13 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 		l.Error().
 			Err(err).
 			Msg("pool.spawn: Start failed")
-		// A failed start leaves the state machine at Spawning and the session
-		// marked Running. Tear down the same way a normal exit does so the UI
-		// doesn't sit stuck on "spawning": flip to Killed (broadcasts the
-		// lifecycle), revert status, release the slot, and let the queue move
-		// on. Surface the failure as a system error turn (persisted + live) so
-		// it reads inline instead of only as a request-level error.
-		label := pType
-		if pName != "" && pName != pType {
-			label = pName + " " + pType
-		}
-		if label == "" {
-			label = agentName
-		}
-		msg := "Failed to start " + label + ": " + err.Error()
-		if sto != nil {
-			if perr := sto.AppendErrorTurn(msg); perr != nil {
-				l.Warn().Err(perr).Msg("pool.spawn: persist spawn-error turn failed")
-			}
-		}
-		p.mu.Lock()
-		if st != nil {
-			st.MarkKilled()
-		}
-		p.mu.Unlock()
-		_ = p.markStatus(sessionID, session.StatusIdle)
-		p.releaseSlot(key)
-		if p.cfg.OnSpawnError != nil {
-			p.cfg.OnSpawnError(SpawnErrorEvent{
-				SessionID:    sessionID,
-				AgentName:    agentName,
-				Ctx:          ctx,
-				Message:      msg,
-				Err:          err,
-				ProviderType: pType,
-				ProviderName: pName,
-			})
-		}
-		p.tryGrantQueue()
 		// Return nil: the failure is now surfaced in-band (persisted system
 		// error turn + broadcast Error/Done, and channels get it via the event
 		// dispatch) exactly like a runtime error. Bubbling it as a Send error
 		// too would make /send return 500 and pop a toast — a double report the
 		// caller should not see. The Send "succeeds"; the session is already
 		// back to idle.
+		p.failSpawn(ctx, key, sessionID, agentName, pType, pName, st, sto, err)
 		return nil
 	}
 	l.Debug().
@@ -1364,10 +1327,60 @@ func (p *Pool) spawn(ctx context.Context, sessionID, agentName, source string) e
 		// User turns were already persisted to conversation.jsonl by
 		// persistBufferedTurn on each Send; combined is just the CLI input.
 		if err := a.Send(combined); err != nil {
-			return err
+			// Respawn-per-turn providers (codex, opencode, omp) defer the
+			// real spawn to this first Send, so a refused spawn — binary
+			// missing, no model — lands here, not at Start. Same teardown
+			// and inline report as a failed Start; without it the session
+			// sat "running" with no process and the error only reached the
+			// HTTP caller, which the new-session composer swallowed.
+			l.Error().Err(err).Msg("pool.spawn: first send failed")
+			p.failSpawn(ctx, key, sessionID, agentName, pType, pName, st, sto, err)
+			return nil
 		}
 	}
 	return nil
+}
+
+// failSpawn tears down a spawn that never produced a working process and
+// reports why, inline. A failed start leaves the state machine at Spawning
+// and the session marked Running: flip to Killed (broadcasts the
+// lifecycle), revert status, release the slot, and let the queue move on.
+// The failure becomes a system error turn (persisted + live via
+// OnSpawnError) so it reads in the conversation instead of only as a
+// request-level error.
+func (p *Pool) failSpawn(ctx context.Context, key, sessionID, agentName, pType, pName string, st *state.Machine, sto *store.Store, err error) {
+	label := pType
+	if pName != "" && pName != pType {
+		label = pName + " " + pType
+	}
+	if label == "" {
+		label = agentName
+	}
+	msg := "Failed to start " + label + ": " + err.Error()
+	if sto != nil {
+		if perr := sto.AppendErrorTurn(msg); perr != nil {
+			log.Ctx(ctx).Warn().Err(perr).Str("session", sessionID).Msg("pool.spawn: persist spawn-error turn failed")
+		}
+	}
+	p.mu.Lock()
+	if st != nil {
+		st.MarkKilled()
+	}
+	p.mu.Unlock()
+	_ = p.markStatus(sessionID, session.StatusIdle)
+	p.releaseSlot(key)
+	if p.cfg.OnSpawnError != nil {
+		p.cfg.OnSpawnError(SpawnErrorEvent{
+			SessionID:    sessionID,
+			AgentName:    agentName,
+			Ctx:          ctx,
+			Message:      msg,
+			Err:          err,
+			ProviderType: pType,
+			ProviderName: pName,
+		})
+	}
+	p.tryGrantQueue()
 }
 
 // onAgentExit is the hook the factory wires for us. The pool marks

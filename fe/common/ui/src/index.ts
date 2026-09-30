@@ -1,8 +1,10 @@
 export { default as ConfirmDialog } from "./ConfirmDialog.svelte";
 export { default as ToastHost } from "./ToastHost.svelte";
 export { default as Select } from "./Select.svelte";
+export type { SelectOption } from "./select-types.js";
 export { default as KvList } from "./KvList.svelte";
 export { default as Button } from "./Button.svelte";
+export { default as ProgressBar } from "./ProgressBar.svelte";
 export { default as Toggle } from "./Toggle.svelte";
 export { default as TextInput } from "./TextInput.svelte";
 export { default as NumberInput } from "./NumberInput.svelte";
@@ -31,6 +33,9 @@ export { default as CodeEditor } from "./CodeEditor.svelte";
 export { aceModeFor, aceModeForLanguage, extOf } from "./aceMode.js";
 export { default as Composer } from "./Composer.svelte";
 export { default as ProviderPicker } from "./ProviderPicker.svelte";
+export { default as ProviderIcon } from "./ProviderIcon.svelte";
+export { providerBrand } from "./provider-brand.js";
+export type { ProviderBrand } from "./provider-brand.js";
 export { buildProviderOptions } from "./provider-options.js";
 export type { ComposerSelectOption, ComposerModelOption } from "./composer-types.js";
 export { default as ImageEditor } from "./ImageEditor.svelte";
@@ -94,3 +99,5 @@ export {
 export { rankPathHits, scorePath, subsequence, withAncestorDirs } from "./file-search.js";
 export type { PathHit } from "./file-search.js";
 export { formatSize, formatRelTime } from "./file-meta.js";
+export { matchModelFilter, MODEL_FILTER_HELP } from "./modelFilter.js";
+export { encodePath, decodePath, encodePin, decodePin } from "./model-path.js";
