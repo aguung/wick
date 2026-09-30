@@ -18,3 +18,16 @@ func TestSendModeForOneShotCLIs(t *testing.T) {
 		t.Errorf("gemini default changed: %v", got)
 	}
 }
+
+// "append" on a CLI that reads its prompt once would swallow every
+// mid-turn message; it resolves to queue-and-combine instead.
+func TestSendModeAppendOverrideOnOneShotQueues(t *testing.T) {
+	for _, ty := range []provider.Type{provider.TypeCodex, provider.TypeOMP, provider.TypeOpencode} {
+		if got := sendModeFor(ty, "append"); got != provider.SendRespawnQueue {
+			t.Errorf("%s append = %v, want queue", ty, got)
+		}
+	}
+	if got := sendModeFor(provider.TypeClaude, "append"); got != provider.SendAppend {
+		t.Errorf("claude append = %v, want append", got)
+	}
+}

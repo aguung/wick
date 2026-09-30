@@ -655,12 +655,22 @@ func (f *ClaudeFactory) mcpTokenFor(sessionID, callerUserID string) string {
 }
 
 func sendModeFor(pType provider.Type, override string) provider.SendMode {
-	if m, ok := provider.ParseSendMode(override); ok {
-		return m
-	}
+	oneShot := false
 	switch pType {
 	case provider.TypeCodex, provider.TypeOMP, provider.TypeOpencode:
 		// One process per turn; a message sent mid-turn waits for it.
+		oneShot = true
+	}
+	if m, ok := provider.ParseSendMode(override); ok {
+		// These CLIs take the prompt once, at spawn, and never read stdin
+		// after it: "append" would write each message into a no-op pipe and
+		// lose it without a word. Queue-and-combine is the closest they get.
+		if m == provider.SendAppend && oneShot {
+			return provider.SendRespawnQueue
+		}
+		return m
+	}
+	if oneShot {
 		return provider.SendRespawnQueue
 	}
 	return provider.SendAppend

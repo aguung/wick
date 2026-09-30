@@ -82,9 +82,10 @@ type Agent struct {
 	// pendingQueue holds messages that arrived while a RespawnOnSend
 	// (codex) turn was in flight, in FIFO order. Codex is one-shot per
 	// spawn, so we can't respawn mid-turn (it would orphan the running
-	// process and stack subprocesses past MaxConcurrent). Each queued
-	// message runs as its own turn after the current one ends — every
-	// Enter is processed, none are dropped. drainPending pops the head.
+	// process and stack subprocesses past MaxConcurrent). When the turn
+	// ends, drainPending sends the WHOLE queue as one message — the way
+	// claude folds input typed mid-turn into its next turn — so six quick
+	// Enters are one turn, not six. None are dropped.
 	pendingQueue []string
 	// turnActive is true for RespawnOnSend agents between a respawn and
 	// its turn completing (lifecycle returns to idle). Gates whether a
@@ -465,16 +466,38 @@ func (a *Agent) drainPending() {
 		a.mu.Unlock()
 		return
 	}
-	next := a.pendingQueue[0]
-	a.pendingQueue = a.pendingQueue[1:]
+	queued := len(a.pendingQueue)
+	next := joinQueued(a.pendingQueue)
+	a.pendingQueue = nil
 	a.mu.Unlock()
-	log.Debug().Int("remaining", len(a.pendingQueue)).Msg("agent.drain: running next queued message after turn completion")
+	log.Debug().Int("messages", queued).Msg("agent.drain: running queued messages as one turn after turn completion")
 	go func() {
 		if err := a.respawnWithMessage(next); err != nil {
 			log.Warn().Err(err).Msg("agent.drain: respawn for queued message failed")
 		}
 	}()
 }
+
+// Injector is a Process that can take another user message into the turn
+// it is running, so a message sent mid-turn joins that turn instead of
+// waiting for the next one. Inject returns an error when the turn can no
+// longer take it (already over, killed); the caller then queues.
+type Injector interface {
+	Inject(text string) error
+}
+
+// joinQueued folds the messages parked during a turn into the one
+// message the next turn starts with: in order, a blank line between
+// them. Each keeps its own `[from: …]` line, so a turn built from
+// several people's messages still says who wrote which.
+func joinQueued(msgs []string) string {
+	return strings.Join(msgs, "\n\n")
+}
+
+// queuedNotice is the transcript line for the first message parked
+// behind a running turn — without it the message sits there with no
+// answer and no sign it was even received.
+const queuedNotice = "Message queued — this provider cannot take input mid-turn, so it runs together with anything else sent meanwhile as one turn once the current one finishes."
 
 func (a *Agent) respawnWithMessage(text string) error {
 	a.mu.Lock()
@@ -490,10 +513,33 @@ func (a *Agent) respawnWithMessage(text string) error {
 	// subprocesses past MaxConcurrent. Append to the FIFO queue; each
 	// message runs as its own turn after the current one ends (drainPending
 	// pops the head). Every Enter is processed in order — none dropped.
+	// A CLI that can take a message into the turn it is running (opencode
+	// server mode) gets it there directly — the claude behaviour. Queueing
+	// is only the fallback for one-shot CLIs; an Inject that fails (the
+	// turn just ended, or was killed) falls through to the normal path.
+	if inj, ok := a.proc.(Injector); ok && a.running && a.cfg.SendMode == SendRespawnQueue {
+		a.mu.Unlock()
+		err := inj.Inject(text)
+		if err == nil {
+			log.Debug().Msg("agent.respawn: message injected into the running turn")
+			return nil
+		}
+		log.Debug().Err(err).Msg("agent.respawn: inject refused; queueing / respawning")
+		a.mu.Lock()
+		if a.stopped {
+			a.mu.Unlock()
+			return errors.New("agent stopped")
+		}
+	}
 	if a.turnActive {
 		a.pendingQueue = append(a.pendingQueue, text)
+		queued := len(a.pendingQueue)
+		st := a.store
 		a.mu.Unlock()
-		log.Debug().Int("queued", len(a.pendingQueue)).Msg("agent.respawn: turn in flight, message queued")
+		log.Debug().Int("queued", queued).Msg("agent.respawn: turn in flight, message queued")
+		if queued == 1 && st != nil && a.cfg.SendMode == SendRespawnQueue {
+			_ = st.AppendNoticeTurn(queuedNotice)
+		}
 		return nil
 	}
 	a.turnActive = true
@@ -518,6 +564,16 @@ func (a *Agent) respawnWithMessage(text string) error {
 		terminateProc(proc, done)
 		a.mu.Lock()
 		a.respawning = false
+		// Stop ran while the old process was being torn down (the lock is
+		// released for that, and a remote turn can take seconds to abort).
+		// Stop already killed what it saw and released the slot; spawning
+		// now would start a turn nobody can stop — the "kill, and it keeps
+		// going" bug.
+		if a.stopped {
+			a.turnActive = false
+			a.mu.Unlock()
+			return errors.New("agent stopped")
+		}
 	}
 	if ctx == nil {
 		a.turnActive = false
@@ -867,7 +923,16 @@ func (a *Agent) run(ctx context.Context) {
 		a.mu.Unlock()
 	}()
 
-	scanner := bufio.NewScanner(a.proc.Stdout())
+	// This reader owns the process it was started for. A respawn swaps
+	// a.proc for the next turn's process while this reader may still be
+	// draining; reading a.proc below would Wait on the NEW process from two
+	// readers, and the loser's "waitid: no child processes" turned a clean
+	// turn into a crash (pool recovery + a duplicate answer).
+	a.mu.Lock()
+	proc := a.proc
+	a.mu.Unlock()
+
+	scanner := bufio.NewScanner(proc.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	// Read lines in a dedicated goroutine and feed them over a channel.
@@ -949,6 +1014,10 @@ func (a *Agent) run(ctx context.Context) {
 	// restarted on ToolResult so the normal idle-kill still applies once
 	// the tool finishes.
 	toolInFlight := false
+	// turnErrored: this process already reported its turn's failure as an
+	// Error event. A one-shot CLI then exits non-zero (opencode run on a
+	// bad model), and that exit is the same failure, not a second one.
+	turnErrored := false
 	// Separates the assistant messages of one turn (text → tool → text) so
 	// they do not arrive glued together. Per-run state; the loop below is
 	// the only writer.
@@ -970,7 +1039,7 @@ func (a *Agent) run(ctx context.Context) {
 			// goroutine is still parked on a not-yet-EOF pipe, which would
 			// freeze Stop()'s <-done wait. Reap the process asynchronously
 			// instead so the reader (and thus done) closes immediately.
-			go func() { _ = a.proc.Wait() }()
+			go func() { _ = proc.Wait() }()
 			// Fire the exit hook so the pool releases the slot and drains
 			// the queue. Without this a preempt/Stop leaves the slot held
 			// forever — the queued session never spawns (the "stuck idle,
@@ -1046,6 +1115,9 @@ func (a *Agent) run(ctx context.Context) {
 				default:
 				}
 			case event.Done, event.Error:
+				if ev.Type == event.Error {
+					turnErrored = true
+				}
 				// Turn ended (normally or via error) — always reset
 				// toolInFlight so a crash mid-tool doesn't leave the idle
 				// timer stopped forever.
@@ -1109,7 +1181,7 @@ func (a *Agent) run(ctx context.Context) {
 
 drained:
 	// Reader exited — wait for process so resources are reaped.
-	waitErr := a.proc.Wait()
+	waitErr := proc.Wait()
 	a.state.MarkIdle()
 
 	a.mu.Lock()
@@ -1122,6 +1194,29 @@ drained:
 	reason := ExitClean
 	if waitErr != nil && !isCleanExitErr(waitErr) {
 		reason = ExitError
+	}
+	// A respawn-mode CLI whose turn already failed in-band exits non-zero
+	// because of that failure. The user has the error; calling it a crash
+	// as well makes the pool restart the agent with a "stopped
+	// unexpectedly" notice and answer the same message twice. claude
+	// (append mode) keeps one process across turns, so an exit there is
+	// still a death and is left alone.
+	if reason == ExitError && turnErrored && a.cfg.SendMode.respawns() {
+		log.Debug().Err(waitErr).Msg("agent.reader: non-zero exit after the turn's own error; not a crash")
+		reason = ExitClean
+	}
+	// Stop or a respawn cancelled this spawn, and the stream happened to
+	// close before the reader saw ctx.Done: the error Wait reports is the
+	// kill that was asked for, not a crash. Left as ExitError the pool
+	// "recovers" a session somebody just stopped.
+	if reason == ExitError && ctx.Err() != nil {
+		a.mu.Lock()
+		respawning := a.respawning
+		a.mu.Unlock()
+		reason = ExitStopped
+		if respawning {
+			reason = ExitRespawn
+		}
 	}
 	// Log the raw wait error + reason so an unexpected crash (subprocess
 	// dies right after spawn before emitting session_start) is visible.
@@ -1148,7 +1243,7 @@ drained:
 			exitCode = ec.ExitCode()
 			ev = ev.Int("exit_code", exitCode)
 		}
-		if st, ok := a.proc.(interface{ StderrTail() string }); ok {
+		if st, ok := proc.(interface{ StderrTail() string }); ok {
 			stderrTail = strings.TrimSpace(st.StderrTail())
 			if stderrTail != "" {
 				ev = ev.Str("stderr_tail", stderrTail)
@@ -1163,7 +1258,7 @@ drained:
 	// explained, and the kernel never OOM-kills a process that exited well.
 	oomDetail := ""
 	if a.cfg.MemGuard != nil {
-		unit := scopeUnitOf(a.proc)
+		unit := scopeUnitOf(proc)
 		if reason == ExitError {
 			a.mu.Lock()
 			sliceOOMAtSpawn := a.sliceOOMAtSpawn

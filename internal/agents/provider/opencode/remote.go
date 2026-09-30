@@ -173,6 +173,19 @@ type remoteProcess struct {
 	sessionID string
 	prompted  bool
 	killed    bool
+	// finished: the session went idle — the turn is over on the server,
+	// so a Kill has nothing left to abort.
+	finished bool
+
+	// injMu orders every prompt this turn sends: the first one and the
+	// ones Inject adds, so they reach the session in the order they were
+	// written. spec is the turn's prompt settings, reused for injections;
+	// early holds messages injected before the first prompt went out (they
+	// ride along in it); injected counts prompts added mid-turn.
+	injMu    sync.Mutex
+	spec     turnSpec
+	early    []string
+	injected int
 }
 
 func newRemoteProcess(env []string, bin string, argv []string, dir string) *remoteProcess {
@@ -195,8 +208,18 @@ func (p *remoteProcess) Wait() error {
 }
 
 // Kill aborts the turn: before the prompt went out it just cancels; after,
-// it asks the server to abort the session and lets the stream end on the
-// idle that follows, cutting it after killGrace if none comes.
+// it asks the server to abort the session and waits for the idle that
+// follows, cutting the stream after killGrace if none comes.
+//
+// It returns only once the abort is through. The next turn of this wick
+// session prompts the SAME opencode session, and an abort still in flight
+// when that prompt lands aborts the new turn instead — which then looks
+// like a turn that failed on its own and drains the queue again. For the
+// same reason a turn that already went idle is not aborted at all.
+//
+// Whoever kills a turn has stopped reading it, so the pipe is closed
+// first: a frame the turn writes after that fails instead of blocking
+// the turn (and its lease) forever.
 func (p *remoteProcess) Kill() error {
 	p.mu.Lock()
 	if p.killed {
@@ -204,24 +227,88 @@ func (p *remoteProcess) Kill() error {
 		return nil
 	}
 	p.killed = true
-	c, sid, prompted := p.client, p.sessionID, p.prompted
+	c, sid, prompted, finished := p.client, p.sessionID, p.prompted, p.finished
 	p.mu.Unlock()
+	_ = p.pr.CloseWithError(errTurnKilled)
+	if finished {
+		return nil
+	}
 	if !prompted || c == nil || sid == "" {
 		p.cancel()
 		return nil
 	}
-	go func() {
-		if err := abortSession(c, sid); err != nil {
-			log.Warn().Err(err).Str("session", sid).Msg("agents.opencode: abort failed; ending the turn")
-		}
-		select {
-		case <-p.done:
-		case <-time.After(killGrace):
-			p.cancel()
-		}
-	}()
+	if err := abortSession(c, sid); err != nil {
+		log.Warn().Err(err).Str("session", sid).Msg("agents.opencode: abort failed; ending the turn")
+	}
+	select {
+	case <-p.done:
+	case <-time.After(killGrace):
+		p.cancel()
+	}
 	return nil
 }
+
+// errTurnOver is Inject's answer once the turn cannot take a message.
+var errTurnOver = errors.New("opencode turn is over")
+
+// Inject adds text to the turn that is running. opencode takes a prompt
+// for a busy session as another user message of the loop already running
+// (SessionPrompt.prompt → runner.ensureRunning joins it), so the reply to
+// both comes out of this same stream — what claude does with input typed
+// mid-turn. Before the first prompt is out the text is folded into it.
+func (p *remoteProcess) Inject(text string) error {
+	p.injMu.Lock()
+	defer p.injMu.Unlock()
+	p.mu.Lock()
+	if p.killed || p.finished {
+		p.mu.Unlock()
+		return errTurnOver
+	}
+	if !p.prompted {
+		p.early = append(p.early, text)
+		p.mu.Unlock()
+		return nil
+	}
+	c, sid, t := p.client, p.sessionID, p.spec
+	p.mu.Unlock()
+	t.prompt = text
+	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
+	defer cancel()
+	if err := c.do(ctx, http.MethodPost, "/session/"+sid+"/prompt_async", promptBody(t), nil); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.injected++
+	p.mu.Unlock()
+	return nil
+}
+
+// injectSettle is how long an idle that follows an injection waits before
+// asking whether the session is really done: the injected prompt is
+// processed asynchronously, and it can start its own run just after the
+// one it was meant to join went idle.
+const injectSettle = 300 * time.Millisecond
+
+// stillBusy reports whether the server lists sid as working. Used only
+// after an injection, where an idle frame may belong to the run that
+// preceded the injected message's own.
+func stillBusy(c *apiClient, sid string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
+	defer cancel()
+	var st map[string]struct {
+		Type string `json:"type"`
+	}
+	if c.do(ctx, http.MethodGet, "/session/status", nil, &st) != nil {
+		return false
+	}
+	s, ok := st[sid]
+	return ok && s.Type != "" && s.Type != "idle"
+}
+
+// errTurnKilled is what a killed turn's Wait reports. It wraps
+// context.Canceled because the agent reads that as a stop it asked for,
+// not as a crash to recover from.
+var errTurnKilled = fmt.Errorf("opencode turn aborted: %w", context.Canceled)
 
 func abortSession(c *apiClient, sid string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
@@ -234,8 +321,9 @@ func (p *remoteProcess) finish(err error) {
 	if p.err == nil {
 		p.err = err
 	}
-	if p.killed && p.err == nil {
-		p.err = errors.New("opencode turn aborted")
+	if p.killed {
+		// Whatever the turn ended with, it ended because it was killed.
+		p.err = errTurnKilled
 	}
 	p.mu.Unlock()
 	_ = p.pw.Close()
@@ -249,12 +337,22 @@ func (p *remoteProcess) emit(b []byte) {
 // run drives one turn to the end. It owns the lease.
 func (p *remoteProcess) run(ctx context.Context, l *lease, t turnSpec) {
 	defer l.release()
+	p.mu.Lock()
+	p.spec = t
+	p.mu.Unlock()
 	err := p.turn(ctx, l, t)
 	if err != nil && !p.wasKilled() {
 		p.mu.Lock()
 		sid := p.sessionID
 		p.mu.Unlock()
+		// The failure is reported IN the turn, as its error frame: the
+		// chat shows it and the turn ends like any failed turn. Returning
+		// it from Wait as well would make it an unexplained process exit,
+		// and the pool would "recover" — restart the agent with a
+		// "stopped unexpectedly" notice and a second reply to the same
+		// message.
 		p.emit(errorLine(sid, err.Error()))
+		err = nil
 	}
 	p.finish(err)
 }
@@ -311,13 +409,22 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		return fmt.Errorf("opencode server event stream: %d", resp.StatusCode)
 	}
 
+	p.injMu.Lock()
+	p.mu.Lock()
+	if len(p.early) > 0 {
+		t.prompt = strings.Join(append([]string{t.prompt}, p.early...), "\n\n")
+		p.early = nil
+	}
+	p.mu.Unlock()
 	if err := c.do(ctx, http.MethodPost, "/session/"+sid+"/prompt_async", promptBody(t), nil); err != nil {
+		p.injMu.Unlock()
 		return err
 	}
 	p.mu.Lock()
 	p.prompted = true
 	killed := p.killed
 	p.mu.Unlock()
+	p.injMu.Unlock()
 	if killed {
 		// Kill landed between session and prompt: it only cancelled.
 		_ = abortSession(c, sid)
@@ -329,6 +436,9 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		lines, done := tr.feed(ev)
 		for _, ln := range lines {
 			p.emit(ln)
+		}
+		if done && p.moreInjected(c, sid) {
+			done = false
 		}
 		finished = done
 		return !done
@@ -343,6 +453,28 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		err = errors.New("opencode server closed the event stream mid-turn")
 	}
 	return err
+}
+
+// moreInjected is called on the idle that would end the turn. With no
+// injection it just marks the turn finished. After one, it holds Inject
+// off, lets the injected prompt settle, and keeps reading when the
+// session is still working on it.
+func (p *remoteProcess) moreInjected(c *apiClient, sid string) bool {
+	p.injMu.Lock()
+	defer p.injMu.Unlock()
+	p.mu.Lock()
+	n := p.injected
+	p.mu.Unlock()
+	if n > 0 {
+		time.Sleep(injectSettle)
+		if stillBusy(c, sid) {
+			return true
+		}
+	}
+	p.mu.Lock()
+	p.finished = true
+	p.mu.Unlock()
+	return false
 }
 
 func (p *remoteProcess) clientFor(l *lease) *apiClient {

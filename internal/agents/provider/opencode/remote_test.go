@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -140,6 +141,11 @@ type fakeOpencode struct {
 	created  int
 	prompts  []string
 	password string
+	// promptStatus, when set, is how prompt_async answers instead of 204.
+	promptStatus int
+	// gate, when set, holds the first prompt's idle until closed; later
+	// prompts join that run (as opencode does for a busy session).
+	gate chan struct{}
 }
 
 func (f *fakeOpencode) publish(typ string, props any) {
@@ -193,8 +199,12 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.prompts = append(f.prompts, string(b))
-		hang := f.hang
+		hang, status, gate, first := f.hang, f.promptStatus, f.gate, len(f.prompts) == 1
 		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"name":"UnknownError"}`, status)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		go func() {
 			f.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "busy"}})
@@ -203,6 +213,12 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			f.publish("message.part.updated", map[string]any{"part": map[string]any{"type": "text", "text": "hello", "sessionID": sid, "messageID": "m", "time": map[string]any{"end": 1}}})
 			f.publish("message.part.updated", map[string]any{"part": map[string]any{"type": "step-finish", "reason": "stop", "sessionID": sid, "messageID": "m"}})
+			if gate != nil {
+				if !first {
+					return
+				}
+				<-gate
+			}
 			f.publish("session.idle", map[string]any{"sessionID": sid})
 		}()
 	case strings.HasSuffix(r.URL.Path, "/abort"):
@@ -336,5 +352,119 @@ func TestRemoteKillAborts(t *testing.T) {
 	}
 	if p.Wait() == nil {
 		t.Fatal("an aborted turn must not report success")
+	}
+}
+
+func waitPrompted(t *testing.T, f *fakeOpencode) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		f.mu.Lock()
+		n := len(f.prompts)
+		f.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("prompt never sent")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // prompted flag set after the POST returns
+}
+
+// Kill returns only once the abort went out — the next turn prompts the
+// same session and must not be hit by an abort still in flight — and the
+// killed turn reads as a cancel, not as a crash. Nobody drains a killed
+// turn's stdout, and that must not wedge it.
+func TestRemoteKillIsSynchronousAndACancel(t *testing.T) {
+	f := &fakeOpencode{hang: true}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "long job"})
+	waitPrompted(t, f)
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	aborted := len(f.aborted)
+	f.mu.Unlock()
+	if aborted != 1 {
+		t.Fatalf("Kill returned before the abort went out (aborted=%d)", aborted)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- p.Wait() }()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Wait = %v, want a context.Canceled (a stop, not a crash)", err)
+		}
+	case <-time.After(killGrace + 2*time.Second):
+		t.Fatal("killed turn never ended with nobody reading its stdout")
+	}
+}
+
+// A turn that already went idle has nothing to abort; aborting anyway
+// would land on the next turn of the same session.
+func TestRemoteKillAfterIdleDoesNotAbort(t *testing.T) {
+	f := &fakeOpencode{}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "hi"})
+	readAll(t, p)
+	_ = p.Wait()
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.aborted) != 0 {
+		t.Fatalf("aborted a finished turn: %v", f.aborted)
+	}
+}
+
+// A failure wick hits mid-turn (here the server refusing the prompt) is
+// the turn's error frame, and the process ends normally: a Wait error
+// would make the pool treat it as an unexplained crash and restart.
+func TestRemoteTurnErrorEndsTurnNotProcess(t *testing.T) {
+	f := &fakeOpencode{promptStatus: http.StatusInternalServerError}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "hi"})
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait = %v, want nil — the error belongs to the turn", err)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], `"type":"error"`) {
+		t.Fatalf("lines = %v, want one error frame", lines)
+	}
+}
+
+// A message injected mid-turn goes to the same session as another
+// prompt, and its reply comes out of the same stream: one process, one
+// run, two answers, then the turn ends normally.
+func TestRemoteInjectJoinsRunningTurn(t *testing.T) {
+	f := &fakeOpencode{gate: make(chan struct{})}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "first"})
+	waitPrompted(t, f)
+	if err := p.Inject("second"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	close(f.gate)
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	f.mu.Lock()
+	prompts := append([]string(nil), f.prompts...)
+	f.mu.Unlock()
+	if len(prompts) != 2 || !strings.Contains(prompts[1], `"text":"second"`) || !strings.Contains(prompts[1], `"modelID":"b"`) {
+		t.Fatalf("prompts = %v", prompts)
+	}
+	finishes := 0
+	for _, l := range lines {
+		if strings.Contains(l, `"type":"step_finish"`) {
+			finishes++
+		}
+	}
+	if finishes != 2 {
+		t.Fatalf("want both replies in the one stream, got %d step_finish in %v", finishes, lines)
+	}
+	if err := p.Inject("late"); err == nil {
+		t.Fatal("Inject after the turn ended must fail so the agent queues it")
 	}
 }

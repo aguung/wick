@@ -712,6 +712,27 @@ func (s *Store) flushAssistantTurn(wasInterrupted bool) error {
 // before the agent starts — to record the failure as inline history.
 func (s *Store) AppendErrorTurn(msg string) error { return s.appendErrorTurn(msg) }
 
+// AppendNoticeTurn persists a plain (non-error) system line — something
+// the reader should know that is neither the agent's reply nor a
+// failure, e.g. "your message was queued behind the running turn".
+func (s *Store) AppendNoticeTurn(msg string) error {
+	now := s.now().UTC()
+	turn := ConversationTurn{
+		TurnID:    fmt.Sprintf("%d", now.UnixNano()),
+		Timestamp: now,
+		Role:      "system",
+		Agent:     s.agentName,
+		Provider:  s.provider,
+		Text:      msg,
+	}
+	return storage.AppendJSONL(
+		s.layout.SessionConversation(s.sessionID),
+		"wick-conv-v1",
+		s.sessionID,
+		turn,
+	)
+}
+
 func (s *Store) appendErrorTurn(msg string) error {
 	now := s.now().UTC()
 	turn := ConversationTurn{
