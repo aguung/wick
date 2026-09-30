@@ -466,9 +466,12 @@ func TestQueueHoldsThroughWarningAndReleasesOnError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// gated: a fatal Error must not end the first run before the
+			// second is queued behind it, or there is nothing to release.
+			gate := make(chan struct{})
 			stream := &scriptedStream{events: []StreamEvent{
 				{Type: event.TextDelta, Text: "working"}, tc.ev,
-			}, hold: true}
+			}, hold: true, gate: gate}
 			s, r := serialService(t, stream)
 			ctx := context.Background()
 
@@ -488,6 +491,7 @@ func TestQueueHoldsThroughWarningAndReleasesOnError(t *testing.T) {
 			if err != nil || second.Status != entity.DelegationQueued {
 				t.Fatalf("second run: status %v err %v", second, err)
 			}
+			close(gate)
 
 			if tc.release {
 				waitFor(t, 10*time.Second, func() bool {

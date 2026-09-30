@@ -21,15 +21,25 @@ type scriptedStream struct {
 	// hold, when set, keeps the channel open after the script so the
 	// runner can be observed mid-run instead of falling through to EOF.
 	hold bool
+	// gate, when set, holds the script back until it is closed, so a
+	// test can line up more work before the run reacts to its events.
+	gate chan struct{}
 }
 
 func (s *scriptedStream) SubscribeSession(string) (<-chan StreamEvent, func()) {
 	ch := make(chan StreamEvent, len(s.events)+1)
-	for _, e := range s.events {
-		ch <- e
+	play := func() {
+		for _, e := range s.events {
+			ch <- e
+		}
+		if !s.hold {
+			close(ch)
+		}
 	}
-	if !s.hold {
-		close(ch)
+	if s.gate == nil {
+		play()
+	} else {
+		go func() { <-s.gate; play() }()
 	}
 	return ch, func() {}
 }
