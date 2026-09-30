@@ -82,3 +82,26 @@ func TestPageLooseSessionsMatchesFullSort(t *testing.T) {
 		t.Fatalf("wantRows=false: got %v total %d", got, total)
 	}
 }
+
+// A chat whose own process is idle while a delegated child works is ranked
+// as running, so its row must say so too — not the raw pool "idle" that
+// would draw it pinned to the top with no badge.
+func TestSessionRowLifecycleMatchesOrder(t *testing.T) {
+	live := map[string]session.Session{
+		"parent": {Meta: session.Meta{ProjectID: "p"}},
+		"plain":  {Meta: session.Meta{ProjectID: "p"}},
+	}
+	lc := map[string]view.SessionLifecycleVM{
+		"parent": {Lifecycle: "idle", SubAgent: "working"},
+		"plain":  {Lifecycle: "idle"},
+	}
+	if got := sessionRow("parent", live, lc, nil).Lifecycle; got != "subagent" {
+		t.Fatalf("parent lifecycle = %q, want subagent", got)
+	}
+	if got := sessionRow("plain", live, lc, nil).Lifecycle; got != "idle" {
+		t.Fatalf("plain lifecycle = %q, want idle", got)
+	}
+	if got := sessionRow("gone", live, lc, nil).Lifecycle; got != "" {
+		t.Fatalf("unknown lifecycle = %q, want empty", got)
+	}
+}

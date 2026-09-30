@@ -226,6 +226,9 @@ func sessionRow(
 ) ticketSessionRow {
 	row := ticketSessionRow{ID: sid, Label: loadFirstUserMessage(globalLayout, sid, 60), Lifecycle: lc[sid].Lifecycle}
 	if s, ok := live[sid]; ok {
+		// The status the ORDER uses, so a row pinned to the top because its
+		// sub-agent is working also says so, as the sidebar's dot does.
+		row.Lifecycle = view.SidebarRowStatus(s, lc[sid])
 		row.Status = string(s.Meta.Status)
 		// The same clock the sidebar prints, so a chat reads "2m" in both
 		// places rather than "2m" there and "1h" here mid-turn.

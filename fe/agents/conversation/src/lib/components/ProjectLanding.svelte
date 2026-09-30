@@ -21,6 +21,7 @@
   import { NOTIFY_KEY } from "../notify-pref.js";
   import SessionList from "./SessionList.svelte";
   import KanbanBoard from "./KanbanBoard.svelte";
+  import { mergeRail, keepPushedOff } from "../railPaging.js";
   import TicketDetail from "./TicketDetail.svelte";
   import OwnerTabs from "./OwnerTabs.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
@@ -176,6 +177,12 @@
   const UNTRACKED_MORE_PAGE = 50;
   let untrackedMore = $state<TicketSessionRow[]>([]);
   let loadingMoreUntracked = false;
+  /* The request the current board answered, so a poll can tell "the same
+     list moved" from "a different list". */
+  let boardKeyLoaded = "";
+  /* Chats this page just put on a ticket. They leave the rail for the rest
+     of the request even if a page loaded earlier still carries them. */
+  let trackedHere = $state(new Set<string>());
 
   /* The filter IS the request: statuses, assignee and the untracked rail all
      decide what the server builds, so a switched-off column costs nothing to
@@ -227,6 +234,7 @@
     // A different request (scope, filter, project) is a different list:
     // the pages loaded under the old one no longer continue it.
     untrackedMore = [];
+    trackedHere = new Set();
     reloadBoard();
   });
 
@@ -258,14 +266,13 @@
     return () => window.removeEventListener("popstate", onPop);
   });
 
-  /* Next page of the untracked rail, appended. The offset is what the rail
-     already holds, and rows it already has are dropped — the order moves as
-     chats are used, so a page boundary can repeat a row. */
+  /* Next page of the untracked rail, appended — see railPaging.ts for why
+     the offset is the drawn row count. */
   function loadMoreUntracked() {
-    if (loadingMoreUntracked || !board) return;
+    if (loadingMoreUntracked || !boardView) return;
     loadingMoreUntracked = true;
     const key = boardRequestKey;
-    const offset = board.untracked.length + untrackedMore.length;
+    const offset = boardView.untracked.length;
     Effect.runPromise(
       getProjectTickets(base, project.id, {
         rows: 0,
@@ -289,15 +296,29 @@
      scroll, minus any row the fresh first page now holds itself. */
   const boardView = $derived.by(() => {
     if (!board || untrackedMore.length === 0) return board;
-    const first = new Set(board.untracked.map((r) => r.id));
-    return { ...board, untracked: [...board.untracked, ...untrackedMore.filter((r) => !first.has(r.id))] };
+    return { ...board, untracked: mergeRail(board.untracked, untrackedMore, trackedHere) };
   });
 
+  /* A chat the board just attached or turned into a ticket: off the rail. */
+  function sessionTracked(id: string) {
+    trackedHere = new Set(trackedHere).add(id);
+    untrackedMore = untrackedMore.filter((r) => r.id !== id);
+  }
+
   function reloadBoard() {
+    const key = boardRequestKey;
     Effect.runPromise(
       getProjectTickets(base, project.id, boardOptions).pipe(Effect.provide(WickClientLayer)),
     )
-      .then((b) => { board = b; })
+      .then((b) => {
+        if (key !== boardRequestKey) return; // superseded by a newer request
+        // Same list, moved: a chat pushed off page one stays on the rail.
+        if (board && boardKeyLoaded === key) {
+          untrackedMore = keepPushedOff(board.untracked, b.untracked, untrackedMore, trackedHere);
+        }
+        board = b;
+        boardKeyLoaded = key;
+      })
       .catch(() => { /* keep the previous board on a transient failure */ });
   }
 
@@ -558,6 +579,7 @@
         {untrackedOwner}
         onUntrackedOwner={(v) => { untrackedOwner = v; }}
         onUntrackedMore={loadMoreUntracked}
+        onSessionTracked={sessionTracked}
         onFilter={applyFilter}
         onOpen={(id) => { gotoTicket(id); }}
         onOpenSession={onSelectSession}
