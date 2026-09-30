@@ -304,6 +304,16 @@ func (m SendMode) respawns() bool { return m == SendRespawnQueue || m == SendSpa
 // yes) or just a turn ended (codex: no — keep the slot).
 func (a *Agent) Respawns() bool { return a.cfg.SendMode.respawns() }
 
+// exitFollowsTurnError reports whether a non-zero exit is only the turn's
+// own in-band failure: omp / opencode one-shot runs exit non-zero after an
+// Error they already streamed.
+func exitFollowsTurnError(cfg Options, turnErrored bool) bool {
+	if !turnErrored || !cfg.SendMode.respawns() || cfg.Instance == nil {
+		return false
+	}
+	return cfg.Instance.Type == TypeOMP || cfg.Instance.Type == TypeOpencode
+}
+
 // String renders a SendMode as its config-key value. Inverse of
 // ParseSendMode. Used by the providers UI to show the current selection.
 func (m SendMode) String() string {
@@ -1265,8 +1275,10 @@ drained:
 	// as well makes the pool restart the agent with a "stopped
 	// unexpectedly" notice and answer the same message twice. claude
 	// (append mode) keeps one process across turns, so an exit there is
-	// still a death and is left alone.
-	if reason == ExitError && turnErrored && a.cfg.SendMode.respawns() {
+	// still a death and is left alone; so is every other respawn CLI
+	// (codex, send_mode=spawn), whose non-zero exit may be a real crash
+	// or an OOM kill that happened to follow an Error.
+	if reason == ExitError && exitFollowsTurnError(a.cfg, turnErrored) {
 		log.Debug().Err(waitErr).Msg("agent.reader: non-zero exit after the turn's own error; not a crash")
 		reason = ExitClean
 	}

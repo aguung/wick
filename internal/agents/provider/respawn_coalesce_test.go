@@ -424,7 +424,8 @@ func TestRespawnQueue_ExitAfterInBandErrorIsNotACrash(t *testing.T) {
 		Workspace: t.TempDir(), IdleTimeout: 5 * time.Second,
 		ParserFactory: func() event.Parser { return event.NewOpencodeParser("opencode") },
 		Spawner:       errExitSpawner{}, State: state.New(nil), SendMode: SendRespawnQueue,
-		OnExit: func(r ExitReason, _ string) { reasons <- r },
+		Instance: &Instance{Type: TypeOpencode, Name: "oc"},
+		OnExit:   func(r ExitReason, _ string) { reasons <- r },
 	})
 	_ = a.Start(context.Background())
 	defer a.Stop()
