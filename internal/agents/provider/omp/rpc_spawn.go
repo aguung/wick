@@ -40,10 +40,15 @@ func useServer(ins provider.Instance, extra ...[]string) bool {
 	return true
 }
 
-// serverIdle is the instance's idle window; never zero (cliserver reaper).
-func serverIdle(ins provider.Instance) time.Duration {
+// serverIdle is the instance's idle window, else the pool's idle timeout
+// (the same window claude/codex processes get), else DefaultServerIdle;
+// never zero (cliserver reaper).
+func serverIdle(ins provider.Instance, opt provider.SpawnOptions) time.Duration {
 	if ins.ServerIdleMinutes > 0 {
 		return time.Duration(ins.ServerIdleMinutes) * time.Minute
+	}
+	if opt.IdleTimeout > 0 {
+		return opt.IdleTimeout
 	}
 	return DefaultServerIdle
 }
@@ -132,7 +137,7 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 		wrap: func(b string, a []string) (string, []string, string) {
 			return opt.MemGuard.Wrap(b, a, "omp-rpc", opt.SpawnSeq)
 		}}
-	l, err := rpcServers.Acquire(ctx, cliserver.Spec{Instance: ins.Name, Group: ins.Name + "/" + opt.SessionID, Key: key, Idle: serverIdle(ins), Turns: 1, MaxAge: rpcMaxAge},
+	l, err := rpcServers.Acquire(ctx, cliserver.Spec{Instance: ins.Name, Group: ins.Name + "/" + opt.SessionID, Key: key, Idle: serverIdle(ins, opt), Turns: 1, MaxAge: rpcMaxAge},
 		func(ctx context.Context) (*rpcConn, error) { return startRPCFn(ctx, spec) })
 	addedEnv := provider.MaskSpawnEnv(append(append([]string{}, opt.ExtraEnv...), mcpVars...))
 	if err != nil {

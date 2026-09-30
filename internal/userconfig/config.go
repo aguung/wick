@@ -259,7 +259,7 @@ type ProviderInstance struct {
 	LiveModelDefault string `json:"live_model_default,omitempty"`
 
 	// Server mode (opencode; omp later): RunPerTurn opts out of the shared
-	// CLI server, ServerIdleMinutes is its idle-kill window (0 = default),
+	// CLI server, ServerIdleMinutes is its idle-kill window (0 = the pool idle timeout),
 	// LoadExternalSkills lets the CLI scan ~/.claude/skills & co.
 	RunPerTurn         bool `json:"run_per_turn,omitempty"`
 	ServerIdleMinutes  int  `json:"server_idle_minutes,omitempty"`

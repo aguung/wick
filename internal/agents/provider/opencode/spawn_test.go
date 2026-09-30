@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	provider "github.com/yogasw/wick/internal/agents/provider"
 )
@@ -249,9 +250,17 @@ func TestUseServerAndSkillsEnv(t *testing.T) {
 	if useServer(ins) {
 		t.Fatal("RunPerTurn must use opencode run")
 	}
-	if serverIdle(ins) != DefaultServerIdle {
+	if serverIdle(ins, provider.SpawnOptions{}) != DefaultServerIdle {
 		t.Fatal("idle default")
 	}
+	if serverIdle(ins, provider.SpawnOptions{IdleTimeout: 2 * time.Minute}) != 2*time.Minute {
+		t.Fatal("idle must follow the pool idle timeout")
+	}
+	ins.ServerIdleMinutes = 7
+	if serverIdle(ins, provider.SpawnOptions{IdleTimeout: 2 * time.Minute}) != 7*time.Minute {
+		t.Fatal("the instance's own idle window wins")
+	}
+	ins.ServerIdleMinutes = 0
 	has := func(env []string, kv string) bool {
 		for _, e := range env {
 			if e == kv {

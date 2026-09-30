@@ -57,7 +57,7 @@ type OpencodeModelConfig struct {
 // next). Generic keys so one FE toggle serves every provider that has it.
 type ServerModeConfig struct {
 	ServerMode        bool `wick:"bool;key=server_mode;desc=Keep the CLI running between turns instead of one process per turn. opencode: one shared server per instance (~2 s per turn, ~500 MB shared by all sessions). omp: one RPC process per session (no boot per turn, messages sent mid-turn steer the running turn). Off = one process per turn (the old path: ~6 s and up to ~800 MB each; messages sent mid-turn queue and join the next turn). A change applies from the next turn; a server no longer needed stops once no turn is running."`
-	ServerIdleMinutes int  `wick:"key=server_idle_minutes;desc=Minutes the server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = 10; it cannot be turned off."`
+	ServerIdleMinutes int  `wick:"key=server_idle_minutes;desc=Minutes the server may sit without a turn before it is killed (started again on the next turn). Empty or 0 = the pool idle timeout (Settings → General, default 2 minutes, same as claude/codex); it cannot be turned off."`
 }
 
 // ExternalSkillsConfig is opencode's host-skill switch (omp has none, so

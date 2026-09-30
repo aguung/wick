@@ -205,10 +205,15 @@ func useServer(ins provider.Instance, extra ...[]string) bool {
 	return true
 }
 
-// serverIdle is the instance's idle window; never zero (see manager.reap).
-func serverIdle(ins provider.Instance) time.Duration {
+// serverIdle is the instance's idle window, else the pool's idle timeout
+// (the same window claude/codex processes get), else DefaultServerIdle;
+// never zero (see manager.reap).
+func serverIdle(ins provider.Instance, opt provider.SpawnOptions) time.Duration {
 	if ins.ServerIdleMinutes > 0 {
 		return time.Duration(ins.ServerIdleMinutes) * time.Minute
+	}
+	if opt.IdleTimeout > 0 {
+		return opt.IdleTimeout
 	}
 	return DefaultServerIdle
 }
@@ -228,7 +233,7 @@ func (s Spawner) spawnServe(ctx context.Context, opt provider.SpawnOptions, ins 
 		bin:      bin,
 		env:      append(append(envscrub.ScrubOSEnv(), opt.ExtraEnv...), added...),
 		dir:      dataDir,
-		idle:     serverIdle(ins),
+		idle:     serverIdle(ins, opt),
 		turns:    DefaultServerTurns,
 		wrap: func(b string, a []string) (string, []string, string) {
 			return opt.MemGuard.Wrap(b, a, "opencode-serve", opt.SpawnSeq)
