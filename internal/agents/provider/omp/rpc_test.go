@@ -303,3 +303,13 @@ func TestRPCTurnPinsAccountOncePerSession(t *testing.T) {
 		t.Fatalf("prompts = %d, want 3 (%v)", prompts, f.cmds)
 	}
 }
+
+// A turn whose process failed to start never gets a cancel func; Kill on
+// it (a Stop while the error lines are still being emitted) must not panic.
+func TestRPCProcessKillWithoutTurnDoesNotPanic(t *testing.T) {
+	p := newRPCProcess(nil, "omp", nil)
+	go func() { p.emit(errorLines("boom")); p.finish(nil) }()
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+}

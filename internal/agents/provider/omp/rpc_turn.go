@@ -221,7 +221,9 @@ type rpcProcess struct {
 
 func newRPCProcess(env []string, bin string, argv []string) *rpcProcess {
 	pr, pw := io.Pipe()
-	return &rpcProcess{pr: pr, pw: pw, env: env, bin: bin, argv: argv, done: make(chan struct{})}
+	// cancel is a no-op until a turn replaces it: the failed-start path
+	// never runs a turn, and Kill must not call a nil func there.
+	return &rpcProcess{pr: pr, pw: pw, env: env, bin: bin, argv: argv, done: make(chan struct{}), cancel: func() {}}
 }
 
 func (p *rpcProcess) Stdout() io.Reader     { return p.pr }
