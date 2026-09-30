@@ -559,6 +559,28 @@ describe("ProvidersList card header on narrow screens", () => {
     }
   });
 
+  it("shows a login & usage placeholder on every credentialed card until the connections land", async () => {
+    let resolve!: (v: Awaited<ReturnType<typeof api.apiGetConnections>>) => void;
+    vi.mocked(api.apiGetConnections).mockReturnValue(new Promise((r) => (resolve = r)));
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    await screen.findAllByTestId("card-name");
+    expect(screen.getAllByTestId("conn-loading").length).toBeGreaterThan(0);
+    resolve([]);
+    await waitFor(() => expect(screen.queryAllByTestId("conn-loading").length).toBe(0));
+  });
+
+  it("shows a checking row on every login type's card until the connections land", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
+    let resolve!: (v: Awaited<ReturnType<typeof api.apiGetConnections>>) => void;
+    vi.mocked(api.apiGetConnections).mockReturnValue(new Promise((r) => (resolve = r)));
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    await screen.findByText("omp/a-rather-long-instance-name");
+    // claude (the base card) + omp + opencode all wait visibly.
+    expect(screen.getAllByTestId("conn-loading").length).toBe(3);
+    resolve([]);
+    await waitFor(() => expect(screen.queryAllByTestId("conn-loading").length).toBe(0));
+  });
+
   it("says 'checking login' until the connections land, and while the login is unreadable", async () => {
     vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
     let resolve!: (v: Awaited<ReturnType<typeof api.apiGetConnections>>) => void;
