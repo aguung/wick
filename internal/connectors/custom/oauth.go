@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yogasw/wick/internal/connectors"
 	"github.com/yogasw/wick/internal/enc"
 	"github.com/yogasw/wick/internal/entity"
 )
@@ -64,6 +65,11 @@ const (
 	cfgOAuthAccess  = "oauth_access_token"
 	cfgOAuthRefresh = "oauth_refresh_token"
 	cfgOAuthExpiry  = "oauth_expires_at"
+	// cfgOAuthPerUser ("1") marks an instance as per-user (SSO): calls
+	// run as each caller's own ConnectorAccount. Only the per-user
+	// save/connect path sets it — Enable SSO alone never diverts a legacy
+	// instance away from its own stored token.
+	cfgOAuthPerUser = "oauth_per_user"
 )
 
 // oauthLogin is one in-flight browser login, created by StartOAuthLogin
@@ -686,6 +692,7 @@ func oauthInstanceConfigs() []DefField {
 		{Key: cfgOAuthAccess, Secret: true, Widget: "secret", Hidden: true, Desc: "OAuth access token (managed automatically)."},
 		{Key: cfgOAuthRefresh, Secret: true, Widget: "secret", Hidden: true, Desc: "OAuth refresh token (managed automatically)."},
 		{Key: cfgOAuthExpiry, Hidden: true, Desc: "Access token expiry (RFC3339, managed automatically)."},
+		{Key: cfgOAuthPerUser, Hidden: true, Desc: "Per-user (SSO) mode marker (managed automatically)."},
 	}
 }
 
@@ -724,13 +731,57 @@ func (s *Service) persistInstanceTokens(ctx context.Context, instanceID string, 
 
 // ── per-user (SSO) account storage ───────────────────────────────────
 
+// markPerUser sets the instance's per-user (SSO) marker.
+func (s *Service) markPerUser(ctx context.Context, instanceID string) error {
+	if s.keys == nil {
+		return nil
+	}
+	owner := "connector:" + instanceID
+	if s.keys.GetOwned(owner, cfgOAuthPerUser) == "1" {
+		return nil
+	}
+	if err := s.keys.EnsureOwned(ctx, owner, FieldsToConfigs(oauthInstanceConfigs())...); err != nil {
+		return fmt.Errorf("register oauth config rows: %w", err)
+	}
+	if err := s.keys.SetOwned(ctx, owner, cfgOAuthPerUser, "1"); err != nil {
+		return fmt.Errorf("mark per-user instance: %w", err)
+	}
+	return nil
+}
+
+// InstancePerUser reports whether an oauth MCP instance runs in per-user
+// (SSO) mode: Enable SSO on AND the per-user marker set. A legacy
+// per-instance-token row with Enable SSO flipped on keeps its own token.
+func (s *Service) InstancePerUser(row entity.Connector) bool {
+	return row.EnableSSO && s.keys != nil && s.keys.GetOwned("connector:"+row.ID, cfgOAuthPerUser) == "1"
+}
+
 // saveAccountTokens lands one login's tokens as wickUserID's
-// ConnectorAccount on instanceID (MultiAccount upsert rules apply). The
-// refresh token is encrypted at rest; the access token is stored like
-// every other connector account's.
+// ConnectorAccount on instanceID. The refresh token is encrypted at
+// rest; the access token is stored like every other connector account's.
+// Connecting marks the instance per-user and forces MultiAccount on first:
+// with it off the upsert replaces every other user's account.
 func (s *Service) saveAccountTokens(ctx context.Context, instanceID, wickUserID, label string, t *oauthTokens) error {
 	if label == "" {
 		label = wickUserID
+	}
+	row, err := s.conns.Get(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	if err := s.markPerUser(ctx, instanceID); err != nil {
+		return err
+	}
+	if !row.MultiAccount {
+		if err := s.conns.SetAccessPolicy(ctx, row.ID, connectors.AccessPolicy{
+			AllowOthersConfigure:   row.AllowOthersConfigure,
+			AllowOthersConnectSSO:  row.AllowOthersConnectSSO,
+			EnableSSO:              row.EnableSSO,
+			MultiAccount:           true,
+			AllowOthersSeeAccounts: row.AllowOthersSeeAccounts,
+		}); err != nil {
+			return fmt.Errorf("enable multi-account: %w", err)
+		}
 	}
 	refresh, err := s.encryptRefresh(t.RefreshToken)
 	if err != nil {

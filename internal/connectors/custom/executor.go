@@ -289,7 +289,7 @@ func (s *Service) liveMCPOps(parent context.Context, def *entity.CustomConnector
 			if r.Disabled {
 				continue
 			}
-			if r.EnableSSO {
+			if s.InstancePerUser(r) {
 				// Per-user (SSO) instance: it holds no credential of its
 				// own, so the one shared op list syncs under a connected
 				// account — the caller's, else the most recently
@@ -618,7 +618,7 @@ func (s *Service) executeMCP(c *connector.Ctx, src MCPSource, inputs []DefField)
 	}
 	if row.AuthScheme == "oauth" {
 		meta := parseOAuthMeta(row.AuthExtra)
-		if inst, err := s.conns.Get(c.Context(), c.InstanceID()); err == nil && inst.EnableSSO {
+		if inst, err := s.conns.Get(c.Context(), c.InstanceID()); err == nil && s.InstancePerUser(*inst) {
 			// Per-user (SSO) instance: run as the caller's own account —
 			// the explicit @accountId, else the one they connected.
 			// Never another user's token.

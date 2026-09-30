@@ -399,3 +399,53 @@ func TestPerUserRefreshDecryptsMasterToken(t *testing.T) {
 		t.Errorf("rotated refresh stored as %q, want wick_cenc_rt-A2 (encrypted once)", a.RefreshToken)
 	}
 }
+
+// A per-user connect must never replace other users' accounts, even when
+// the generic Access policy card cleared MultiAccount.
+func TestPerUserConnectForcesMultiAccount(t *testing.T) {
+	f := newPerUserFixture(t)
+	srv, _, instanceID := f.savePerUser(t, "Helpdesk PU Multi")
+	f.connect(t, srv, instanceID, "user-a", "code-A")
+	if err := f.conns.SetAccessPolicy(context.Background(), instanceID, connectors.AccessPolicy{
+		EnableSSO: true, AllowOthersConnectSSO: true, MultiAccount: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.connect(t, srv, instanceID, "user-b", "code-B")
+
+	accs, _ := f.conns.ListAccounts(context.Background(), instanceID)
+	if len(accs) != 2 {
+		t.Fatalf("accounts = %d, want 2 (user-b's connect wiped user-a)", len(accs))
+	}
+	row, _ := f.conns.Get(context.Background(), instanceID)
+	if !row.MultiAccount || !row.EnableSSO || !row.AllowOthersConnectSSO {
+		t.Errorf("policy after connect: multi=%v sso=%v others=%v", row.MultiAccount, row.EnableSSO, row.AllowOthersConnectSSO)
+	}
+}
+
+// Flipping Enable SSO on a legacy per-instance-token instance does not
+// divert it to per-user mode: only the per-user marker does.
+func TestPerUserLegacyInstanceSSOToggleKeepsToken(t *testing.T) {
+	f := newPerUserFixture(t)
+	srv, key, _ := f.savePerUser(t, "Helpdesk PU Toggle")
+	legacy, err := f.conns.Create(context.Background(), key, "Legacy", map[string]string{}, "admin-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.persistInstanceTokens(context.Background(), legacy.ID, &oauthTokens{AccessToken: "at-B"}, "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.conns.SetAccessPolicy(context.Background(), legacy.ID, connectors.AccessPolicy{EnableSSO: true}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := f.conns.Get(context.Background(), legacy.ID)
+	if f.svc.InstancePerUser(*row) {
+		t.Fatal("Enable SSO alone must not make a legacy instance per-user")
+	}
+	if err := f.call(t, srv.ID, legacy.ID, "user-a", ""); err != nil {
+		t.Fatalf("legacy call with SSO on: %v", err)
+	}
+	if got := f.lastCaller(); got != "Bearer at-B" {
+		t.Errorf("legacy instance call used %q, want the instance token", got)
+	}
+}

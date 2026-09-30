@@ -1074,6 +1074,9 @@ func (s *Service) seedPerUserInstance(ctx context.Context, def *entity.CustomCon
 // off the account slot is single, so a second user connecting would
 // replace the first user's account.
 func (s *Service) enablePerUserPolicy(ctx context.Context, row entity.Connector) error {
+	if err := s.markPerUser(ctx, row.ID); err != nil {
+		return err
+	}
 	if row.EnableSSO && row.AllowOthersConnectSSO && row.MultiAccount {
 		return nil
 	}
@@ -1087,12 +1090,12 @@ func (s *Service) enablePerUserPolicy(ctx context.Context, row entity.Connector)
 }
 
 // OAuthPerUser reports whether a connector's oauth MCP instances run in
-// per-user (SSO) mode — any instance with Enable SSO on. The edit form
+// per-user (SSO) mode — any instance InstancePerUser. The edit form
 // prefills its checkbox from it.
 func (s *Service) OAuthPerUser(ctx context.Context, key string) bool {
 	rows, _ := s.conns.ListByKey(ctx, key)
 	for _, r := range rows {
-		if r.EnableSSO {
+		if s.InstancePerUser(r) {
 			return true
 		}
 	}
@@ -1223,7 +1226,7 @@ func (s *Service) ProbeInstance(ctx context.Context, instanceID string, caller *
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	if srvRow.AuthScheme == "oauth" && row.EnableSSO {
+	if srvRow.AuthScheme == "oauth" && s.InstancePerUser(*row) {
 		// Per-user (SSO) instance: test the viewer's own account.
 		meta := parseOAuthMeta(srvRow.AuthExtra)
 		var uid string

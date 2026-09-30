@@ -511,7 +511,7 @@ func (h *Handler) rowMCPAuthJSON(ctx context.Context, key string, row entity.Con
 	if err != nil || srv == nil || srv.AuthScheme != "oauth" {
 		return nil
 	}
-	if row.EnableSSO {
+	if h.custom.InstancePerUser(row) {
 		return h.rowMCPPerUserJSON(ctx, key, row, user)
 	}
 	cfgs := h.connectors.LoadConfigs(row)
