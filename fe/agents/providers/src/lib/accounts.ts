@@ -5,6 +5,19 @@
 
 export const ACCOUNT_ISOLATED = new Set(["omp", "opencode"]);
 
+/* What one instance holds for an account-isolated type — the hint behind
+   the card's info icon. omp pools several accounts in one profile and
+   opencode takes extra accounts as extra folders, so "1 instance = 1
+   account" is no longer the whole story. */
+export const ACCOUNT_HINT: Record<string, string> = {
+  omp: "One instance = one omp profile. It can hold several accounts; omp rotates between them.",
+  opencode: "One instance = one data folder. Add a second account of a provider as an extra account folder.",
+};
+
+export function accountHint(t: string): string {
+  return ACCOUNT_HINT[t] ?? "";
+}
+
 export type TypeInfo = { label: string; desc: string; badge?: string };
 
 /* Short description per type for the Add provider picker. Unknown types

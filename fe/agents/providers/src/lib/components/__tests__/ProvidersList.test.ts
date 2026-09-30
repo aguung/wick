@@ -514,3 +514,51 @@ describe("ProvidersList managed binary indicator", () => {
     expect(screen.queryByTestId("card-managed-update")).toBeNull();
   });
 });
+
+describe("ProvidersList card header on narrow screens", () => {
+  function withIsolated(): ProvidersListResponse {
+    const d = makeData();
+    for (const type of ["omp", "opencode"]) {
+      d.Providers.push({
+        ...d.Providers[0],
+        Instance: { ...d.Providers[0].Instance, Type: type, Name: "a-rather-long-instance-name", Binary: "" },
+        Cap: { Used: 0, Max: 20, Unlimited: false },
+      });
+    }
+    return d;
+  }
+
+  it("truncates the name with the full name in title, and keeps the cap on one line", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    await screen.findByText("omp/a-rather-long-instance-name");
+    const name = screen.getAllByTestId("card-name").find((n) => n.textContent === "omp/a-rather-long-instance-name")!;
+    expect(name.className).toContain("truncate");
+    expect(name.className).toContain("min-w-0");
+    expect(name.getAttribute("title")).toBe("omp/a-rather-long-instance-name");
+    expect(name.parentElement!.parentElement!.className).toContain("min-w-0");
+    for (const cap of screen.getAllByTestId("card-cap")) {
+      expect(cap.className).toContain("whitespace-nowrap");
+      expect(cap.className).toContain("shrink-0");
+    }
+  });
+
+  it("replaces the one-account text badge with an info icon that explains the type", async () => {
+    vi.mocked(api.apiGetProviders).mockResolvedValue(withIsolated());
+    render(ProvidersList, { props: { base: "", onNavigate: vi.fn() } });
+    await screen.findByText("omp/a-rather-long-instance-name");
+    const [omp, opencode] = screen.getAllByTestId("one-account-badge");
+    expect(omp.textContent).toBe("i");
+    expect(omp.getAttribute("title")).toBe("One instance = one omp profile. It can hold several accounts; omp rotates between them.");
+    expect(omp.getAttribute("aria-label")).toBe(omp.getAttribute("title"));
+    expect(opencode.getAttribute("title")).toBe("One instance = one data folder. Add a second account of a provider as an extra account folder.");
+    expect(screen.queryByText("1 instance = 1 account")).toBeNull();
+
+    // A tap opens the popover (touch screens never show a title) and a second tap closes it.
+    await fireEvent.click(omp);
+    expect(screen.getByTestId("one-account-badge-popover").textContent).toContain("omp rotates between them");
+    expect(omp.getAttribute("aria-expanded")).toBe("true");
+    await fireEvent.click(omp);
+    expect(screen.queryByTestId("one-account-badge-popover")).toBeNull();
+  });
+});

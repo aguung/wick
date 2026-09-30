@@ -30,6 +30,7 @@
   import { pickWindows, connectionKey, resetHint, fmtSecsShort } from "$lib/usagerings.js";
   import {
     ACCOUNT_ISOLATED,
+    accountHint,
     typeOption,
     suggestName,
     sourceLabel,
@@ -79,6 +80,9 @@
   $effect(() => () => { if (managedTimer) clearTimeout(managedTimer); });
   let confirmDelete = $state<ProviderStatusDTO | null>(null);
   let busy = $state<Record<string, boolean>>({});
+  // Which account-hint popover is open (keyed per card, "add" for the
+  // form). A tap toggles it — title alone never shows on touch screens.
+  let hintOpen = $state<string | null>(null);
   let mcpOpen = $state(false);
   let addOpen = $state(false);
 
@@ -558,6 +562,31 @@
   {/if}
 {/snippet}
 
+<!-- Round "i" beside an account-isolated type: what one instance holds.
+     Hover shows the title; a tap toggles a small popover (touch screens
+     never show a title). -->
+{#snippet accountHintIcon(key: string, type: string, testid: string)}
+  {@const hint = accountHint(type)}
+  <span class="relative inline-flex shrink-0">
+    <button
+      type="button"
+      data-testid={testid}
+      title={hint}
+      aria-label={hint}
+      aria-expanded={hintOpen === key}
+      class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-white-400 dark:border-navy-600 text-[10px] font-semibold leading-none text-black-700 dark:text-black-600 hover:bg-white-300 dark:hover:bg-navy-600"
+      onclick={(e) => {
+        e.stopPropagation();
+        hintOpen = hintOpen === key ? null : key;
+      }}
+      onblur={() => { if (hintOpen === key) hintOpen = null; }}
+    >i</button>
+    {#if hintOpen === key}
+      <span role="tooltip" data-testid={`${testid}-popover`} class="absolute right-0 top-full z-20 mt-1 w-56 max-w-[calc(100vw-3rem)] rounded-lg border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-800 px-2.5 py-1.5 text-[11px] font-normal text-black-800 dark:text-black-600 shadow-lg">{hint}</span>
+    {/if}
+  </span>
+{/snippet}
+
 <div class="space-y-6">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <h1 class="text-lg font-semibold text-black-900 dark:text-white-100">Providers</h1>
@@ -706,14 +735,16 @@
           {@const conn = connections[connectionKey(p.Instance.Type, p.Instance.Name)]}
           {@const mbin = !p.Instance.Binary ? managedByType[p.Instance.Type] : undefined}
           <div class="rounded-xl border border-white-300 dark:border-navy-600 bg-white-100 dark:bg-navy-700 p-5 shadow-sm space-y-3">
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <div class="flex items-center gap-2">
+            <!-- Wraps on narrow screens: the actions drop under the title
+                 instead of being pushed off the card by a long name. -->
+            <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 min-w-0">
                   <ProviderIcon value={p.Instance.Type} class="w-5 h-5 shrink-0" />
-                  <p class="text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
-                  <span class={`rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
+                  <p data-testid="card-name" title={`${p.Instance.Type}/${p.Instance.Name}`} class="min-w-0 truncate text-base font-semibold text-black-900 dark:text-white-100">{p.Instance.Type}/{p.Instance.Name}</p>
+                  <span data-testid="card-cap" class={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${p.Cap.Used > 0 ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300" : "bg-white-300 dark:bg-navy-600 text-black-600 dark:text-black-500"}`}>{capLabel(p.Cap)}</span>
                   {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
-                    <span data-testid="one-account-badge" class="rounded bg-white-300 dark:bg-navy-600 px-1.5 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">1 instance = 1 account</span>
+                    {@render accountHintIcon(`card-${p.Instance.Type}-${p.Instance.Name}`, p.Instance.Type, "one-account-badge")}
                   {/if}
                 </div>
                 {#if ACCOUNT_ISOLATED.has(p.Instance.Type)}
@@ -733,7 +764,7 @@
                   <p class="text-xs text-green-600 dark:text-green-400 mt-0.5">{p.Version}</p>
                 {/if}
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex shrink-0 items-center gap-2">
                 <!-- Rescan re-probes the binary on the HOST and rewrites
                      the cached status, so it is admin-only like the rest
                      of the configuration surface. Hidden rather than
@@ -755,7 +786,7 @@
             </div>
             <dl class="text-xs space-y-1">
               <div class="flex gap-2">
-                <dt class="w-20 text-black-700 dark:text-black-600">resolved</dt>
+                <dt class="w-20 shrink-0 text-black-700 dark:text-black-600">resolved</dt>
                 {#if p.Path}
                   <dd class="font-mono text-black-900 dark:text-white-100 break-all">
                     {p.Path}
@@ -771,7 +802,7 @@
               </div>
               {#if mbin}
                 <div class="flex gap-2">
-                  <dt class="w-20 text-black-700 dark:text-black-600">binary</dt>
+                  <dt class="w-20 shrink-0 text-black-700 dark:text-black-600">binary</dt>
                   <dd>
                     <button
                       type="button"
@@ -798,7 +829,7 @@
               {/if}
               {#if p.VersionErr}
                 <div class="flex gap-2">
-                  <dt class="w-20 text-black-700 dark:text-black-600">error</dt>
+                  <dt class="w-20 shrink-0 text-black-700 dark:text-black-600">error</dt>
                   <dd class="font-mono text-red-600 dark:text-red-400 break-all">{p.VersionErr}</dd>
                 </div>
               {/if}
@@ -1137,7 +1168,7 @@
           <div data-testid="add-account-store" class="rounded-lg border border-white-300 dark:border-navy-600 bg-white-200 dark:bg-navy-800 px-3 py-2 space-y-2">
             <div class="flex items-center justify-between gap-2">
               <span class="text-xs font-medium text-black-800 dark:text-black-600">{formType === "omp" ? "omp profile" : "Data dir"}</span>
-              <span class="rounded bg-white-300 dark:bg-navy-600 px-2 py-0.5 text-[11px] font-medium text-black-800 dark:text-black-600">1 instance = 1 account</span>
+              {@render accountHintIcon("add", formType, "add-account-hint")}
             </div>
             {#if formStoreOverride}
               <input
