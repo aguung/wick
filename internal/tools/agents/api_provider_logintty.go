@@ -104,11 +104,11 @@ func apiProviderLoginTTYStatus(c *tool.Ctx) {
 		DefaultTTLS:  int(logintty.DefaultTTL.Seconds()),
 		ExtendS:      int(logintty.ExtendStep.Seconds()),
 		MaxTTLS:      int(logintty.MaxTTL.Seconds()),
-		LoginChoices: logintty.LoginChoices(ins.Type, provider.AccountEnv(ins)),
+		LoginChoices: logintty.LoginChoices(ins),
 		LoginNote:    logintty.LoginNote(ins.Type),
 		AccountStore: accountStoreLabel(ins),
 		Accounts:     statusAccounts(ins),
-		APIKeys:      logintty.APIKeyProviders(ins.Type, ins.Env),
+		APIKeys:      logintty.APIKeyProviders(ins),
 	})
 }
 

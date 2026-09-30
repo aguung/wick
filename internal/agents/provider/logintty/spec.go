@@ -49,7 +49,7 @@ func LoginCommandFor(ins provider.Instance, choice string) ([]string, bool) {
 	case provider.TypeOMP:
 		return ompLoginCommand(provider.AccountEnv(ins), choice), true
 	case provider.TypeOpencode:
-		return opencodeLoginCommand(choice), true
+		return opencodeLoginCommand(ins, choice), true
 	}
 	return LoginCommand(ins.Type, ins.ExtraArgs)
 }
@@ -120,16 +120,17 @@ type LoginChoice struct {
 }
 
 // LoginChoices lists the picker entries for t (nil = no picker).
-// env is the instance's account env; omp asks its binary for the registry.
-func LoginChoices(t provider.Type, env []string) []LoginChoice {
+// omp asks its binary for the registry (with the instance's account env);
+// opencode asks its server (opencodeLoginChoices).
+func LoginChoices(ins provider.Instance) []LoginChoice {
 	var out []LoginChoice
-	switch t {
+	switch ins.Type {
 	case provider.TypeOMP:
-		for _, p := range ompLoginProviders(env) {
+		for _, p := range ompLoginProviders(provider.AccountEnv(ins)) {
 			out = append(out, LoginChoice{ID: p.ID, Label: p.Label, Warning: p.Warning, Default: p.Default})
 		}
 	case provider.TypeOpencode:
-		for _, p := range OpencodeLoginProviders {
+		for _, p := range opencodeLoginChoices(ins) {
 			out = append(out, LoginChoice{ID: p.ID, Label: p.Label, Default: p.Default})
 		}
 	}

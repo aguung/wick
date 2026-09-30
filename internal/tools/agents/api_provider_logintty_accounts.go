@@ -68,7 +68,7 @@ func apiProviderAPIKeySet(c *tool.Ctx) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	envVar, ok := logintty.APIKeyEnvVar(ins.Type, strings.TrimSpace(body.Provider))
+	envVar, ok := logintty.APIKeyEnvVar(ins, strings.TrimSpace(body.Provider))
 	if !ok {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown API-key provider"})
 		return

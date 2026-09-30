@@ -25,8 +25,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yogasw/wick/internal/agents/provider"
 )
 
 // OpencodeLoginProvider is one choice in the UI's login picker.
@@ -38,8 +41,10 @@ type OpencodeLoginProvider struct {
 	Default  bool   `json:"default,omitempty"`
 }
 
-// OpencodeLoginProviders are the offered login choices. Method labels are
-// opencode's own (matched case-insensitively by providers.ts).
+// OpencodeLoginProviders are the fallback login choices, used while no
+// server catalog is at hand (opencodeLoginChoices). Method labels are
+// opencode's own (matched case-insensitively by providers.ts). The first
+// is the default, the last ("pick") always closes the picker.
 var OpencodeLoginProviders = []OpencodeLoginProvider{
 	{ID: "openai-headless", Label: "ChatGPT Plus/Pro — device code", Provider: "openai", Method: "ChatGPT Pro/Plus (headless)", Default: true},
 	{ID: "github-copilot", Label: "GitHub Copilot — device code", Provider: "github-copilot"},
@@ -51,14 +56,67 @@ const OpencodeClaudeNote = "Claude Pro/Max subscriptions are not supported by op
 
 var opencodeProviderIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// opencodeLoginChoices is the picker for ins: every OAuth method opencode's
+// own server lists (GET /provider/auth, names from GET /provider — see
+// provider.OpencodeCatalog), then "pick". Without a catalog (server not
+// reachable yet, fetch failed) the static OpencodeLoginProviders answer.
+// ChatGPT device code stays the default when opencode offers it.
+func opencodeLoginChoices(ins provider.Instance) []OpencodeLoginProvider {
+	cat := provider.PeekOpencodeCatalog(ins)
+	if cat == nil || len(cat.Auth) == 0 {
+		return OpencodeLoginProviders
+	}
+	var out []OpencodeLoginProvider
+	for id, methods := range cat.Auth {
+		// Claude subscriptions: see OpencodeClaudeNote.
+		if id == "anthropic" || !opencodeProviderIDRe.MatchString(id) {
+			continue
+		}
+		name := id
+		if p, ok := cat.Provider(id); ok && p.Name != "" {
+			name = p.Name
+		}
+		for i, m := range methods {
+			if m.Type != "oauth" || m.Label == "" {
+				continue
+			}
+			c := OpencodeLoginProvider{
+				ID:       opencodeMethodChoiceID(id, i),
+				Label:    name + " — " + m.Label,
+				Provider: id,
+				Method:   m.Label,
+			}
+			if d := OpencodeLoginProviders[0]; id == d.Provider && strings.EqualFold(m.Label, d.Method) {
+				c.ID, c.Default = d.ID, true
+			}
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return OpencodeLoginProviders
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Default != out[j].Default {
+			return out[i].Default
+		}
+		return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label)
+	})
+	return append(out, OpencodeLoginProviders[len(OpencodeLoginProviders)-1])
+}
+
+// opencodeMethodChoiceID is the picker id of provider's method i.
+func opencodeMethodChoiceID(provider string, i int) string {
+	return provider + "#" + strconv.Itoa(i)
+}
+
 // opencodeLoginCommand is `auth login -p <provider> [-m <method>]`. An
 // id that is neither a known choice nor a plain provider id falls back to
 // the default. "pick" leaves the choice to opencode's own prompt.
-func opencodeLoginCommand(choice string) []string {
+func opencodeLoginCommand(ins provider.Instance, choice string) []string {
 	if choice == "pick" {
 		return []string{"auth", "login"}
 	}
-	for _, c := range OpencodeLoginProviders {
+	for _, c := range append(opencodeLoginChoices(ins), OpencodeLoginProviders...) {
 		if c.ID == choice && c.Provider != "" {
 			args := []string{"auth", "login", "-p", c.Provider}
 			if c.Method != "" {
@@ -66,6 +124,11 @@ func opencodeLoginCommand(choice string) []string {
 			}
 			return args
 		}
+	}
+	// A catalog id whose catalog is gone (cache reset): the provider alone,
+	// opencode then asks for the method.
+	if p, _, ok := strings.Cut(choice, "#"); ok {
+		choice = p
 	}
 	if opencodeProviderIDRe.MatchString(choice) && choice != "anthropic" {
 		return []string{"auth", "login", "-p", choice}

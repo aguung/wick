@@ -151,7 +151,7 @@ func TestOMPLoginCommandAcceptsRegistryID(t *testing.T) {
 func TestAPIKeyProvidersAndSetEnvVar(t *testing.T) {
 	env := []string{"A=1", "OPENROUTER_API_KEY=x"}
 	var or *APIKeyProvider
-	list := APIKeyProviders(provider.TypeOMP, env)
+	list := APIKeyProviders(provider.Instance{Type: provider.TypeOMP, Env: env})
 	for i := range list {
 		if list[i].ID == "openrouter" {
 			or = &list[i]
@@ -160,10 +160,10 @@ func TestAPIKeyProvidersAndSetEnvVar(t *testing.T) {
 	if or == nil || or.Env != "OPENROUTER_API_KEY" || !or.Set {
 		t.Fatalf("openrouter row: %+v", or)
 	}
-	if v, ok := APIKeyEnvVar(provider.TypeOpencode, "google"); !ok || v != "GOOGLE_GENERATIVE_AI_API_KEY" {
+	if v, ok := APIKeyEnvVar(provider.Instance{Type: provider.TypeOpencode, Name: "oc"}, "google"); !ok || v != "GOOGLE_GENERATIVE_AI_API_KEY" {
 		t.Errorf("opencode google env: %q %v", v, ok)
 	}
-	if _, ok := APIKeyEnvVar(provider.TypeClaude, "openrouter"); ok {
+	if _, ok := APIKeyEnvVar(provider.Instance{Type: provider.TypeClaude}, "openrouter"); ok {
 		t.Error("claude has no API-key picker")
 	}
 	got := SetEnvVar(env, "OPENROUTER_API_KEY", "y")

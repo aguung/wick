@@ -391,6 +391,22 @@ func (m *Manager[H]) Live(key string) (H, bool) {
 	return s.h, true
 }
 
+// LiveInGroup returns a handle of any up, non-stale server of group (the
+// Spec.Group it was acquired with, Instance when that was empty). For
+// read-only side requests that do not care which key serves them; no
+// lease is taken, so the server may still be reaped under the caller.
+func (m *Manager[H]) LiveInGroup(group string) (H, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var zero H
+	for _, s := range m.servers {
+		if s.group == group && s.isReady() && s.started && !s.stale && !s.dead() {
+			return s.h, true
+		}
+	}
+	return zero, false
+}
+
 // reapLoop runs for the life of the process: it is the only thing that
 // ever stops an idle server, so there is no switch to turn it off.
 func (m *Manager[H]) reapLoop() {

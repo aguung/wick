@@ -273,3 +273,31 @@ func TestGroupsDoNotSweepEachOther(t *testing.T) {
 		t.Fatalf("retire reached %d of 2", k)
 	}
 }
+
+// LiveInGroup finds any up server of the group, whatever its key, and
+// skips stale and dead ones.
+func TestLiveInGroup(t *testing.T) {
+	f := &starter{}
+	m, _ := newTest(f)
+	if _, ok := m.LiveInGroup("i/g"); ok {
+		t.Fatal("empty manager reported a server")
+	}
+	a, _ := m.Acquire(context.Background(), Spec{Instance: "i", Group: "i/g", Key: "k1"}, f.start)
+	a.Release()
+	if h, ok := m.LiveInGroup("i/g"); !ok || h != a.H {
+		t.Fatal("live server not found by group")
+	}
+	if _, ok := m.LiveInGroup("i/other"); ok {
+		t.Fatal("other group matched")
+	}
+	a.H.crash()
+	if _, ok := m.LiveInGroup("i/g"); ok {
+		t.Fatal("dead server returned")
+	}
+	b, _ := m.Acquire(context.Background(), Spec{Instance: "i", Group: "i/g", Key: "k2"}, f.start)
+	m.Retire("i")
+	if _, ok := m.LiveInGroup("i/g"); ok {
+		t.Fatal("stale server returned")
+	}
+	b.Release()
+}

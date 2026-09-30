@@ -49,7 +49,7 @@ func TestOpencodeLoginCommand(t *testing.T) {
 		"-x; rm":          {"auth", "login", "-p", "openai", "-m", "ChatGPT Pro/Plus (headless)"},
 	}
 	for in, want := range cases {
-		if got := opencodeLoginCommand(in); !slices.Equal(got, want) {
+		if got := opencodeLoginCommand(provider.Instance{Type: provider.TypeOpencode, Name: "oc"}, in); !slices.Equal(got, want) {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
 	}
@@ -116,7 +116,7 @@ func TestOMPUsageAndAccount(t *testing.T) {
 
 func TestLoginChoices(t *testing.T) {
 	var warned bool
-	for _, c := range LoginChoices(provider.TypeOMP, nil) {
+	for _, c := range LoginChoices(provider.Instance{Type: provider.TypeOMP, Name: "omp"}) {
 		if c.ID == "anthropic" && c.Warning != "" {
 			warned = true
 		}
@@ -124,7 +124,7 @@ func TestLoginChoices(t *testing.T) {
 	if !warned {
 		t.Fatal("anthropic must carry a policy warning")
 	}
-	if LoginChoices(provider.TypeClaude, nil) != nil {
+	if LoginChoices(provider.Instance{Type: provider.TypeClaude}) != nil {
 		t.Fatal("claude has no picker")
 	}
 	if !strings.Contains(LoginNote(provider.TypeOpencode), "Claude") {

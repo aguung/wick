@@ -25,7 +25,8 @@ type APIKeyProvider struct {
 	Set bool `json:"set"`
 }
 
-// opencodeAPIKeyProviders are models.dev provider ids opencode reads a key
+// opencodeAPIKeyProviders are the fallback while no server catalog is at
+// hand (see opencodeAPIKeyChoices): models.dev provider ids opencode reads a key
 // for, with the env var models.dev declares. Source: the env vars
 // opencode's own test preload clears before every run
 // (packages/opencode/test/preload.ts, opencode 7945de208) — the ones its
@@ -43,21 +44,46 @@ var opencodeAPIKeyProviders = []APIKeyProvider{
 	{ID: "cerebras", Label: "Cerebras", Env: "CEREBRAS_API_KEY"},
 }
 
-// APIKeyProviders lists t's API-key choices, each marked Set when env
-// already holds a non-empty value for its var. Sorted by label.
-func APIKeyProviders(t provider.Type, env []string) []APIKeyProvider {
+// opencodeAPIKeyChoices are the providers opencode's own server lists
+// (GET /provider all[]) that read a key from env: {id, name, env[0]}.
+// Falls back to opencodeAPIKeyProviders without a catalog.
+func opencodeAPIKeyChoices(ins provider.Instance) []APIKeyProvider {
+	cat := provider.PeekOpencodeCatalog(ins)
+	if cat == nil {
+		return opencodeAPIKeyProviders
+	}
+	var out []APIKeyProvider
+	for _, p := range cat.Providers {
+		if len(p.Env) == 0 || strings.TrimSpace(p.Env[0]) == "" {
+			continue
+		}
+		label := p.Name
+		if label == "" {
+			label = p.ID
+		}
+		out = append(out, APIKeyProvider{ID: p.ID, Label: label, Env: strings.TrimSpace(p.Env[0])})
+	}
+	if len(out) == 0 {
+		return opencodeAPIKeyProviders
+	}
+	return out
+}
+
+// APIKeyProviders lists ins's API-key choices, each marked Set when the
+// instance Env already holds a non-empty value for its var. Sorted by label.
+func APIKeyProviders(ins provider.Instance) []APIKeyProvider {
 	var src []APIKeyProvider
-	switch t {
+	switch ins.Type {
 	case provider.TypeOMP:
 		src = ompAPIKeyProviders
 	case provider.TypeOpencode:
-		src = opencodeAPIKeyProviders
+		src = opencodeAPIKeyChoices(ins)
 	default:
 		return nil
 	}
 	out := make([]APIKeyProvider, len(src))
 	for i, p := range src {
-		p.Set = envValue(env, p.Env) != ""
+		p.Set = envValue(ins.Env, p.Env) != ""
 		out[i] = p
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -66,9 +92,9 @@ func APIKeyProviders(t provider.Type, env []string) []APIKeyProvider {
 	return out
 }
 
-// APIKeyEnvVar resolves a provider id to the env var t reads its key from.
-func APIKeyEnvVar(t provider.Type, id string) (string, bool) {
-	for _, p := range APIKeyProviders(t, nil) {
+// APIKeyEnvVar resolves a provider id to the env var ins reads its key from.
+func APIKeyEnvVar(ins provider.Instance, id string) (string, bool) {
+	for _, p := range APIKeyProviders(ins) {
 		if p.ID == id {
 			return p.Env, true
 		}

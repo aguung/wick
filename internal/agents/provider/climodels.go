@@ -20,7 +20,9 @@ import (
 //   - omp: `omp --profile <p> models --json` → {"models":[{"selector":
 //     "provider/id","name":…}]} (coding-agent/src/cli/models-cli.ts
 //     toModelJson, commands/models.ts --json).
-//   - opencode: `opencode models` → one "provider/model" per line
+//   - opencode: the instance server's GET /provider (connected providers'
+//     models, opencode's default first — opencode_catalog.go); when that
+//     is unavailable, `opencode models` → one "provider/model" per line
 //     (packages/opencode/src/cli/cmd/models.ts); no JSON flag exists.
 
 // cliModelsRunner execs one CLI; swapped in tests.
@@ -39,6 +41,9 @@ func ListCLIModels(ctx context.Context, ins Instance) ([]ModelSeed, error) {
 	case TypeOpencode:
 		if _, err := OpencodeEnv(ins); err != nil {
 			return nil, err
+		}
+		if models := catalogModels(ctx, ins); len(models) > 0 {
+			return models, nil
 		}
 		args = []string{"models"}
 	default:
@@ -59,6 +64,16 @@ func ListCLIModels(ctx context.Context, ins Instance) ([]ModelSeed, error) {
 		return parseOMPModels(out)
 	}
 	return parseOpencodeModels(out), nil
+}
+
+// catalogModels is the opencode model list from the instance's server
+// catalog; nil when there is none, so the CLI answers instead.
+func catalogModels(ctx context.Context, ins Instance) []ModelSeed {
+	cat, err := FetchOpencodeCatalog(ctx, ins)
+	if err != nil {
+		return nil
+	}
+	return cat.Models()
 }
 
 func parseOMPModels(out []byte) ([]ModelSeed, error) {
