@@ -25,6 +25,10 @@ type SlackChannelConfig struct {
 
 	AskUserEnabled bool `wick:"bool;hidden;key=ask_user_enabled;group=Agent Behaviour;desc=Allow the ask_user MCP tool for sessions from this Slack channel. Off = the agent gets an error and picks a default (recommended until the ask is rendered in Slack — today the prompt only shows in the wick web UI)."`
 
+	// HideSubAgentStatus is phrased as an opt-out so the zero value — every
+	// channel row saved before the field existed — keeps the behaviour on.
+	HideSubAgentStatus bool `wick:"bool;hidden;key=hide_subagent_status;group=Agent Behaviour;desc=Stay quiet about background sub-agents. Off (default): the thread gets one short message when a sub-agent is started in the background, and the assistant banner keeps showing which sub-agents are still working after the agent's own turn ends. On: neither."`
+
 	ReactionTriggerEnabled bool   `wick:"bool;hidden;key=reaction_trigger_enabled;group=Reaction Auto-Reply|Put 🤖 on a thread's top message to auto-reply to every new reply without a mention — remove it to stop. Threads are still started by @mention only, so this never creates a new session.\nSlack app must subscribe to events reaction_added, reaction_removed, and message.channels, with scopes reactions:read + channels:history. The shipped slack-app-manifest.json already includes them.;desc=Enable the 🤖 auto-reply switch."`
 	ReactionChannelsMode   string `wick:"dropdown=all|whitelist;default=whitelist;hidden;key=reaction_channels_mode;visible_when=reaction_trigger_enabled:true;group=Reaction Auto-Reply;desc=Which channels honour the 🤖 switch. all = any channel the bot is in. whitelist = only the channels listed below."`
 	ReactionChannels       string `wick:"picker=slack.channels;hidden;key=reaction_channels;visible_when=reaction_channels_mode:whitelist;group=Reaction Auto-Reply;desc=Channels where the 🤖 switch is active. Independent of the access whitelist."`

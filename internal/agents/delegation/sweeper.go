@@ -257,6 +257,7 @@ func (s *Service) closeAbandonedRuns(ctx context.Context) {
 		}
 		s.deliver(ctx, fresh, fresh.DeliverySink, s.doneResult(ctx, fresh, fresh.TurnsUsed, fresh.TokensUsed, out))
 		s.pokeSlot(fresh.RootID)
+		s.backgroundEnded(ctx, fresh)
 	}
 }
 

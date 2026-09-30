@@ -190,6 +190,20 @@ type turn struct {
 	// staleShown is set once the label has been aged out, so the downgrade is
 	// painted once rather than on every tick.
 	staleShown bool
+
+	// Background sub-agent banner (see background.go). bgAgents is the last
+	// reported set of this session's background sub-agents still queued or
+	// running; bgCheckedAt is when that set was last confirmed, which the
+	// banner ages against the same staleActivityAfter as a label.
+	bgAgents     []agentchannels.DetachedSurvivor
+	bgCheckedAt  time.Time
+	bgRechecking bool
+	// bgTicker keeps the banner alive once the leader's own turn has ended;
+	// it never runs alongside statusTicker. Stopped (and set to nil) when the
+	// set empties, a new turn takes over, or the turn is replaced.
+	bgTicker *time.Ticker
+	bgStop   chan struct{}
+	bgDot    int
 }
 
 // carryOver copies in-flight streaming state from a superseded turn so a
@@ -202,6 +216,12 @@ func (t *turn) carryOver(old *turn) {
 	// post a fresh message and strand the streamed one mid-word.
 	t.liveTS = old.liveTS
 	t.lastSent = old.lastSent
+	// Background sub-agents outlive any one turn: the new turn inherits the
+	// set so it can put the banner back when it ends, and the old turn's
+	// keep-alive stops because this turn's own banner takes over.
+	t.bgAgents = old.bgAgents
+	t.bgCheckedAt = old.bgCheckedAt
+	old.stopBackgroundBanner()
 }
 
 // Channel implements agentchannels.Channel for Slack, supporting both
@@ -297,7 +317,10 @@ type Channel struct {
 	tokenRefreshedAt time.Time
 	tokenRefreshMu   sync.Mutex
 
-	approveFn      agentchannels.ApproveFn
+	approveFn agentchannels.ApproveFn
+	// bgRecheck re-reads a session's live background sub-agents when the
+	// banner has gone stale. Guarded by cfgMu. nil = no re-check.
+	bgRecheck      agentchannels.BackgroundRecheckFn
 	sessions       agentchannels.SessionChecker
 	onSessionStart agentchannels.SessionStartHook
 
@@ -2686,6 +2709,9 @@ func (s *Channel) OnAgentEvent(sessionKey string, ev event.AgentEvent) {
 			text = ev.ErrorMsg
 		}
 		s.NotifyState(sessionKey, state, text)
+		// The reply cleared the banner; background sub-agents still working
+		// get it back so the thread does not read as finished.
+		s.startBackgroundBanner(sessionKey)
 
 	case event.Error:
 		s.mu.Lock()
@@ -2704,6 +2730,7 @@ func (s *Channel) OnAgentEvent(sessionKey string, ev event.AgentEvent) {
 			msg = ev.Text
 		}
 		s.NotifyState(sessionKey, "error", msg)
+		s.startBackgroundBanner(sessionKey)
 	}
 }
 

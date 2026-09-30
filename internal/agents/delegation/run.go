@@ -238,6 +238,18 @@ type Service struct {
 	// list rather than a delta lets the consumer keep one message and edit it.
 	// nil = nobody is showing such a notice.
 	OnDetachedChange func(parentSessionID string, survivors []Survivor)
+	// OnBackgroundStart is called once when a background (async) delegation
+	// is accepted — running or queued — so a channel can tell its human that
+	// work was fired off before the leader's turn ends and the thread goes
+	// quiet. Foreground delegations never trigger it: the leader's own turn
+	// is still live and already shows the work. nil = nobody listens.
+	OnBackgroundStart func(parentSessionID string, start BackgroundStart)
+	// OnBackgroundChange is called with the CURRENT set of background
+	// sub-agents still queued or running under a parent session (see
+	// ActiveBackground) each time one is accepted or ends. Whole list, not a
+	// delta, so a consumer can keep one banner and repaint it. nil = nobody
+	// listens.
+	OnBackgroundChange func(parentSessionID string, active []Survivor)
 
 	// mu guards inflight and slotWaiters.
 	mu sync.Mutex
@@ -536,6 +548,7 @@ func (s *Service) Run(ctx context.Context, req Request) (*Result, error) {
 	if !s.hasSlot(ctx, rootID) {
 		if mode == ModeAsync {
 			pos, _ := s.Repo.QueuePosition(ctx, rootID, id)
+			s.announceBackground(context.WithoutCancel(ctx), row, true)
 			return queuedResult(row, pos), nil
 		}
 		if werr := s.waitForSlot(ctx, rootID, id); werr != nil {
@@ -553,6 +566,9 @@ func (s *Service) Run(ctx context.Context, req Request) (*Result, error) {
 		log.Warn().Err(err).Str("delegation", id).Msg("delegation: mark running failed")
 	}
 	row.Status = entity.DelegationRunning
+	if mode == ModeAsync {
+		s.announceBackground(context.WithoutCancel(ctx), row, false)
+	}
 
 	return s.execute(ctx, row, profile, effTags)
 }
@@ -874,6 +890,9 @@ func (s *Service) await(
 			turns = billedTurns()
 			_ = s.Runner.KillAgent(spec.SessionID, spec.AgentName)
 			ok, _ := s.Repo.FinishGuarded(ctx, row.ID, entity.DelegationRunning, entity.DelegationInterrupted, out, "", turns)
+			if ok {
+				s.backgroundEnded(ctx, row)
+			}
 			status := entity.DelegationInterrupted
 			if !ok {
 				// A completion won the race; report what actually landed.
@@ -1187,6 +1206,9 @@ func (s *Service) finish(ctx context.Context, row *entity.AgentDelegation, expec
 	// sub-agent is still going.
 	if row.Detached && row.ParentSessionID != "" {
 		s.reportSurvivors(context.WithoutCancel(ctx), row.ParentSessionID)
+		// Same trigger for the background banner: one fewer is running, and
+		// the last one ending is what lets the banner clear.
+		s.reportBackground(context.WithoutCancel(ctx), row.ParentSessionID)
 	}
 }
 

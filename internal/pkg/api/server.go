@@ -1904,6 +1904,15 @@ func NewServer() *Server {
 			}
 			channelReg.DispatchDetachedSurvivors(parentSessionID, out)
 		},
+		// Background sub-agents in a channel thread: one start ping each, and
+		// a banner kept up from the same rows the web UI's sub-agent rail
+		// spins on, so Slack does not read as finished while they work.
+		OnBackgroundStart: func(parentSessionID string, st delegation.BackgroundStart) {
+			channelReg.DispatchBackgroundStart(parentSessionID, channelSurvivor(st.Agent), st.Task, st.Queued)
+		},
+		OnBackgroundChange: func(parentSessionID string, active []delegation.Survivor) {
+			channelReg.DispatchBackgroundAgents(parentSessionID, channelSurvivors(active))
+		},
 		// Messaging: make an exited sub-agent addressable again, and say
 		// so when it can only come back without its memory.
 		Waker: poolWaker{pool: agentsPool, layout: agentsLayout},
@@ -1971,6 +1980,9 @@ func NewServer() *Server {
 	// interrupt endpoints and the leader-kill cascade all act on the very
 	// delegations the MCP tool created.
 	agentstool.SetDelegation(delegationSvc)
+	// A channel's background banner asks again once it has gone stale, so a
+	// sub-agent that died without closing its row cannot hold it forever.
+	channelReg.SetBackgroundRecheck(backgroundRecheck(delegationSvc))
 
 	// Return board tasks whose worker vanished to the queue; without this
 	// a crashed worker's claim pins its task forever.
