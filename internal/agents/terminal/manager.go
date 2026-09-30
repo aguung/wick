@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,9 +150,19 @@ func (m *Manager) Start(req StartRequest) (*Session, error) {
 	}
 	s.touch()
 
+	cfgDir, err := os.MkdirTemp("", "wick-gotty-")
+	if err != nil {
+		return nil, err
+	}
+	// gotty reads it once at startup; gone as soon as it serves.
+	defer os.RemoveAll(cfgDir)
+	cfgPath := filepath.Join(cfgDir, "gotty.hcl")
+	if err := os.WriteFile(cfgPath, GottyConfig(s.credential), 0o600); err != nil {
+		return nil, err
+	}
 	bin, args := req.GottyBin, GottyArgs(Spec{
 		Port:       port,
-		Credential: s.credential,
+		ConfigPath: cfgPath,
 		BasePath:   s.BasePath,
 		Bin:        req.CmdBin,
 		Args:       req.Command.Args,

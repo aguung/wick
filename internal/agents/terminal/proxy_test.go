@@ -37,8 +37,7 @@ func fakeGotty(argv []string) {
 	fs := flag.NewFlagSet("gotty", flag.ExitOnError)
 	port := fs.Int("port", 0, "")
 	path := fs.String("path", "/", "")
-	cred := fs.String("credential", "", "")
-	fs.String("config", "", "")
+	cfg := fs.String("config", "", "")
 	fs.String("address", "", "")
 	fs.Bool("once", false, "")
 	fs.Bool("permit-write", false, "")
@@ -46,6 +45,14 @@ func fakeGotty(argv []string) {
 	fs.Int("close-timeout", 0, "")
 	fs.String("title-format", "", "")
 	_ = fs.Parse(argv)
+	cred := new(string)
+	if b, err := os.ReadFile(*cfg); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if v, ok := strings.CutPrefix(line, "credential = "); ok {
+				*cred, _ = strconv.Unquote(v)
+			}
+		}
+	}
 	child := exec.Command("sleep", "300")
 	setSession(child)
 	_ = child.Start()

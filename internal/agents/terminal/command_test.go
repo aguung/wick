@@ -42,17 +42,19 @@ func TestCommandsAllowlist(t *testing.T) {
 }
 
 func TestGottyArgs(t *testing.T) {
-	args := GottyArgs(Spec{Port: 40001, Credential: "u:p", BasePath: "/b/t/abc/", Bin: "/bin/opencode", Args: []string{"auth", "list"}})
+	args := GottyArgs(Spec{Port: 40001, ConfigPath: "/cfg/gotty.hcl", BasePath: "/b/t/abc/", Bin: "/bin/opencode", Args: []string{"auth", "list"}})
 	got := strings.Join(args, " ")
 	for _, want := range []string{
-		"--config /dev/null", "--address 127.0.0.1", "--port 40001", "--path /b/t/abc/",
-		"--credential u:p", "--once", "--permit-write",
+		"--config /cfg/gotty.hcl", "--address 127.0.0.1", "--port 40001", "--path /b/t/abc/",
+		"--once", "--permit-write",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv %q lacks %q", got, want)
 		}
 	}
-	for _, never := range []string{"--permit-arguments", "--random-url", "0.0.0.0", "--reconnect"} {
+	// The credential is world-readable in /proc/<pid>/cmdline; it lives in
+	// the 0600 config file instead.
+	for _, never := range []string{"--permit-arguments", "--random-url", "0.0.0.0", "--reconnect", "--credential"} {
 		if strings.Contains(got, never) {
 			t.Errorf("argv %q must not contain %q", got, never)
 		}
@@ -85,5 +87,12 @@ func TestEnv(t *testing.T) {
 	omp := Env(provider.Instance{Type: provider.TypeOMP, Name: "w"})
 	if !slices.Contains(omp, "OMP_PROFILE="+provider.OMPProfile(provider.Instance{Type: provider.TypeOMP, Name: "w"})) {
 		t.Error("omp env must pin OMP_PROFILE")
+	}
+}
+
+func TestGottyConfigCarriesTheCredential(t *testing.T) {
+	got := string(GottyConfig(`u:p"x`))
+	if !strings.Contains(got, "enable_basic_auth = true") || !strings.Contains(got, `credential = "u:p\"x"`) {
+		t.Fatalf("config %q", got)
 	}
 }

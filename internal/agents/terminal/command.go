@@ -55,7 +55,7 @@ func LookupCommand(ins provider.Instance, key string) (Command, bool) {
 // Spec is everything one gotty start needs.
 type Spec struct {
 	Port       int
-	Credential string // "user:pass", random per session
+	ConfigPath string // 0600 gotty config carrying the credential (GottyConfig)
 	BasePath   string // URL path gotty serves under, ends in "/"
 	Bin        string // provider binary (absolute)
 	Args       []string
@@ -68,16 +68,22 @@ const closeTimeoutS = 5
 // firstClientTimeoutS: gotty exits when nobody connects within this.
 const firstClientTimeoutS = 120
 
-// GottyArgs is gotty's argv. --config /dev/null keeps a host ~/.gotty
-// from overriding any of it; 127.0.0.1 only; --once exits after the one
+// GottyConfig is the private config file gotty reads the credential from.
+// Never --credential: /proc/<pid>/cmdline is world-readable, and the
+// credential is all that stands between another local user and a shell.
+// Pointing --config at our own file also keeps a host ~/.gotty out.
+func GottyConfig(credential string) []byte {
+	return []byte("enable_basic_auth = true\ncredential = " + strconv.Quote(credential) + "\n")
+}
+
+// GottyArgs is gotty's argv. 127.0.0.1 only; --once exits after the one
 // client; no --permit-arguments, no --random-url (the path is ours).
 func GottyArgs(s Spec) []string {
 	args := []string{
-		"--config", "/dev/null",
+		"--config", s.ConfigPath,
 		"--address", "127.0.0.1",
 		"--port", strconv.Itoa(s.Port),
 		"--path", s.BasePath,
-		"--credential", s.Credential,
 		"--once",
 		"--permit-write",
 		"--timeout", strconv.Itoa(firstClientTimeoutS),
