@@ -38,7 +38,7 @@ describe("isRunningStatus", () => {
 });
 
 describe("sortRows", () => {
-  test("running first, then newest first, stable on ties", () => {
+  test("running first, then newest first, then id on ties", () => {
     const got = sortRows([
       { id: "old-idle", running: false, lastActive: 1 },
       { id: "new-idle", running: false, lastActive: 50 },
@@ -48,6 +48,17 @@ describe("sortRows", () => {
       { id: "new-run", running: true, lastActive: 40 },
     ]).map((r) => r.id);
     expect(got).toEqual(["new-run", "old-run", "new-idle", "tie-a", "tie-b", "old-idle"]);
+  });
+
+  /* Equal-time rows order by id, as orderSidebarIDs does on the server —
+     not by where they happened to sit — so the first live re-sort after
+     load does not reshuffle rows the server already ordered. */
+  test("equal-time rows follow id, whatever order they arrive in", () => {
+    const got = sortRows([
+      { id: "tie-b", running: false, lastActive: 10 },
+      { id: "tie-a", running: false, lastActive: 10 },
+    ]).map((r) => r.id);
+    expect(got).toEqual(["tie-a", "tie-b"]);
   });
 });
 

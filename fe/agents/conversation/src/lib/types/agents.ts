@@ -634,6 +634,9 @@ export type TicketBoard = {
   untracked: TicketSessionRow[];
   /** How many untracked chats exist, however few were sent. */
   untracked_total?: number;
+  /** Cursor for the page after `untracked`, absent when nothing follows.
+      Opaque — handed back as `untrackedAfter`, never built client-side. */
+  untracked_next?: string;
   statuses: TicketStatus[];
   users?: Record<string, string>;
   me?: string;

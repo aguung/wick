@@ -176,6 +176,10 @@
   const UNTRACKED_PAGE = 25;
   const UNTRACKED_MORE_PAGE = 50;
   let untrackedMore = $state<TicketSessionRow[]>([]);
+  /* Where the kept pages end: the cursor the last of them came back with,
+     "" when nothing follows. Meaningless while untrackedMore is empty — the
+     first page's own untracked_next continues the rail then. */
+  let untrackedMoreNext = $state("");
   let loadingMoreUntracked = false;
   /* The request the current board answered, so a poll can tell "the same
      list moved" from "a different list". */
@@ -234,6 +238,7 @@
     // A different request (scope, filter, project) is a different list:
     // the pages loaded under the old one no longer continue it.
     untrackedMore = [];
+    untrackedMoreNext = "";
     trackedHere = new Set();
     reloadBoard();
   });
@@ -267,19 +272,19 @@
   });
 
   /* Next page of the untracked rail, appended — see railPaging.ts for why
-     the offset is the drawn row count. */
+     it is asked for by cursor and not by the drawn row count. */
   function loadMoreUntracked() {
-    if (loadingMoreUntracked || !boardView) return;
+    if (loadingMoreUntracked || !boardView?.untracked_next) return;
     loadingMoreUntracked = true;
     const key = boardRequestKey;
-    const offset = boardView.untracked.length;
+    const after = boardView.untracked_next;
     Effect.runPromise(
       getProjectTickets(base, project.id, {
         rows: 0,
         statuses: [], // rows only — no cards
         untracked: true,
         untrackedLimit: UNTRACKED_MORE_PAGE,
-        untrackedOffset: offset,
+        untrackedAfter: after,
         untrackedOwner,
       }).pipe(Effect.provide(WickClientLayer)),
     )
@@ -287,16 +292,22 @@
         if (key !== boardRequestKey) return; // the request changed meanwhile
         const have = new Set([...(board?.untracked ?? []), ...untrackedMore].map((r) => r.id));
         untrackedMore = [...untrackedMore, ...b.untracked.filter((r) => !have.has(r.id))];
+        untrackedMoreNext = b.untracked_next ?? "";
       })
       .catch(() => { /* the sentinel offers it again on the next scroll */ })
       .finally(() => { loadingMoreUntracked = false; });
   }
 
   /* The board as drawn: the polled first page, then the pages loaded on
-     scroll, minus any row the fresh first page now holds itself. */
+     scroll, minus any row the fresh first page now holds itself. Once pages
+     are kept, the rail continues from where THEY end. */
   const boardView = $derived.by(() => {
     if (!board || untrackedMore.length === 0) return board;
-    return { ...board, untracked: mergeRail(board.untracked, untrackedMore, trackedHere) };
+    return {
+      ...board,
+      untracked: mergeRail(board.untracked, untrackedMore, trackedHere),
+      untracked_next: untrackedMoreNext || undefined,
+    };
   });
 
   /* A chat the board just attached or turned into a ticket: off the rail. */
@@ -314,7 +325,8 @@
         if (key !== boardRequestKey) return; // superseded by a newer request
         // Same list, moved: a chat pushed off page one stays on the rail.
         if (board && boardKeyLoaded === key) {
-          untrackedMore = keepPushedOff(board.untracked, b.untracked, untrackedMore, trackedHere);
+          untrackedMore = keepPushedOff(board.untracked, b.untracked, untrackedMore, trackedHere, UNTRACKED_PAGE);
+          if (untrackedMore.length === 0) untrackedMoreNext = "";
         }
         board = b;
         boardKeyLoaded = key;
