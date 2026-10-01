@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/yogasw/wick/internal/agents/event"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -174,6 +176,9 @@ type remoteProcess struct {
 	sessionID string
 	prompted  bool
 	killed    bool
+	// killDone closes when the first Kill is through; a second Kill
+	// waits on it, so no caller returns while an abort is in flight.
+	killDone chan struct{}
 	// finished: the session went idle — the turn is over on the server,
 	// so a Kill has nothing left to abort.
 	finished bool
@@ -240,10 +245,14 @@ func (p *remoteProcess) Wait() error {
 func (p *remoteProcess) Kill() error {
 	p.mu.Lock()
 	if p.killed {
+		kd := p.killDone
 		p.mu.Unlock()
+		<-kd
 		return nil
 	}
 	p.killed = true
+	p.killDone = make(chan struct{})
+	defer close(p.killDone)
 	c, sid, prompted, finished := p.client, p.sessionID, p.prompted, p.finished
 	p.mu.Unlock()
 	_ = p.pr.CloseWithError(errTurnKilled)
@@ -336,6 +345,16 @@ func (p *remoteProcess) Inject(text string) error {
 // processed asynchronously, and it can start its own run just after the
 // one it was meant to join went idle.
 const injectSettle = 300 * time.Millisecond
+
+// Silence watchdog bounds (vars: shortened in tests).
+var (
+	silentTurnTimeout = 90 * time.Second
+	// compactTimeout bounds one /compact (summarize) call.
+	compactTimeout = 10 * time.Minute
+	// apiRequestTimeout caps every other request to the server.
+	apiRequestTimeout = 60 * time.Second
+	silentTurnCheck   = 5 * time.Second
+)
 
 // stillBusy reports whether the server lists sid as working. Used only
 // after an injection, where an idle frame may belong to the run that
@@ -435,6 +454,24 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	p.mu.Lock()
 	p.client, p.sessionID = c, sid
 	p.mu.Unlock()
+	if t.resumeID != "" && sid != t.resumeID {
+		// Never a silent restart: the reply opens by saying the earlier
+		// conversation is gone on this instance.
+		p.emit(noticeLine(sid, lostSessionNotice))
+	}
+	// The model's context limit, from this running server (no process):
+	// the meter's scale.
+	// With it, whether the server compacts by itself (GET /config) — only
+	// next to a known window: the panel shows the two together.
+	if w, auto := contextState(ctx, c, t.model); w > 0 {
+		p.emit(event.ContextStateLine(w, auto))
+	}
+	// "/compact": opencode's official compaction (POST
+	// /session/{id}/summarize — what its TUI's /compact calls). As a plain
+	// prompt it would only be text to the model. The turn ends right after.
+	if compactPrompt(t.prompt) {
+		return p.compactTurn(ctx, c, sid, t.model)
+	}
 
 	if t.mcpName != "" {
 		cfg := map[string]any{"name": t.mcpName, "config": map[string]any{
@@ -493,7 +530,38 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 
 	tr := newTranslator(sid)
 	finished := false
+	// Silence watchdog: a model that streams NOTHING (no event of any kind
+	// for silentTurnTimeout — seen with opencode/kimi-k3) must not leave the
+	// user on a spinner. Any event is activity, so long reasoning that
+	// streams deltas is never cut.
+	var lastAct atomic.Int64
+	lastAct.Store(time.Now().UnixNano())
+	var silent atomic.Bool
+	stopWatch, watchDone := make(chan struct{}), make(chan struct{})
+	// The turn returns only once the watchdog is gone: an abort it already
+	// started must land before the next turn prompts this session, or it
+	// aborts that one instead.
+	defer func() { close(stopWatch); <-watchDone }()
+	go func() {
+		defer close(watchDone)
+		t := time.NewTicker(silentTurnCheck)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, lastAct.Load())) > silentTurnTimeout {
+					silent.Store(true)
+					_ = abortSession(c, sid)
+					_ = resp.Body.Close()
+					return
+				}
+			}
+		}
+	}()
 	err = readSSE(resp.Body, func(ev sseEvent) bool {
+		lastAct.Store(time.Now().UnixNano())
 		lines, done := tr.feed(ev)
 		p.mu.Lock()
 		p.userSeen = tr.userCount()
@@ -507,6 +575,11 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		finished = done
 		return !done
 	})
+	// silent first: a turn the watchdog aborted is not a clean one, even
+	// when its last frame raced the abort in.
+	if silent.Load() {
+		return fmt.Errorf("opencode: model %s sent nothing for %s (no reply, no error from the server); the turn was stopped — try another model", t.model, silentTurnTimeout)
+	}
 	if finished {
 		if !tr.replied {
 			return errNoReply
@@ -545,8 +618,12 @@ func (p *remoteProcess) moreInjected(c *apiClient, sid string) bool {
 }
 
 func (p *remoteProcess) clientFor(l *lease) *apiClient {
-	return &apiClient{base: l.s.h.url, password: l.s.h.password, dir: p.dir, http: &http.Client{Timeout: 60 * time.Second}}
+	return &apiClient{base: l.s.h.url, password: l.s.h.password, dir: p.dir, http: &http.Client{Timeout: apiRequestTimeout}}
 }
+
+// lostSessionNotice opens a reply whose resume id this instance's server
+// does not have (history not copied here, or deleted).
+const lostSessionNotice = "Note: this instance could not find the session's earlier opencode conversation, so this reply starts a new one — it does not remember the earlier turns.\n\n"
 
 // ensureSession resumes resumeID when the server still has it, else
 // creates a session. A title is always set: an untitled session costs an
@@ -577,3 +654,111 @@ func ensureSession(ctx context.Context, c *apiClient, resumeID, title string) (s
 	return s.ID, nil
 }
 
+// compactPrompt reports a bare "/compact" turn.
+func compactPrompt(prompt string) bool {
+	return strings.EqualFold(strings.TrimSpace(prompt), "/compact")
+}
+
+// compactTurn summarizes the session with its own model and ends the turn.
+// The effect is read back from the running server (GET
+// /session/{id}/message): before = the context of the last assistant
+// message, after = what the next turn starts from — the session's fixed
+// overhead plus the new summary (see sessionTokens). No new summary →
+// opencode compacted nothing, and the notice says so instead of claiming
+// it did; so does a summarize opencode refuses for having nothing to do.
+func (p *remoteProcess) compactTurn(ctx context.Context, c *apiClient, sid, model string) error {
+	prev := sessionContext(ctx, c, sid)
+	prov, id, _ := strings.Cut(model, "/")
+	body := map[string]any{"providerID": prov, "modelID": id, "auto": false}
+	// summarize answers only once the summary is written — minutes for a
+	// big session on a slow model — so it gets its own client without the
+	// 60s per-request cap, bounded by compactTimeout instead. With the cap
+	// opencode finished the compaction while wick reported a timeout.
+	sctx, cancel := context.WithTimeout(ctx, compactTimeout)
+	defer cancel()
+	long := *c
+	long.http = &http.Client{}
+	err := long.do(sctx, http.MethodPost, "/session/"+sid+"/summarize", body, nil)
+	if err != nil && !compactNoop(err) {
+		return fmt.Errorf("opencode compact: %w", err)
+	}
+	cur := sessionContext(ctx, c, sid)
+	if err != nil || cur.summaryID == "" || cur.summaryID == prev.summaryID {
+		p.emit(noticeLine(sid, "Nothing was compacted — opencode wrote no summary for this session (too little history?).\n"))
+	} else {
+		p.emit(event.CompactionLine("manual", prev.last, cur.overhead+cur.summary))
+	}
+	b, _ := json.Marshal(map[string]any{"type": "step_finish", "sessionID": sid, "part": map[string]any{"type": "step-finish", "reason": "stop", "sessionID": sid}})
+	p.emit(append(b, '\n'))
+	return nil
+}
+
+// compactNoop reports a summarize refused because there is nothing to
+// compact — not a failure of the turn.
+func compactNoop(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "already compacted") || strings.Contains(m, "nothing to compact") ||
+		strings.Contains(m, "nothing to summarize")
+}
+
+// sessionTokens is what the session's messages say about its context.
+type sessionTokens struct {
+	// last is the context of the last (non-summary) assistant message.
+	last int
+	// overhead is the part of every request compaction cannot shrink —
+	// system prompt + tool definitions — estimated as the SMALLEST
+	// non-zero context of any non-summary assistant message: each
+	// request is overhead + at least one user message, so the minimum is
+	// the tightest bound the session itself offers (a real session read
+	// 41.0k against 41.5–41.7k for the first turn after each summary,
+	// which also carried that turn's prompt). Summary messages are left
+	// out: the summarizer runs without the agent's tools.
+	overhead int
+	// summary is the size (output) of the newest summary message, and
+	// summaryID its id ("" = none).
+	summary   int
+	summaryID string
+}
+
+// sessionContext reads the session's messages from the running server.
+func sessionContext(ctx context.Context, c *apiClient, sid string) sessionTokens {
+	var msgs []struct {
+		Info struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+			// Summary is `true` on a compaction summary (assistant) but an
+			// object ({"diffs":[]}) on user messages in opencode 1.18 — a
+			// bool here fails the whole decode and hides every summary.
+			Summary json.RawMessage `json:"summary"`
+			Tokens  struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+				Cache  struct {
+					Read  int `json:"read"`
+					Write int `json:"write"`
+				} `json:"cache"`
+			} `json:"tokens"`
+		} `json:"info"`
+	}
+	var st sessionTokens
+	if err := c.do(ctx, http.MethodGet, "/session/"+sid+"/message", nil, &msgs); err != nil {
+		return st
+	}
+	for _, m := range msgs {
+		if m.Info.Role != "assistant" {
+			continue
+		}
+		t := m.Info.Tokens
+		if string(m.Info.Summary) == "true" {
+			st.summary, st.summaryID = t.Output, m.Info.ID
+			continue
+		}
+		if n := t.Input + t.Cache.Read + t.Cache.Write; n > 0 {
+			st.last = n
+			if st.overhead == 0 || n < st.overhead {
+				st.overhead = n
+			}
+		}
+	}
+	return st
+}

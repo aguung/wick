@@ -191,6 +191,22 @@ func (t *translator) line(kind, field string, v json.RawMessage) []byte {
 	return append(b, '\n')
 }
 
+// noticeLine is a run-format text frame for a note wick itself adds to
+// the reply (a finished, non-synthetic text part, as opencode emits).
+func noticeLine(sessionID, text string) []byte {
+	now := time.Now().UnixMilli()
+	b, _ := json.Marshal(map[string]any{
+		"type":      "text",
+		"timestamp": now,
+		"sessionID": sessionID,
+		"part": map[string]any{
+			"id": "prt_wick_notice", "sessionID": sessionID, "type": "text", "text": text,
+			"time": map[string]any{"start": now, "end": now},
+		},
+	})
+	return append(b, '\n')
+}
+
 // errorLine is a run-format error frame for a failure wick itself hit
 // (server down, session gone) so the chat shows why the turn ended.
 func errorLine(sessionID, msg string) []byte {

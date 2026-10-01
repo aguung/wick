@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { apiGetE, apiPostE } from "@wick-fe/common-api";
+import { withModelListMeta, optionModelsWithMeta } from "@wick-fe/common-ui";
 import type { ProviderOption, ProviderModelOption, ProjectOption } from "../types/agents.js";
 
 export const getProviderOptions = (base: string) =>
@@ -8,7 +9,7 @@ export const getProviderOptions = (base: string) =>
       (r ?? []).map((p) => ({
         ...p,
         usesAIRouter: p.usesAIRouter ?? p.uses_airouter ?? false,
-        models: p.models ?? undefined,
+        models: optionModelsWithMeta(p),
       })),
     ),
   );
@@ -23,15 +24,31 @@ export const getProviderOptionModels = (
   base: string,
   type: string,
   name: string,
-  opts?: { entry?: string },
+  opts?: { entry?: string; refresh?: boolean },
 ) => {
   // `entry` expands ONE live model set by its id (the 4th picker level); the
   // vendor filter stays server-side. Without it the endpoint returns the
-  // instance's top-level model choices.
-  const q = opts?.entry ? `?entry=${encodeURIComponent(opts.entry)}` : "";
-  return apiGetE<{ models?: ProviderModelOption[] | null }>(
-    `${base}/providers/options/${encodeURIComponent(type)}/${encodeURIComponent(name)}/models${q}`,
-  ).pipe(Effect.map((r) => r.models ?? []));
+  // instance's top-level model choices. `refresh` is the picker's Refresh
+  // (omp/opencode: runs the CLI once). The server's "last updated" stamp
+  // rides on the returned array (withModelListMeta).
+  return apiGetE<ModelsResponse>(
+    `${base}/providers/options/${encodeURIComponent(type)}/${encodeURIComponent(name)}/models${modelsQuery(opts)}`,
+  ).pipe(Effect.map((r) => withModelListMeta(r.models ?? [], r)));
+};
+
+type ModelsResponse = {
+  models?: ProviderModelOption[] | null;
+  fetched_at?: string;
+  source?: string;
+  can_refresh?: boolean;
+};
+
+const modelsQuery = (opts?: { entry?: string; refresh?: boolean }) => {
+  const q = new URLSearchParams();
+  if (opts?.entry) q.set("entry", opts.entry);
+  if (opts?.refresh) q.set("refresh", "1");
+  const s = q.toString();
+  return s ? `?${s}` : "";
 };
 
 // getPresetOptions lists the configured presets ([{name}]) so the project

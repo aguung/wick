@@ -7,6 +7,7 @@
   import type { ComposerModelOption, ComposerSelectOption } from "./composer-types.js";
   import { matchModelFilter } from "./modelFilter.js";
   import { decodePin, encodePath, encodePin } from "./model-path.js";
+  import { modelListMeta, describeModelListMeta, type ModelListMeta } from "./model-list-meta.js";
 
   type Props = {
     options: ComposerSelectOption[];
@@ -23,7 +24,7 @@
         set's leaves at all. */
     loadModels?: (
       optionValue: string,
-      opts?: { entry?: string },
+      opts?: { entry?: string; refresh?: boolean },
     ) => Promise<ComposerModelOption[]>;
   };
   let { options, value, onChange, placeholder = "Select provider", id, loadModels }: Props = $props();
@@ -119,19 +120,38 @@
   // Fetch a level's models unless they are already cached. Errors are
   // swallowed: the static list (or an empty one) is a usable fallback, and a
   // provider whose vendor is unreachable must not break the whole form.
-  async function ensureModels(optionValue: string, entry?: string) {
+  async function ensureModels(optionValue: string, entry?: string, refresh = false) {
     if (!loadModels) return;
     const key = cacheKey(optionValue, entry);
-    if (modelCache[key]) return;
+    if (modelCache[key] && !refresh) return;
     loadingModels = true;
     try {
-      const loaded = await loadModels(optionValue, entry ? { entry } : undefined);
-      if (loaded && loaded.length > 0) modelCache = { ...modelCache, [key]: loaded };
+      const opts = entry || refresh ? { ...(entry ? { entry } : {}), ...(refresh ? { refresh: true } : {}) } : undefined;
+      const loaded = await loadModels(optionValue, opts);
+      const meta = modelListMeta(loaded);
+      if (meta) modelMeta = { ...modelMeta, [key]: meta };
+      // A Refresh replaces the level even when it came back empty: keeping
+      // the old rows would show them under the new "updated" stamp.
+      if (loaded && (loaded.length > 0 || refresh)) modelCache = { ...modelCache, [key]: loaded };
     } catch {
       // keep whatever static models the option already carries
     } finally {
       loadingModels = false;
     }
+  }
+
+  // "Last updated" of each loaded level (omp/opencode live lists), and the
+  // level shown now. Refresh re-asks the server to run the CLI once.
+  let modelMeta = $state<Record<string, ModelListMeta>>({});
+  const drillMeta = $derived.by(() => {
+    const d = modelDrill;
+    if (!d) return undefined;
+    return modelMeta[drillStack.length ? cacheKey(d.value, encodePath(drillPath)) : cacheKey(d.value)];
+  });
+  function refreshDrill() {
+    const d = modelDrill;
+    if (!d) return;
+    void ensureModels(d.value, drillStack.length ? encodePath(drillPath) : undefined, true);
   }
 
   function isLiveSet(m: ComposerModelOption): boolean {
@@ -389,6 +409,14 @@
             {/if}
           {/each}
         </div>
+        {#if drillMeta}
+          <div class="flex items-center justify-between gap-2 border-t border-white-300 dark:border-navy-600 px-3 py-1.5 text-[11px] text-black-700 dark:text-black-600" data-testid="picker-models-updated">
+            <span>{describeModelListMeta(drillMeta)}</span>
+            {#if drillMeta.canRefresh}
+              <button type="button" disabled={loadingModels} onclick={refreshDrill} class="text-green-600 dark:text-green-400 hover:underline disabled:opacity-50" data-testid="picker-models-refresh">{loadingModels ? "Refreshing…" : "Refresh"}</button>
+            {/if}
+          </div>
+        {/if}
       {:else if typeDrill}
         {@const group = groups.find((g) => g.type === typeDrill)}
         <button type="button" onclick={() => (typeDrill = "")} class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-black-800 dark:text-black-600 hover:bg-white-200 dark:hover:bg-navy-700">

@@ -153,11 +153,16 @@ func modelProvider(model string) string {
 	return p
 }
 
-// listModels asks the instance's binary for its live model list; swapped
-// in tests. Spawn-time default only — bounded so a hung CLI can't stall it.
+// listModels is the instance's live model list for the spawn-time default;
+// swapped in tests. The cached / harvested list first (no process); the
+// CLI only when nothing is known at all — a first spawn with no model
+// configured — bounded so a hung CLI can't stall it.
 var listModels = func(ctx context.Context, ins provider.Instance) ([]provider.ModelSeed, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if m, _, err := provider.CachedCLIModels(ctx, ins, false); err == nil && len(m) > 0 {
+		return m, nil
+	}
 	return provider.ListCLIModels(ctx, ins)
 }
 

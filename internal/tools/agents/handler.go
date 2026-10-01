@@ -431,6 +431,7 @@ func Register(r tool.Router) {
 	r.GET("/api/providers/{type}/{name}/logintty", apiProviderLoginTTYStatus)
 	r.GET("/api/providers/{type}/{name}/logintty/usage", apiProviderLoginTTYUsage)
 	r.GET("/api/providers/{type}/{name}/cli-models", apiProviderCLIModels)
+	r.POST("/api/providers/{type}/{name}/cli-models/recheck", apiProviderCLIModelRecheck)
 	r.POST("/api/providers/{type}/{name}/logintty/usage/refresh", apiProviderLoginTTYUsageRefresh)
 	r.POST("/api/providers/{type}/{name}/logintty/start", apiProviderLoginTTYStart)
 	r.POST("/api/providers/{type}/{name}/logintty/extend", apiProviderLoginTTYExtend)
@@ -2508,6 +2509,10 @@ func providerOptionsJSON(c *tool.Ctx) {
 		// non-wick rows clean. ShowCaps is a pointer so "false" round-trips.
 		ShowCaps *bool  `json:"show_capabilities,omitempty"`
 		CapsMode string `json:"capability_display_mode,omitempty"`
+		// The live list's stamp, same meaning as on the drill-in endpoint.
+		FetchedAt  string `json:"models_fetched_at,omitempty"`
+		Source     string `json:"models_source,omitempty"`
+		CanRefresh bool   `json:"models_can_refresh,omitempty"`
 	}
 	// Access-tag filtered: this endpoint feeds every provider picker in
 	// the product, so one filter here covers the composer, the project
@@ -2520,6 +2525,10 @@ func providerOptionsJSON(c *tool.Ctx) {
 			models = append(models, model{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps})
 		}
 		o := option{Type: p.Type, Name: p.Name, Version: p.Version, UsesAIRouter: p.UsesAIRouter, Models: models}
+		if !p.ModelsAt.IsZero() {
+			o.FetchedAt, o.Source = p.ModelsAt.UTC().Format(time.RFC3339), p.ModelsSource
+			o.CanRefresh = canManageProvider(c, provider.Type(p.Type), p.Name)
+		}
 		if p.Type == string(provider.TypeWick) {
 			show, mode := wickCapabilityPrefs()
 			o.ShowCaps = &show
@@ -2588,6 +2597,53 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 	// empty level, the picker shows its empty state.
 	entry := strings.TrimSpace(c.Query("entry"))
 	sets, grouped := provider.ModelSetsFor(ins.Type)
+	// `?refresh=1`: the picker's Refresh — the one path that runs the CLI
+	// for an omp/opencode list (guarded, serialized, killed after; see
+	// provider.CachedCLIModels). Provider managers only.
+	if grouped && provider.LiveModelsEnabled(ins) && c.Query("refresh") == "1" {
+		if !requireProviderManage(c, ins.Type, ins.Name) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), 90*time.Second)
+		_, _, _ = provider.CachedCLIModels(ctx, ins, true)
+		cancel()
+	}
+	// "last updated" for the picker / provider page (zero when nothing is
+	// cached yet: the UI says "click Refresh").
+	stamp := map[string]any{}
+	if grouped && provider.LiveModelsEnabled(ins) && canManageProvider(c, ins.Type, ins.Name) {
+		stamp["can_refresh"] = true
+	}
+	if provider.LiveModelsEnabled(ins) {
+		if at, src := provider.CLIModelsInfo(ins); !at.IsZero() {
+			stamp["fetched_at"], stamp["source"] = at.UTC().Format(time.RFC3339), src
+		}
+	}
+	withStamp := func(m map[string]any) map[string]any {
+		for k, v := range stamp {
+			m[k] = v
+		}
+		return m
+	}
+	if grouped && c.Query("all") == "1" {
+		// `?all=1`: every model row of every level, flattened in picker
+		// order — the provider page's live list reads the picker's own
+		// pipeline (filter, chosen Default, refusals) instead of a second
+		// one. Accounts collapse onto Auto (provider.FlattenModelSets).
+		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
+		defer cancel()
+		rows, err := provider.FlattenModelSets(ctx, sets, ins)
+		resp := map[string]any{"models": fromChoices(rows)}
+		if err != nil {
+			resp["error"] = err.Error()
+		}
+		// Stamp read after the walk: a cold list was filled by it.
+		if at, src := provider.CLIModelsInfo(ins); !at.IsZero() {
+			stamp["fetched_at"], stamp["source"] = at.UTC().Format(time.RFC3339), src
+		}
+		c.JSON(http.StatusOK, withStamp(resp))
+		return
+	}
 	if grouped && entry != "" {
 		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
 		defer cancel()
@@ -2595,14 +2651,17 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 		if err != nil {
 			log.Ctx(c.Context()).Debug().Err(err).Str("entry", entry).Msg("model set expand failed")
 		}
-		c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
+		c.JSON(http.StatusOK, withStamp(map[string]any{"models": fromChoices(rows)}))
 		return
 	}
 	if grouped && ins.Type != provider.TypeWick {
 		ctx, cancel := context.WithTimeout(c.Context(), 45*time.Second)
 		defer cancel()
 		if rows, err := sets.Sets(ctx, ins); err == nil && len(rows) > 0 {
-			c.JSON(http.StatusOK, map[string]any{"models": fromChoices(rows)})
+			if at, src := provider.CLIModelsInfo(ins); !at.IsZero() {
+				stamp["fetched_at"], stamp["source"] = at.UTC().Format(time.RFC3339), src
+			}
+			c.JSON(http.StatusOK, withStamp(map[string]any{"models": fromChoices(rows)}))
 			return
 		}
 		// No grouping for this instance (live models off, not logged in):
@@ -2610,8 +2669,8 @@ func providerOptionModelsJSON(c *tool.Ctx) {
 	}
 
 	// Level 3: the instance's model choices (live sets stay as expandable rows).
-	// An omp/opencode live list is warmed first, so the drill-in shows the
-	// CLI's models even on a cold cache (render paths only peek).
+	// A cold omp/opencode live list is filled first from the CLI's files or
+	// a running server — never by starting the CLI (that is Refresh only).
 	if provider.LiveModelsEnabled(ins) && ins.ModelSelect {
 		ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
 		_, _, _ = provider.CachedCLIModels(ctx, ins, false)

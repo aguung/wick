@@ -33,6 +33,10 @@ type OpencodeParser struct {
 	usage          TokenUsage
 	sawUsage       bool
 	errored        bool
+	// window: the active model's context limit (wick's context line).
+	window int
+	// autoCompact: the provider's own auto-compact state (context line).
+	autoCompact *bool
 }
 
 // NewOpencodeParser returns a parser for one opencode spawn of instance.
@@ -114,6 +118,18 @@ func (p *OpencodeParser) ParseAll(line string) ([]AgentEvent, error) {
 func (p *OpencodeParser) events(raw opencodeRaw, trimmed string) []AgentEvent {
 	part := raw.Part
 	switch raw.Type {
+	case "context":
+		w, auto := contextState(trimmed)
+		if w > 0 {
+			p.window = w
+		}
+		if auto != nil {
+			p.autoCompact = auto
+		}
+		return []AgentEvent{{Raw: trimmed}}
+	case "compaction":
+		// wick ran opencode's summarize for a /compact turn.
+		return []AgentEvent{compactionEvent(trimmed, "manual")}
 	case "text":
 		if part == nil || part.Text == "" {
 			return nil
@@ -170,6 +186,8 @@ func (p *OpencodeParser) events(raw opencodeRaw, trimmed string) []AgentEvent {
 		ev := AgentEvent{Type: Done, Raw: trimmed}
 		if p.sawUsage {
 			u := p.usage
+			u.Window = p.window
+			u.AutoCompact = p.autoCompact
 			ev.Usage = &u
 		}
 		p.reset()

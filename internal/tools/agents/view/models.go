@@ -2,6 +2,7 @@ package view
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/yogasw/wick/internal/agents/project"
 	"github.com/yogasw/wick/internal/agents/session"
@@ -102,6 +103,11 @@ type ProviderChoiceVM struct {
 	// other provider type: the composer picker only descends to a 3rd
 	// "model" level when there's more than one enabled entry here.
 	Models []ModelChoiceVM
+	// ModelsAt / ModelsSource stamp an omp/opencode live list (zero when
+	// Models is the curated one): the picker shows "Updated … · files"
+	// from the first paint.
+	ModelsAt     time.Time
+	ModelsSource string
 }
 
 // ModelChoiceVM is one selectable model under a wick provider instance.
@@ -196,4 +202,3 @@ type GateStatusVM struct {
 	// PermissionMode == "bypass".
 	BypassLocked bool
 }
-

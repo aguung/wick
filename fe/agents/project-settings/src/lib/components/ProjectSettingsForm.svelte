@@ -75,7 +75,7 @@
   // Lazy model loader for the picker's 3rd/4th levels. wick's live sets are
   // resolved against the vendor on demand — a build-time list would go stale
   // and could not offer the leaf models a project needs to pin.
-  function loadProviderModels(optionValue: string, opts?: { entry?: string }) {
+  function loadProviderModels(optionValue: string, opts?: { entry?: string; refresh?: boolean }) {
     const slash = optionValue.indexOf("/");
     const type = slash < 0 ? optionValue : optionValue.slice(0, slash);
     const name = slash < 0 ? optionValue : optionValue.slice(slash + 1);

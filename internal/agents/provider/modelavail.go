@@ -269,6 +269,8 @@ func IsModelAccessError(msg string) bool {
 		"does not have access",
 		"not have access to the model",
 		"is not supported when using codex with a chatgpt account",
+		// opencode (Zen) upstream: "Upstream request failed: Model access is disabled"
+		"model access is disabled",
 	} {
 		if strings.Contains(low, s) {
 			return true

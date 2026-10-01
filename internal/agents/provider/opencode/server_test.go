@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	provider "github.com/yogasw/wick/internal/agents/provider"
 )
 
 // fakeStarter hands out fake servers and records what happened to them.
@@ -404,19 +406,30 @@ func useFreshServers(t *testing.T, start startFunc) {
 	t.Cleanup(func() { m.shutdown(); servers = prev })
 }
 
-// After a rotation to another account folder the old opencode session id
-// does not exist there: the spawn must start a new session.
-func TestFolderSwitchedPerSession(t *testing.T) {
-	if folderSwitched("s-fs", "/a") {
-		t.Fatal("first spawn is not a switch")
+// An idle `opencode serve` yields to another instance's spawn
+// (provider.YieldIdleServers via the registered yielder); one with a turn
+// leased, or on the spawning instance, does not.
+func TestIdleServeYieldsToOtherSpawn(t *testing.T) {
+	fs := &fakeStarter{}
+	useFreshServers(t, fs.start)
+	idle, err := servers.acquire(context.Background(), serverSpec{instance: "oc-a", bin: "/bin/opencode", env: []string{"XDG_DATA_HOME=/a"}, idle: time.Hour})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if folderSwitched("s-fs", "/a") {
-		t.Fatal("same folder is not a switch")
+	idle.release()
+	busy, err := servers.acquire(context.Background(), serverSpec{instance: "oc-b", bin: "/bin/opencode", env: []string{"XDG_DATA_HOME=/b"}, idle: time.Hour})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !folderSwitched("s-fs", "/a/accounts/a2") {
-		t.Fatal("folder change must be reported")
+	if n := provider.YieldIdleServers("s-claude", ""); n != 1 {
+		t.Fatalf("stopped %d, want only the idle one", n)
 	}
-	if folderSwitched("", "/x") || folderSwitched("", "/y") {
-		t.Fatal("no session id → never a switch")
+	busy.release()
+	// The spawning instance's own server stays.
+	if n := provider.YieldIdleServers("s-x", "oc-b"); n != 0 {
+		t.Fatalf("own instance's server stopped (%d)", n)
+	}
+	if n := provider.YieldIdleServers("s-x", "claude-work"); n != 1 {
+		t.Fatalf("idle oc-b not stopped for another spawn (%d)", n)
 	}
 }

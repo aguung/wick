@@ -42,9 +42,17 @@ import (
 
 const (
 	rpcBootWait = 60 * time.Second
-	rpcCallWait = 30 * time.Second
 	rpcKillWait = 3 * time.Second
 )
+
+// rpcCompactWait bounds the compact command: omp answers only once the
+// summary is written, minutes on a big session — under rpcCallWait wick
+// reported a timeout for a compaction omp went on to finish.
+var rpcCompactWait = 10 * time.Minute
+
+// rpcCallWait bounds every other command's response (var: shortened in
+// tests).
+var rpcCallWait = 30 * time.Second
 
 // rpcFrame is the envelope fields wick routes on.
 type rpcFrame struct {
@@ -163,12 +171,17 @@ func (c *rpcConn) forget(id string) {
 
 // call sends cmd and waits for its response; a failed response is an error.
 func (c *rpcConn) call(ctx context.Context, cmd map[string]any) (rpcFrame, error) {
+	return c.callWait(ctx, cmd, rpcCallWait)
+}
+
+// callWait is call with its own response deadline.
+func (c *rpcConn) callWait(ctx context.Context, cmd map[string]any, wait time.Duration) (rpcFrame, error) {
 	typ, _ := cmd["type"].(string)
 	id, ch, err := c.send(cmd)
 	if err != nil {
 		return rpcFrame{}, err
 	}
-	t := time.NewTimer(rpcCallWait)
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case f := <-ch:
@@ -181,7 +194,7 @@ func (c *rpcConn) call(ctx context.Context, cmd map[string]any) (rpcFrame, error
 		return rpcFrame{}, errors.New("omp rpc process exited")
 	case <-t.C:
 		c.forget(id)
-		return rpcFrame{}, fmt.Errorf("omp rpc %s: no response in %s", typ, rpcCallWait)
+		return rpcFrame{}, fmt.Errorf("omp rpc %s: no response in %s", typ, wait)
 	case <-ctx.Done():
 		c.forget(id)
 		return rpcFrame{}, ctx.Err()

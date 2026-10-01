@@ -860,7 +860,22 @@ func Probe(ctx context.Context, ins Instance) Status {
 	if hasContract && len(contract.Args) > 0 {
 		args = contract.Args
 	}
-	cmd := safeexec.CommandContext(ctx, st.Path, args...)
+	// An omp/opencode probe is a full bun process (~300 MB): one at a
+	// time across all instances, on the same slot model listings take
+	// (a boot or "Rescan all" probes every instance at once otherwise).
+	// claude/codex/gemini probes are light and stay parallel.
+	if heavyProbe(ins.Type) {
+		free, err := AcquireHelperSlot(ctx)
+		defer free()
+		if err != nil {
+			st.VersionErr = err.Error()
+			return st
+		}
+	}
+	// Inside the memory guard like an agent spawn ("<type>-version"
+	// scope, the instance's own limit).
+	cmd, release := HelperCommand(ctx, &ins, HelperLabel(ins.Type, "version"), st.Path, args...)
+	defer release()
 	if ins.Type == TypeOpencode {
 		// Never let a probe trigger opencode's self-update (cli/upgrade.ts).
 		cmd.Env = append(os.Environ(), "OPENCODE_DISABLE_AUTOUPDATE=true")
@@ -893,6 +908,10 @@ func Probe(ctx context.Context, ins Instance) Status {
 
 // ProbeAll runs Probe on every configured instance in parallel,
 // honouring ctx as the total timeout (per-probe is bounded by ctx).
+// heavyProbe reports a type whose --version probe boots a full runtime
+// (bun): omp and opencode.
+func heavyProbe(t Type) bool { return t == TypeOMP || t == TypeOpencode }
+
 func ProbeAll(ctx context.Context) ([]Status, error) {
 	all, err := Load()
 	if err != nil {
@@ -947,6 +966,7 @@ func ProbeAllCached(ctx context.Context) ([]Status, error) {
 	if err != nil {
 		return nil, err
 	}
+	persisted := loadAll()
 	out := make([]Status, len(all))
 	var wg sync.WaitGroup
 	now := time.Now()
@@ -958,6 +978,16 @@ func ProbeAllCached(ctx context.Context) ([]Status, error) {
 		probeCacheMu.RUnlock()
 		if ok && now.Sub(entry.at) < probeCacheTTL {
 			out[i] = entry.status
+			continue
+		}
+		// The persisted probe of an unchanged binary answers without a
+		// spawn (fingerprint; see probeStillFresh).
+		if ps, ok := persisted[cacheKey(all[i].Type, all[i].Name)]; ok && probeStillFresh(all[i], ps, now) {
+			st := statusFromPersisted(all[i], ps)
+			probeCacheMu.Lock()
+			probeCache[key] = probeCacheEntry{status: st, at: now}
+			probeCacheMu.Unlock()
+			out[i] = st
 			continue
 		}
 		wg.Add(1)

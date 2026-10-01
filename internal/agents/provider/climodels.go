@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/yogasw/wick/internal/pkg/envscrub"
-	"github.com/yogasw/wick/pkg/safeexec"
 )
 
 // climodels.go asks an omp / opencode instance which models its logged-in
@@ -25,9 +25,19 @@ import (
 //     is unavailable, `opencode models` → one "provider/model" per line
 //     (packages/opencode/src/cli/cmd/models.ts); no JSON flag exists.
 
-// cliModelsRunner execs one CLI; swapped in tests.
+// cliModelsRunner execs one CLI; swapped in tests. One at a time across
+// all instances (AcquireHelperSlot), inside the memory guard like an agent
+// spawn ("omp-models" / "opencode-models" scope), with the limit of the
+// instance env belongs to (HelperCommand).
 var cliModelsRunner = func(ctx context.Context, bin string, args, env []string) ([]byte, error) {
-	cmd := safeexec.CommandContext(ctx, bin, args...)
+	free, err := AcquireHelperSlot(ctx)
+	defer free()
+	if err != nil {
+		return nil, err
+	}
+	label := strings.TrimSuffix(filepath.Base(bin), ".exe") + "-models"
+	cmd, release := HelperCommand(ctx, InstanceForAccountEnv(env), label, bin, args...)
+	defer release()
 	cmd.Env = append(envscrub.ScrubOSEnv(), env...)
 	return cmd.Output()
 }

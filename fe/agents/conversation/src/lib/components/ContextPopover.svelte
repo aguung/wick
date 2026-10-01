@@ -724,9 +724,20 @@
                passes 80% of the budget. What is manual is THIS button —
                wick never fires it for you, so pressing it is how you pick
                the moment instead of being surprised by it. -->
-          <p class="mt-1.5 text-[11px] text-black-700 dark:text-black-600 text-center">
-            wick never presses this for you — but the provider compacts on its own once the window
-            fills.
+          <!-- auto_compact is what the provider itself reported (omp
+               get_state, opencode config); absent = it never said, so the
+               general sentence stays. -->
+          <p class="mt-1.5 text-[11px] text-black-700 dark:text-black-600 text-center" data-testid="auto-compact-note">
+            {#if data.auto_compact === true}
+              wick never presses this for you — auto-compact is on at {data.provider || "the provider"}, so
+              it compacts on its own once the window fills.
+            {:else if data.auto_compact === false}
+              Auto-compact is off at {data.provider || "the provider"} — nothing compacts unless you press
+              this.
+            {:else}
+              wick never presses this for you — but the provider compacts on its own once the window
+              fills.
+            {/if}
           </p>
         {/if}
       </div>

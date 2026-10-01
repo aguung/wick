@@ -121,6 +121,11 @@ func WickContext(w http.ResponseWriter, r *http.Request, req RPCRequest, rsp Res
 			active = name
 			out["provider"], out["model"] = name, p.Model
 			out["used"], out["window"], out["pct"] = p.ContextUsed, p.ContextWindow, row.Pct
+			if p.AutoCompact != nil {
+				out["auto_compact"] = *p.AutoCompact
+			} else {
+				delete(out, "auto_compact")
+			}
 			if trend := trendOfSeries(p.Series); len(trend) > 0 {
 				out["trend"] = trend
 			}

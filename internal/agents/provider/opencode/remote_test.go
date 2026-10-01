@@ -133,14 +133,21 @@ func TestPromptBodyToolOrder(t *testing.T) {
 // fakeOpencode is a minimal opencode server: sessions, prompt_async that
 // streams a canned turn (or hangs until abort), abort, mcp.
 type fakeOpencode struct {
-	mu       sync.Mutex
-	subs     []chan string
-	hang     bool
-	aborted  []string
-	mcp      []string
-	created  int
-	prompts  []string
-	password string
+	summarized []string // POST /session/{id}/summarize bodies
+	noSummary  bool     // summarize writes no summary message
+	mu         sync.Mutex
+	subs       []chan string
+	hang       bool
+	aborted    []string
+	mcp        []string
+	created    int
+	prompts    []string
+	password   string
+
+	// summarizeErr, when set, fails summarize with it (HTTP 400).
+	summarizeErr string
+	// summarizeDelay holds the summarize answer this long (a slow model).
+	summarizeDelay time.Duration
 	// promptStatus, when set, is how prompt_async answers instead of 204.
 	promptStatus int
 	// gate, when set, holds the first prompt's idle until closed; later
@@ -153,6 +160,10 @@ type fakeOpencode struct {
 	stored []string
 	// silent: the run goes busy then idle with nothing in between.
 	silent bool
+	// silentNoEvents: the prompt is accepted and then NOTHING is published.
+	silentNoEvents bool
+	// config is GET /config's body ("" = "{}").
+	config string
 	// joined tracks prompts that joined the gated run: like opencode, the
 	// run goes idle only once every joined message has been answered.
 	joined sync.WaitGroup
@@ -234,8 +245,12 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		n, delay, silent := len(f.prompts), f.storeDelay, f.silent
+		quiet := f.silentNoEvents
 		f.mu.Unlock()
 		go func() {
+			if quiet {
+				return
+			}
 			if joins {
 				defer f.joined.Done() // every path, incl. hang/silent
 			}
@@ -272,6 +287,40 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		_, _ = io.WriteString(w, "true")
 		go f.publish("session.idle", map[string]any{"sessionID": sid})
+	case strings.HasSuffix(r.URL.Path, "/summarize") && r.Method == http.MethodPost:
+		time.Sleep(f.summarizeDelay)
+		b, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.summarized = append(f.summarized, r.URL.Path+" "+string(b))
+		serr := f.summarizeErr
+		f.mu.Unlock()
+		if serr != "" {
+			http.Error(w, `{"name":"UnknownError","data":{"message":"`+serr+`"}}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, "true")
+	case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodGet:
+		f.mu.Lock()
+		done := len(f.summarized) > 0 && !f.noSummary
+		f.mu.Unlock()
+		// m2 = the first turn (system prompt + tools + one prompt: the
+		// overhead floor), m4 = the last turn before /compact.
+		msgs := `[{"info":{"id":"m1","role":"user","summary":{"diffs":[]}}},{"info":{"id":"m2","role":"assistant","tokens":{"input":1051,"output":300,"cache":{"read":40000,"write":0}}}},` +
+			`{"info":{"id":"m4","role":"assistant","tokens":{"input":9000,"output":300,"cache":{"read":81000,"write":0}}}}`
+		if done {
+			msgs += `,{"info":{"id":"m3","role":"assistant","summary":true,"tokens":{"input":41051,"output":1800,"cache":{"read":0,"write":0}}}}`
+		}
+		_, _ = io.WriteString(w, msgs+"]")
+	case r.URL.Path == "/config" && r.Method == http.MethodGet:
+		f.mu.Lock()
+		cfg := f.config
+		f.mu.Unlock()
+		if cfg == "" {
+			cfg = "{}"
+		}
+		_, _ = io.WriteString(w, cfg)
+	case r.URL.Path == "/provider" && r.Method == http.MethodGet:
+		_, _ = io.WriteString(w, `{"all":[{"id":"openai","name":"OpenAI","models":{"gpt-5.5":{"id":"gpt-5.5","name":"GPT-5.5","limit":{"context":400000,"output":128000}}}}],"connected":["openai"],"default":{}}`)
 	case strings.HasPrefix(r.URL.Path, "/session/") && r.Method == http.MethodGet:
 		sid := strings.Split(r.URL.Path, "/")[2]
 		if sid == "ses_known" {
@@ -331,7 +380,10 @@ func TestRemoteTurnNewSessionWithMCP(t *testing.T) {
 	if err := p.Wait(); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
-	if len(lines) != 2 || !strings.Contains(lines[0], `"text":"hello"`) || !strings.Contains(lines[0], `"sessionID":"ses_new1"`) {
+	// The unknown resume id is said out loud before the reply.
+	// Then the model's window from the running server, then the reply.
+	if len(lines) != 4 || !strings.Contains(lines[0], "could not find the session") || !strings.Contains(lines[0], `"sessionID":"ses_new1"`) ||
+		!strings.Contains(lines[1], `"type":"context"`) || !strings.Contains(lines[2], `"text":"hello"`) {
 		t.Fatalf("lines = %v", lines)
 	}
 	f.mu.Lock()
@@ -349,7 +401,7 @@ func TestRemoteTurnResumes(t *testing.T) {
 	p, _ := startFake(t, f, turnSpec{title: "t", model: "a/b", prompt: "hi", resumeID: "ses_known"})
 	lines := readAll(t, p)
 	_ = p.Wait()
-	if f.created != 0 || len(lines) == 0 || !strings.Contains(lines[0], `"sessionID":"ses_known"`) {
+	if f.created != 0 || len(lines) == 0 || !strings.Contains(lines[0], `"sessionID":"ses_known"`) || strings.Contains(strings.Join(lines, ""), "could not find") {
 		t.Fatalf("resume did not reuse the session: created=%d lines=%v", f.created, lines)
 	}
 }
@@ -585,5 +637,122 @@ func TestRemoteMissingWorkspaceIsTurnError(t *testing.T) {
 	lines := readAll(t, p)
 	if err := p.Wait(); err != nil || len(lines) != 1 || !strings.Contains(lines[0], "is not a directory") {
 		t.Fatalf("err=%v lines=%v", err, lines)
+	}
+}
+
+// "/compact" on the serve path runs opencode's own summarize (not a prompt
+// to the model) and ends the turn with the compaction notice; every turn
+// opens with the model's context limit from the running server.
+func TestRemoteCompactTurnAndWindow(t *testing.T) {
+	f := &fakeOpencode{}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, `"autoCompact":true`) {
+		t.Fatalf("compaction.auto unset means opencode compacts on its own: %s", joined)
+	}
+	if !strings.Contains(joined, `"type":"context"`) || !strings.Contains(joined, `"window":400000`) {
+		t.Fatalf("no context window line: %v", lines)
+	}
+	// before = the last assistant context (9000+81000), after = the
+	// overhead floor (1051+40000) + the summary (1800) — not the bare
+	// summary, which no next request is ever that small.
+	if !strings.Contains(joined, `"type":"compaction"`) || !strings.Contains(joined, `"tokensBefore":90000`) ||
+		!strings.Contains(joined, `"tokensAfter":42851`) || !strings.Contains(joined, `"type":"step_finish"`) {
+		t.Fatalf("compact turn: %v", lines)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.summarized) != 1 || !strings.Contains(f.summarized[0], "/session/ses_known/summarize") || !strings.Contains(f.summarized[0], `"modelID":"gpt-5.5"`) {
+		t.Fatalf("summarize calls %v", f.summarized)
+	}
+	if len(f.prompts) != 0 {
+		t.Fatalf("/compact was sent to the model as a prompt: %v", f.prompts)
+	}
+}
+
+// A summarize slower than the per-request cap still completes: opencode
+// answers only once the summary is written, and on a big session that
+// takes minutes — with the cap wick reported a timeout for a compaction
+// that had in fact happened.
+func TestRemoteCompactOutlivesRequestCap(t *testing.T) {
+	old := apiRequestTimeout
+	apiRequestTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { apiRequestTimeout = old })
+	f := &fakeOpencode{summarizeDelay: 400 * time.Millisecond}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	joined := strings.Join(readAll(t, p), "\n")
+	if err := p.Wait(); err != nil {
+		t.Fatalf("slow summarize failed the turn: %v", err)
+	}
+	if !strings.Contains(joined, `"type":"compaction"`) {
+		t.Fatalf("no compaction line after a slow summarize: %s", joined)
+	}
+}
+
+// opencode wrote no summary: the notice says nothing was compacted (no
+// "compacted" claim), and the turn still ends.
+func TestRemoteCompactNothingToSummarize(t *testing.T) {
+	f := &fakeOpencode{noSummary: true}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	joined := strings.Join(readAll(t, p), "\n")
+	_ = p.Wait()
+	if strings.Contains(joined, `"type":"compaction"`) || !strings.Contains(joined, "Nothing was compacted") || !strings.Contains(joined, `"type":"step_finish"`) {
+		t.Fatalf("lines: %s", joined)
+	}
+}
+
+// A summarize opencode refuses for having nothing to compact is a notice,
+// not a failed turn.
+func TestRemoteCompactRefusedNoop(t *testing.T) {
+	f := &fakeOpencode{summarizeErr: "Already compacted"}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	joined := strings.Join(readAll(t, p), "\n")
+	if err := p.Wait(); err != nil {
+		t.Fatalf("no-op summarize failed the turn: %v", err)
+	}
+	if strings.Contains(joined, `"type":"compaction"`) || !strings.Contains(joined, "Nothing was compacted") || !strings.Contains(joined, `"type":"step_finish"`) {
+		t.Fatalf("lines: %s", joined)
+	}
+}
+
+// A model that streams nothing at all is stopped with a visible error
+// within the silence bound, never a silent spinner.
+func TestRemoteSilentModelIsStopped(t *testing.T) {
+	ps, pc := silentTurnTimeout, silentTurnCheck
+	silentTurnTimeout, silentTurnCheck = 300*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { silentTurnTimeout, silentTurnCheck = ps, pc })
+	f := &fakeOpencode{silentNoEvents: true}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "opencode/kimi-k3", prompt: "hai"})
+	done := make(chan string, 1)
+	go func() { done <- strings.Join(readAll(t, p), "\n") }()
+	select {
+	case joined := <-done:
+		if !strings.Contains(joined, `"type":"error"`) || !strings.Contains(joined, "kimi-k3 sent nothing") {
+			t.Fatalf("lines: %s", joined)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("silent model left the turn hanging")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.aborted) == 0 {
+		t.Fatal("silent session not aborted")
+	}
+}
+
+// compaction.auto false in the server's config is shown as off.
+func TestRemoteAutoCompactOff(t *testing.T) {
+	f := &fakeOpencode{config: `{"compaction":{"auto":false,"prune":true}}`}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	lines := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, `"autoCompact":false`) {
+		t.Fatalf("want autoCompact false: %s", joined)
 	}
 }

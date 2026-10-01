@@ -89,6 +89,24 @@ func modelPrefix(id string) string {
 	return ""
 }
 
+// seedModelFromArgv fills the model from the spawn's --model when no pin
+// named it.
+func (w *modelTurnWatch) seedModelFromArgv(argv []string) {
+	if w == nil || w.model != "" {
+		return
+	}
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--model" || argv[i] == "-m" {
+			if m := strings.TrimSpace(argv[i+1]); m != "" && !isForeignModelPin(m) {
+				w.mu.Lock()
+				w.model, w.key = m, modelPrefix(m)
+				w.mu.Unlock()
+			}
+			return
+		}
+	}
+}
+
 // learnModel fills the model from the stream when no pin named it (the CLI
 // ran its own default): omp's message "provider"+"model", opencode's
 // "providerID"+"modelID".
@@ -200,6 +218,8 @@ func (w *modelTurnWatch) observe(line string) {
 				reason, plan = "plan "+p[1], p[1]
 			}
 			MarkModelUnavailable(w.ins, w.key, w.model, reason)
+			// The account's list may have changed: re-read it (no spawn).
+			HarvestCLIModels(w.ins)
 			if !w.noticed {
 				w.noticed = true
 				w.mu.Lock()
@@ -225,6 +245,9 @@ func (w *modelTurnWatch) observe(line string) {
 		return
 	}
 	if turnEnded(w.ins.Type, line) {
+		// A finished turn is when the CLI may have refreshed its own model
+		// cache: harvest it (files / running server, never a spawn).
+		HarvestCLIModels(w.ins)
 		w.noticed = false
 		if !w.failed && w.model != "" {
 			MarkModelWorked(w.ins, w.key, w.model)

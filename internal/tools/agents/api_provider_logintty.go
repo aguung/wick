@@ -528,45 +528,76 @@ func apiProviderCLIModels(c *tool.Ctx) {
 	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
 	defer cancel()
 	// Served from the per-instance cache (~10 min); ?refresh=1 re-execs.
+	// Refresh does NOT forget refusals: `omp models` lists the provider's
+	// catalog, not what this account may run, so a fresh list says nothing
+	// about a model_not_found. A refusal goes when the model next works
+	// (MarkModelWorked) or the operator re-checks it (…/cli-models/recheck).
 	refresh := c.Query("refresh") == "1"
-	if refresh {
-		// "Refresh" is also the operator's retry for models an account was
-		// refused: forget the refusals, keep the last model that worked.
-		provider.ResetModelAvailability(ins)
-	}
 	seeds, fetchedAt, err := provider.CachedCLIModels(ctx, ins, refresh)
 	if err != nil && len(seeds) == 0 {
 		c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 	type model struct {
-		ID   string `json:"id"`
-		Desc string `json:"desc,omitempty"`
+		ID          string `json:"id"`
+		Desc        string `json:"desc,omitempty"`
+		Unavailable bool   `json:"unavailable,omitempty"`
+		Reason      string `json:"reason,omitempty"`
+		Default     bool   `json:"default,omitempty"`
 	}
-	toDTO := func(ms []provider.ModelSeed) []model {
+	toDTO := func(ms []provider.LiveModel) []model {
 		out := make([]model, 0, len(ms))
 		for _, s := range ms {
-			out = append(out, model{ID: s.ID, Desc: s.Desc})
+			out = append(out, model{ID: s.ID, Desc: s.Desc, Unavailable: s.Unavailable, Reason: s.Reason, Default: s.Default})
 		}
 		return out
 	}
-	// models = everything the CLI lists (the FE previews an unsaved filter
-	// over it); offered = what the picker gets with the SAVED filter, the
-	// effective default first. hosted_allowed tells the FE whether
-	// opencode/… entries count.
-	offered := provider.LiveDefaultFirst(provider.FilterLiveModels(ins, seeds), ins.LiveModelDefault)
+	// models = everything the CLI lists, refusals marked: the raw list the
+	// FE previews an unsaved filter over. The EFFECTIVE list (saved filter,
+	// chosen Default, refusals, the default a spawn runs) is not served
+	// here: the page reads it from the composer picker's own endpoint,
+	// GET /providers/options/{type}/{name}/models?all=1, as the wick
+	// provider page does for its live sets. hosted_allowed tells the FE
+	// whether opencode/… entries count.
 	resp := map[string]any{
-		"models":         toDTO(seeds),
-		"offered":        toDTO(offered),
+		"models":         toDTO(provider.MarkLiveModels(ins, seeds)),
 		"hosted_allowed": ins.Type != provider.TypeOpencode || provider.OpencodeHostedAllowed(ins),
 		"fetched_at":     fetchedAt.UTC().Format(time.RFC3339),
 	}
-	if len(offered) > 0 {
-		resp["default"] = offered[0].ID
+	if fetchedAt.IsZero() {
+		resp["fetched_at"] = "" // nothing known yet: the UI says "click Refresh"
+	}
+	if _, src := provider.CLIModelsInfo(ins); src != "" {
+		resp["source"] = src
 	}
 	if err != nil {
 		// Refresh failed; the last good list is still served.
 		resp["error"] = err.Error()
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// apiProviderCLIModelRecheck is the operator's explicit re-check of one
+// refused model: the refusal is forgotten, so the next turn on it tries
+// again (a second model_not_found records it again). Body {"model": id}.
+func apiProviderCLIModelRecheck(c *tool.Ctx) {
+	if notReady(c) || !requireApprovedUser(c) {
+		return
+	}
+	ins, ok := findLoginInstance(c)
+	if !ok {
+		return
+	}
+	if !requireProviderManage(c, ins.Type, ins.Name) {
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := c.BindJSON(&body); err != nil || strings.TrimSpace(body.Model) == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "model is required"})
+		return
+	}
+	cleared := provider.ClearModelRefusal(ins, strings.TrimSpace(body.Model))
+	c.JSON(http.StatusOK, map[string]any{"cleared": cleared})
 }

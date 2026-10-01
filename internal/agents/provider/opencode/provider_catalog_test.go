@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/yogasw/wick/internal/agents/config"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -108,7 +109,11 @@ func TestFetchInstanceCatalogBootsThrowawayServer(t *testing.T) {
 		return &serverHandle{url: srv.URL, password: "pw", kill: func() { killed = true }}, nil
 	}
 	ins := provider.Instance{Type: provider.TypeOpencode, Name: "oc-cat", Binary: "/bin/sh", OpencodeConfig: &provider.OpencodeConfig{DataDir: dir}}
-	cat, err := fetchInstanceCatalog(context.Background(), ins)
+	// No server running and no explicit Refresh: nothing starts.
+	if _, err := fetchInstanceCatalog(context.Background(), ins); !errors.Is(err, errNoLiveServe) {
+		t.Fatalf("render-path fetch: %v", err)
+	}
+	cat, err := fetchInstanceCatalog(provider.WithHelperSpawn(context.Background()), ins)
 	if err != nil || len(cat.Providers) != 2 || !killed {
 		t.Fatalf("cat = %+v err = %v killed = %v", cat, err, killed)
 	}
@@ -116,7 +121,32 @@ func TestFetchInstanceCatalogBootsThrowawayServer(t *testing.T) {
 	catalogServe = func(context.Context, serverSpec, string) (*serverHandle, error) {
 		return nil, errNotListening
 	}
-	if _, err := fetchInstanceCatalog(context.Background(), ins); !errors.Is(err, errNotListening) {
+	if _, err := fetchInstanceCatalog(provider.WithHelperSpawn(context.Background()), ins); !errors.Is(err, errNotListening) {
 		t.Fatalf("unreachable: err = %v", err)
+	}
+}
+
+// The throwaway catalog server is a full opencode process: it starts
+// inside the memory guard (spec.wrap set) when the guard is on.
+func TestCatalogServerUsesHelperGuard(t *testing.T) {
+	dir := t.TempDir()
+	srv := fakeCatalogServer(t, dir, true)
+	defer srv.Close()
+	prevServe, prevGuard := catalogServe, provider.HelperGuard
+	t.Cleanup(func() { catalogServe, provider.HelperGuard = prevServe, prevGuard })
+	provider.HelperGuard = func() *provider.MemGuard {
+		return &provider.MemGuard{Mode: config.MemGuardEnforce, Scopes: config.GuardScopes{OnSpawn: true}, AgentLimitMB: 600}
+	}
+	wrapped := false
+	catalogServe = func(_ context.Context, spec serverSpec, _ string) (*serverHandle, error) {
+		wrapped = spec.wrap != nil
+		return &serverHandle{url: srv.URL, password: "pw", kill: func() {}}, nil
+	}
+	ins := provider.Instance{Type: provider.TypeOpencode, Name: "oc-guard", Binary: "/bin/sh", OpencodeConfig: &provider.OpencodeConfig{DataDir: dir}}
+	if _, err := fetchInstanceCatalog(provider.WithHelperSpawn(context.Background()), ins); err != nil {
+		t.Fatal(err)
+	}
+	if !wrapped {
+		t.Fatal("catalog server started outside the memory guard")
 	}
 }

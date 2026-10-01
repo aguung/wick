@@ -193,6 +193,9 @@ type TokenUsage struct {
 	ContextUsed int `json:"context_used,omitempty"`
 	// Window is the model's context limit, 0 when unreported.
 	Window int `json:"window,omitempty"`
+	// AutoCompact is whether the provider compacts the window by itself,
+	// nil when it did not say.
+	AutoCompact *bool `json:"auto_compact,omitempty"`
 	// Model is the id the vendor billed, for per-model breakdowns.
 	Model string `json:"model,omitempty"`
 	// CostUSD is the vendor's own figure for the turn, 0 when it gives

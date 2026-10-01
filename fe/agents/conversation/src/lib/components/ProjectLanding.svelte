@@ -96,7 +96,7 @@
   // Live model loader — same contract as the conversation composer: split the
   // "type/name" value and fetch that instance's current vendor models, falling
   // back (composer-side) to the static list on error.
-  function loadProviderModels(optionValue: string, opts?: { entry?: string }) {
+  function loadProviderModels(optionValue: string, opts?: { entry?: string; refresh?: boolean }) {
     const slash = optionValue.indexOf("/");
     const type = slash < 0 ? optionValue : optionValue.slice(0, slash);
     const name = slash < 0 ? optionValue : optionValue.slice(slash + 1);

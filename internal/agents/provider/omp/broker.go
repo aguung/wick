@@ -11,8 +11,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,12 +132,48 @@ func brokerEnv(ctx context.Context, ins provider.Instance, opt provider.SpawnOpt
 // ShutdownBrokers kills every auth broker (wick shutdown / upgrade).
 func ShutdownBrokers() { brokers.Shutdown() }
 
-// brokerToken asks omp for the owner profile's bearer token (created on
-// first use); swapped in tests. The output is never logged.
+// brokerTokenFile is where omp keeps a profile's broker bearer token:
+// `<configRoot>/auth-broker.token`, configRoot = <home>/<PI_CONFIG_DIR|.omp>/
+// profiles/<p> (cli auth-broker: pPe() = join(configRoot, "auth-broker.token");
+// `auth-broker token` and `serve` create it on first use).
+func brokerTokenFile(home, cfgDir, profile string) string {
+	return filepath.Join(ompRoot(home, cfgDir), "profiles", profile, "auth-broker.token")
+}
+
+// readBrokerToken reads the owner profile's token file — no omp process.
+// "" when the file does not exist yet (or is empty).
+func readBrokerToken(spec brokerSpec) string {
+	home, _ := homeDir()
+	if home == "" {
+		return ""
+	}
+	cfg := envValue(spec.env, "PI_CONFIG_DIR")
+	if cfg == "" {
+		cfg = os.Getenv("PI_CONFIG_DIR")
+	}
+	b, err := os.ReadFile(brokerTokenFile(home, cfg, spec.profile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// brokerToken is the owner profile's bearer token; swapped in tests. Read
+// from the profile's token file when it exists (no process); only a profile
+// that never had one runs `omp auth-broker token`, which creates the file,
+// so that happens once per profile. The token is never logged.
 var brokerToken = func(ctx context.Context, spec brokerSpec) (string, error) {
+	if tok := readBrokerToken(spec); tok != "" {
+		return tok, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := safeexec.CommandContext(ctx, spec.bin, "--profile", spec.profile, "auth-broker", "token", "--json")
+	// Inside the memory guard ("omp-broker-token" scope, the owner
+	// profile's instance limit), like every omp process wick starts.
+	owner := provider.InstanceForAccountEnv([]string{"OMP_PROFILE=" + spec.profile})
+	cmd, release := provider.HelperCommand(ctx, owner, provider.HelperLabel(provider.TypeOMP, "broker-token"),
+		spec.bin, "--profile", spec.profile, "auth-broker", "token", "--json")
+	defer release()
 	cmd.Env = spec.env
 	hideConsole(cmd)
 	out, err := cmd.Output()

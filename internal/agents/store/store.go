@@ -205,6 +205,11 @@ type Store struct {
 	interruptBy   string
 	interruptNote string
 
+	// turnLevel is the newest mid-turn context level of the turn in
+	// progress (unthrottled, unlike the ledger write), plotted when the
+	// turn ends with no usage of its own.
+	turnLevel int
+
 	// recordRaw mirrors every event line into raw.jsonl. Off by
 	// default per design (raw is opt-in, retention agressive).
 	recordRaw bool
@@ -334,6 +339,7 @@ func (s *Store) Apply(ev event.AgentEvent) (bool, error) {
 	// point appended to the series. Those belong to the turn, and the
 	// turn has not finished.
 	if ev.ContextUsed > 0 && ev.Type != event.Done {
+		s.turnLevel = ev.ContextUsed
 		_ = s.recordContextLevel(ev.ContextUsed, s.now().UTC())
 	}
 
@@ -431,13 +437,27 @@ func (s *Store) Apply(ev event.AgentEvent) (bool, error) {
 		// Token accounting goes to the session ledger (usage.json), not
 		// onto the turn: the questions it answers are aggregate ones, and
 		// a failure to record must never fail the turn that earned it.
-		_ = s.recordUsage(ev.Usage, s.now().UTC())
+		if ev.Usage != nil {
+			_ = s.recordUsage(ev.Usage, s.now().UTC())
+		} else if s.turnLevel > 0 {
+			// A turn that ended without a usage reading (stopped, killed,
+			// its process gone) still climbed: plot the last level it
+			// reached, or the history draws a flat line through it.
+			_ = s.recordLevelPoint(s.turnLevel, s.now().UTC())
+		}
+		s.turnLevel = 0
 		if err := s.flushAssistantTurn(false); err != nil {
 			return false, err
 		}
 		return true, nil
 
 	case event.Error:
+		// An errored turn ended too: plot the level it climbed to (as a
+		// usage-less Done does), and leave nothing for the next turn.
+		if s.turnLevel > 0 {
+			_ = s.recordLevelPoint(s.turnLevel, s.now().UTC())
+			s.turnLevel = 0
+		}
 		// On error we still want whatever partial text accumulated;
 		// don't lose it.
 		if err := s.flushAssistantTurn(false); err != nil {
@@ -480,6 +500,9 @@ func (s *Store) Apply(ev event.AgentEvent) (bool, error) {
 		// waiting for the next turn to say so makes the ring contradict
 		// the marker sitting right above it.
 		_ = s.recordCompaction(ev.Compaction, s.now().UTC())
+		// recordCompaction plotted this level: a usage-less Done right
+		// after must not plot it a second time.
+		s.turnLevel = 0
 		return false, nil
 
 	case event.Trace:

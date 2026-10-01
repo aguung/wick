@@ -223,6 +223,8 @@ func startServeOnce(ctx context.Context, spec serverSpec, password string) (*ser
 	cmd := safeexec.Command(bin, argv...)
 	cmd.Dir = spec.dir
 	cmd.Env = append(append([]string(nil), spec.env...), "OPENCODE_SERVER_USERNAME="+serverUser, "OPENCODE_SERVER_PASSWORD="+password)
+	// The server's own directory; each request names the session's.
+	cmd.Env = pinPWD(cmd.Env, spec.dir)
 	hideConsole(cmd)
 	procgroup.Apply(cmd)
 	dieWithParent(cmd)

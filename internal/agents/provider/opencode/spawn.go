@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -125,12 +124,11 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 			ins = acc
 		}
 	}
-	// An opencode session lives in the data folder that created it: after
-	// a rotation to another account folder the old id does not exist
-	// there, so the turn starts a fresh session instead of failing.
-	if dir, derr := provider.OpencodeDataDir(ins); derr == nil && folderSwitched(opt.SessionID, dir) && opt.ResumeID != "" {
-		log.Info().Str("session", opt.SessionID).Msg("agents.spawn: opencode account folder changed; starting a new opencode session")
-		opt.ResumeID = ""
+	// An opencode session lives in the data folder that ran it: after a
+	// switch to another instance, or a rotation to another account
+	// folder, it is copied here first so the conversation carries on.
+	if dir, derr := provider.OpencodeDataDir(ins); derr == nil {
+		carryHistory(ctx, bin, opt.Workspace, stateDir(opt), opt.ResumeID, dir)
 	}
 	model, inArgs, err := resolveModel(ctx, ins, opt, append(append([]string{}, s.ExtraArgs...), opt.ExtraArgs...))
 	if err != nil {
@@ -156,6 +154,7 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	// After the instance env: the account dir must not be overridable by a
 	// stray XDG_DATA_HOME in Env, or login and spawn would part ways.
 	cmd.Env = append(cmd.Env, added...)
+	cmd.Env = pinPWD(cmd.Env, opt.Workspace)
 	hideConsole(cmd)
 	procgroup.Apply(cmd)
 
@@ -185,7 +184,10 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	}()
 
 	log.Info().Int("pid", cmd.Process.Pid).Str("scope", scopeUnit).Msg("agents.spawn: started (opencode)")
-	return &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}, nil
+	// No serve to ask GET /provider: the window comes from opencode's
+	// models.dev cache (window.go).
+	stdoutR := withContextLine(stdout, cachedWindow(modelsCachePath(cmd.Env), model))
+	return &process{cmd: cmd, stdout: stdoutR, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}, nil
 }
 
 // useServer reports whether a turn goes to the shared `opencode serve`
@@ -279,15 +281,25 @@ func (s Spawner) spawnServe(ctx context.Context, opt provider.SpawnOptions, ins 
 	return p, nil
 }
 
-// sessionFolders remembers the data folder each wick session last ran in.
-var sessionFolders sync.Map
-
-// folderSwitched records dir for session and reports whether the session
-// previously ran in a different folder.
-func folderSwitched(session, dir string) bool {
-	if session == "" {
-		return false
+// pinPWD sets PWD to dir (last entry wins). opencode takes its project
+// directory from PWD before the process cwd, so a PWD inherited from
+// whoever started wick (a shell, go test) would put the session's files
+// and AGENTS.md lookups in that directory instead of the workspace.
+func pinPWD(env []string, dir string) []string {
+	if dir == "" {
+		return env
 	}
-	prev, loaded := sessionFolders.Swap(session, dir)
-	return loaded && prev.(string) != dir
+	return append(env, "PWD="+dir)
+}
+
+// stateDir is the wick session's own .opencode-wick dir ("" without one).
+func stateDir(opt provider.SpawnOptions) string {
+	dir := opt.SessionDir
+	if dir == "" {
+		dir = opt.Workspace
+	}
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, ".opencode-wick")
 }

@@ -530,7 +530,7 @@
   // "type/name" key; split it and ask the server for that instance's current
   // vendor models. Errors bubble up to the composer, which keeps the static
   // list — so this never blocks selection.
-  function loadProviderModels(optionValue: string, opts?: { entry?: string }) {
+  function loadProviderModels(optionValue: string, opts?: { entry?: string; refresh?: boolean }) {
     const slash = optionValue.indexOf("/");
     const type = slash < 0 ? optionValue : optionValue.slice(0, slash);
     const name = slash < 0 ? optionValue : optionValue.slice(slash + 1);

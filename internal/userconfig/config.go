@@ -90,6 +90,10 @@ type ProviderStatus struct {
 	VersionErr string `json:"version_err,omitempty"`
 	ScannedAt  string `json:"scanned_at,omitempty"`
 	VersionAt  string `json:"version_at,omitempty"`
+	// Fingerprint identifies the binary the version was read from
+	// (resolved path, size, mtime). The version is re-probed only when it
+	// changes — the binary was updated — or on an explicit Rescan.
+	Fingerprint string `json:"fingerprint,omitempty"`
 
 	// Hooks captures the runtime capability check per hook event name.
 	// Keys are provider-agnostic event names ("PreToolUse",

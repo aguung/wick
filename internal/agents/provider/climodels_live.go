@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -15,20 +16,38 @@ import (
 // climodels_live.go backs the omp/opencode "live from CLI" model list
 // (Instance.LiveModels): the picker offers what ListCLIModels returns,
 // narrowed by LiveModelFilter, with LiveModelDefault (or the first match) as
-// the default. The CLI is exec'd at most once per cliModelsTTL per instance
-// store; render paths only PEEK at the cache and refresh it in the
-// background, so a page render never waits on a CLI.
+// the default.
+//
+// No bun process is ever started just to read metadata. The list is
+// refreshed on EVENTS, never on a timer:
+//   - a read (render, picker, spawn default) only reads the cache; a cold
+//     cache, or one whose account files changed since (login / logout /
+//     a turn that refreshed omp's own cache), is filled from the CLI's own
+//     files or an already-running server — a ModelHarvester, no spawn;
+//   - after a turn ends on the instance, and after a model_not_found
+//     refusal, HarvestCLIModels re-reads that source in the background;
+//   - an API-key save / logout / binary change invalidates the entry;
+//   - only the user's explicit Refresh (refresh=true) runs the CLI: one
+//     process, guarded, serialized, killed after (HelperCommand).
 
-// cliModelsTTL is how long a fetched CLI model list stays fresh.
-const cliModelsTTL = 10 * time.Minute
+// cliModelsMinRefresh is how soon after a fetch a forced refresh (the
+// Refresh button) may exec the CLI again; sooner, the list just fetched is
+// served.
+const cliModelsMinRefresh = 30 * time.Second
 
-// cliModelsFetchTimeout bounds one background/blocking CLI list call.
+// cliModelsFetchTimeout bounds one CLI list call.
 const cliModelsFetchTimeout = 60 * time.Second
 
 type cliModelsEntry struct {
 	models []ModelSeed
 	err    error
 	at     time.Time
+	// source: "cli" (Refresh), "files" / "server" (a harvest).
+	source string
+	// authStamp is the account files' state the entry was read under; a
+	// different stamp makes a read re-harvest (login / logout / omp's own
+	// cache refresh), still without a spawn.
+	authStamp string
 }
 
 var (
@@ -37,6 +56,66 @@ var (
 	cliModelsInflight = map[string]chan struct{}{}
 	cliModelsNow      = time.Now
 )
+
+// ModelHarvester reads an instance's model list without starting its CLI:
+// the CLI's own files read-only (omp models.db) or a server that is already
+// running (opencode serve). Registered per type from its package; returns
+// the source label ("files" / "server") through the error-free path.
+type ModelHarvester func(ctx context.Context, ins Instance) ([]ModelSeed, error)
+
+var (
+	modelHarvestersMu sync.RWMutex
+	modelHarvesters   = map[Type]ModelHarvester{}
+	// harvestSource names each type's harvest in "last updated (…)".
+	harvestSource = map[Type]string{TypeOMP: "files", TypeOpencode: "server"}
+)
+
+// RegisterModelHarvester installs t's harvester (init); nil removes it.
+func RegisterModelHarvester(t Type, h ModelHarvester) {
+	modelHarvestersMu.Lock()
+	defer modelHarvestersMu.Unlock()
+	if h == nil {
+		delete(modelHarvesters, t)
+		return
+	}
+	modelHarvesters[t] = h
+}
+
+// AuthStamp is the state of ins's account store on disk (mtime + size of
+// omp's agent.db / opencode's auth.json): it changes on login, logout and
+// on omp's own writes. Set from the omp package (profile layout).
+var AuthStamp = func(ins Instance) string {
+	if ins.Type == TypeOpencode {
+		if f, err := OpencodeAuthFile(ins); err == nil {
+			return fileStamp(f)
+		}
+	}
+	return ""
+}
+
+func fileStamp(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d|%d", fi.Size(), fi.ModTime().UnixNano())
+}
+
+// harvest runs ins's harvester (no spawn); nil when it has none or found
+// nothing.
+func harvest(ctx context.Context, ins Instance) ([]ModelSeed, string) {
+	modelHarvestersMu.RLock()
+	h := modelHarvesters[ins.Type]
+	modelHarvestersMu.RUnlock()
+	if h == nil {
+		return nil, ""
+	}
+	models, err := h(ctx, ins)
+	if err != nil || len(models) == 0 {
+		return nil, ""
+	}
+	return models, harvestSource[ins.Type]
+}
 
 // cliModelsKey identifies one account store: the list depends on who is
 // logged in, so the profile / data dir is part of the key, not just the name.
@@ -56,25 +135,61 @@ func LiveModelsEnabled(ins Instance) bool {
 	return ins.LiveModels && (ins.Type == TypeOMP || ins.Type == TypeOpencode)
 }
 
-// CachedCLIModels returns ins's CLI model list, exec'ing the CLI only when
-// the cache is cold, older than cliModelsTTL, or refresh is set. Concurrent
-// callers share one exec. fetchedAt is when the returned list was fetched.
+// CachedCLIModels returns ins's model list.
+//
+// refresh=false (every read): the cached list; when there is none, or the
+// account files changed since it was read, the harvester fills it — never
+// the CLI. An empty result means "nothing known yet: Refresh".
+//
+// refresh=true (the user's Refresh only): one CLI run, guarded and
+// serialized; concurrent callers share it, and one within
+// cliModelsMinRefresh of the last fetch is served that fetch.
+// fetchedAt is when the returned list was read.
 func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []ModelSeed, fetchedAt time.Time, err error) {
 	key := cliModelsKey(ins)
+	if !refresh {
+		stamp := AuthStamp(ins)
+		cliModelsMu.Lock()
+		e, ok := cliModelsLookup(ins, key)
+		cliModelsMu.Unlock()
+		if ok && e.authStamp == stamp && (len(e.models) > 0 || e.err != nil) {
+			return e.models, e.at, e.err
+		}
+		// A known list whose account files moved since (omp writes its
+		// own on every turn, a restart reads the file back): serve it at
+		// once and re-read the harvester in the background — the picker
+		// never waits on a list it already has.
+		if ok && len(e.models) > 0 {
+			HarvestCLIModels(ins)
+			return e.models, e.at, e.err
+		}
+		if hm, src := harvest(ctx, ins); len(hm) > 0 {
+			cliModelsMu.Lock()
+			e = cliModelsEntry{models: hm, at: cliModelsNow(), source: src, authStamp: stamp}
+			cliModelsStore(ins, key, e)
+			cliModelsMu.Unlock()
+			return e.models, e.at, nil
+		}
+		return e.models, e.at, e.err
+	}
 	for {
 		cliModelsMu.Lock()
-		e, ok := cliModelsCache[key]
-		if ok && !refresh && cliModelsNow().Sub(e.at) < cliModelsTTL {
+		e, ok := cliModelsLookup(ins, key)
+		if ok && e.err == nil && e.source == "cli" && cliModelsNow().Sub(e.at) < cliModelsMinRefresh {
 			cliModelsMu.Unlock()
-			return e.models, e.at, e.err
+			return e.models, e.at, e.err // just fetched: a refresh now would only burn a process
 		}
 		if wait, busy := cliModelsInflight[key]; busy {
 			cliModelsMu.Unlock()
 			select {
 			case <-wait:
-				// Another caller just fetched; a refresh is satisfied by it.
-				refresh = false
-				continue
+				// Share the fetch that just ended, failure included: a
+				// waiter re-running a CLI that just failed only queues
+				// more failing runs.
+				cliModelsMu.Lock()
+				e, _ := cliModelsLookup(ins, key)
+				cliModelsMu.Unlock()
+				return e.models, e.at, e.err
 			case <-ctx.Done():
 				return nil, time.Time{}, ctx.Err()
 			}
@@ -83,14 +198,14 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 		cliModelsInflight[key] = done
 		cliModelsMu.Unlock()
 
-		models, err := ListCLIModels(ctx, ins)
+		models, err := ListCLIModels(WithHelperSpawn(ctx), ins)
 		cliModelsMu.Lock()
-		e = cliModelsEntry{models: models, err: err, at: cliModelsNow()}
+		e = cliModelsEntry{models: models, err: err, at: cliModelsNow(), source: "cli", authStamp: AuthStamp(ins)}
 		// A failed refresh keeps the last good list on screen/in the picker.
-		if prev, had := cliModelsCache[key]; err != nil && had && prev.err == nil {
+		if prev, had := cliModelsLookup(ins, key); err != nil && had && prev.err == nil {
 			e.models = prev.models
 		}
-		cliModelsCache[key] = e
+		cliModelsStore(ins, key, e)
 		delete(cliModelsInflight, key)
 		close(done)
 		cliModelsMu.Unlock()
@@ -98,24 +213,84 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 	}
 }
 
-// PeekCLIModels returns whatever list is cached for ins (possibly stale or
-// nil) without blocking, and starts a background refresh when the cache is
-// cold or expired. For render paths (provider list, picker levels).
+// CLIModelsInfo is when and from where ins's cached list was read (zero
+// time / "" when nothing is cached) — the "last updated" line.
+func CLIModelsInfo(ins Instance) (time.Time, string) {
+	cliModelsMu.Lock()
+	defer cliModelsMu.Unlock()
+	e, _ := cliModelsLookup(ins, cliModelsKey(ins))
+	return e.at, e.source
+}
+
+// PeekCLIModels returns whatever list is cached for ins (possibly nil)
+// without blocking and without starting anything that spawns. A cold cache
+// is filled from the harvester in the background (files / running server).
+// For render paths and the reader path.
 func PeekCLIModels(ins Instance) []ModelSeed {
 	key := cliModelsKey(ins)
 	cliModelsMu.Lock()
-	e, ok := cliModelsCache[key]
-	_, busy := cliModelsInflight[key]
-	stale := !ok || cliModelsNow().Sub(e.at) >= cliModelsTTL
+	e, ok := cliModelsLookup(ins, key)
 	cliModelsMu.Unlock()
-	if stale && !busy {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), cliModelsFetchTimeout)
-			defer cancel()
-			_, _, _ = CachedCLIModels(ctx, ins, false)
-		}()
+	if !ok {
+		// Debounced per instance: a harvester that finds nothing caches
+		// nothing, so without the gate every render would start another.
+		HarvestCLIModels(ins)
 	}
 	return e.models
+}
+
+// harvestGate debounces HarvestCLIModels per instance.
+var (
+	harvestMu   sync.Mutex
+	harvestLast = map[string]time.Time{}
+)
+
+// harvestEvery is the shortest gap between two after-turn harvests of one
+// instance.
+const harvestEvery = 15 * time.Second
+
+// HarvestCLIModels re-reads ins's list from its harvester in the
+// background — after a turn ended on ins, or a model was refused — so the
+// next read sees what the CLI itself now knows. No spawn; a no-op when
+// live models are off or nothing was found (the cached list stays).
+func HarvestCLIModels(ins Instance) {
+	if !LiveModelsEnabled(ins) {
+		return
+	}
+	key := cliModelsKey(ins)
+	harvestMu.Lock()
+	if cliModelsNow().Sub(harvestLast[key]) < harvestEvery {
+		harvestMu.Unlock()
+		return
+	}
+	harvestLast[key] = cliModelsNow()
+	harvestMu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), cliModelsFetchTimeout)
+		defer cancel()
+		hm, src := harvest(ctx, ins)
+		if len(hm) == 0 {
+			return
+		}
+		cliModelsMu.Lock()
+		cliModelsStore(ins, key, cliModelsEntry{models: hm, at: cliModelsNow(), source: src, authStamp: AuthStamp(ins)})
+		cliModelsMu.Unlock()
+	}()
+}
+
+// helperSpawnKey marks a context whose caller is the user's explicit
+// Refresh / login action: only then may a throwaway CLI server start.
+type helperSpawnKey struct{}
+
+// WithHelperSpawn allows a throwaway helper process under ctx.
+func WithHelperSpawn(ctx context.Context) context.Context {
+	return context.WithValue(ctx, helperSpawnKey{}, true)
+}
+
+// HelperSpawnAllowed reports whether ctx came through WithHelperSpawn.
+func HelperSpawnAllowed(ctx context.Context) bool {
+	v, _ := ctx.Value(helperSpawnKey{}).(bool)
+	return v
 }
 
 // opencodeHostedProviders are opencode's own hosted services (Zen and its
@@ -196,17 +371,48 @@ func LiveDefaultFirst(filtered []ModelSeed, pin string) []ModelSeed {
 
 // LiveDefaultModel is the model a live-mode instance runs when the session
 // pinned none: the pin if still offered, else the first filtered match. It
-// may exec the CLI (cold cache). "" when live mode is off or nothing matches;
-// a failed fetch falls back to the pin as typed.
+// never runs the CLI (CachedCLIModels reads only). "" when live mode is off
+// or nothing matches; with no list known yet, the pin as typed.
 func LiveDefaultModel(ctx context.Context, ins Instance) string {
 	if !LiveModelsEnabled(ins) {
 		return ""
 	}
 	models, _, err := CachedCLIModels(ctx, ins, false)
-	if err != nil && len(models) == 0 {
+	if len(models) == 0 {
+		// Nothing known yet (no harvest, no Refresh) or a failed fetch:
+		// the chosen Default as typed — never a CLI run to check it.
+		_ = err
 		return strings.TrimSpace(ins.LiveModelDefault)
 	}
 	// Refused models are skipped and the last model that worked wins over
 	// list order (modelwatch.go); with no evidence this is list[0] as before.
 	return pickLiveDefault(ins, LiveDefaultFirst(FilterLiveModels(ins, models), ins.LiveModelDefault))
+}
+
+// SetCLIModelsForTest puts ids in ins's CLI model cache (fresh, so nothing
+// execs); the returned func removes the entry. Tests only (other packages
+// cannot reach the unexported cache).
+func SetCLIModelsForTest(ins Instance, ids ...string) (restore func()) {
+	seeds := make([]ModelSeed, 0, len(ids))
+	for _, id := range ids {
+		seeds = append(seeds, ModelSeed{ID: id})
+	}
+	key := cliModelsKey(ins)
+	cliModelsMu.Lock()
+	cliModelsCache[key] = cliModelsEntry{models: seeds, at: cliModelsNow()}
+	cliModelsMu.Unlock()
+	return func() {
+		cliModelsMu.Lock()
+		delete(cliModelsCache, key)
+		cliModelsMu.Unlock()
+	}
+}
+
+// InvalidateCLIModels drops ins's cached CLI model list, so the next read
+// fetches it — for a change that makes the list wrong (a new API key or
+// login), where the minimum refresh interval must not serve the old one.
+func InvalidateCLIModels(ins Instance) {
+	cliModelsMu.Lock()
+	cliModelsDrop(ins, cliModelsKey(ins))
+	cliModelsMu.Unlock()
 }

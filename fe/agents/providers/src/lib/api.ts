@@ -1566,33 +1566,65 @@ export async function apiGetConnections(): Promise<ProviderConnection[]> {
 export interface CLIModel {
   id: string;
   desc?: string;
+  /** Listed by the CLI, but this account was refused it (model_not_found). */
+  unavailable?: boolean;
+  /** Recorded refusal reason, when the CLI gave one. */
+  reason?: string;
+  /** The model a turn with no pin runs (server's effective default). */
+  default?: boolean;
 }
 
 /** GET /api/providers/{type}/{name}/cli-models — the CLI's own model list,
-    cached server-side ~10 min (refresh=true re-runs the CLI). `models` is
-    everything listed; `offered` is what the picker gets with the SAVED
-    filter (default first). `error` = a failed refresh over a stale list. */
+    cached server-side ~10 min (refresh=true re-runs the CLI), refusals
+    marked: the raw list an unsaved filter is previewed over. The effective
+    list comes from apiGetEffectiveLiveModels (the composer picker's own
+    endpoint). `error` = a failed refresh over a stale list. */
 export interface CLIModelsResponse {
   models: CLIModel[];
-  offered: CLIModel[];
-  default?: string;
   hostedAllowed: boolean;
+  /** "" when nothing is known yet (no harvest, no Refresh). */
   fetchedAt: string;
+  /** "files" / "server" (read without the CLI) or "cli" (a Refresh). */
+  source?: string;
   error?: string;
 }
 
 export async function apiGetCLIModels(base: string, type: string, name: string, refresh = false): Promise<CLIModelsResponse> {
-  const r = await get<{ models?: CLIModel[]; offered?: CLIModel[]; default?: string; hosted_allowed?: boolean; fetched_at?: string; error?: string }>(
+  const r = await get<{ models?: CLIModel[]; hosted_allowed?: boolean; fetched_at?: string; source?: string; error?: string }>(
     `${base}/api/providers/${encodeURIComponent(type)}/${encodeURIComponent(name)}/cli-models${refresh ? "?refresh=1" : ""}`,
   );
   return {
     models: r.models ?? [],
-    offered: r.offered ?? [],
-    default: r.default,
     hostedAllowed: r.hosted_allowed ?? true,
     fetchedAt: r.fetched_at ?? "",
+    source: r.source,
     error: r.error,
   };
+}
+
+/** GET /providers/options/{type}/{name}/models?all=1 — the instance's
+    EFFECTIVE live list through the composer picker's own pipeline
+    (ModelSets: saved filter, chosen Default first, refusals marked
+    "unavailable", the default a spawn runs flagged), every level
+    flattened. The same endpoint the wick provider page reads its live
+    sets from, so the page and the picker cannot disagree. */
+export async function apiGetEffectiveLiveModels(base: string, type: string, name: string): Promise<CLIModel[]> {
+  const r = await get<{ models?: { id?: string; desc?: string; default?: boolean; unavailable?: boolean }[] | null }>(
+    `${base}/providers/options/${encodeURIComponent(type)}/${encodeURIComponent(name)}/models?all=1`,
+  );
+  return (r?.models ?? [])
+    .filter((m) => !!m.id)
+    .map((m) => ({ id: m.id!, desc: m.unavailable ? undefined : m.desc, reason: m.unavailable ? m.desc : undefined, unavailable: m.unavailable, default: m.default }));
+}
+
+/** POST …/cli-models/recheck — forget one refusal so the next turn tries
+    the model again (a second refusal records it again). */
+export async function apiRecheckCLIModel(base: string, type: string, name: string, model: string): Promise<boolean> {
+  const r = await post<{ cleared?: boolean }>(
+    `${base}/api/providers/${encodeURIComponent(type)}/${encodeURIComponent(name)}/cli-models/recheck`,
+    { model },
+  );
+  return !!r.cleared;
 }
 
 /** Hosted opencode models (opencode/…, opencode-go/…) — mirrors

@@ -34,6 +34,10 @@ type OMPParser struct {
 	usage          TokenUsage
 	sawUsage       bool
 	lastErr        string
+	// window: the active model's context limit (wick's context line).
+	window int
+	// autoCompact: the provider's own auto-compact state (context line).
+	autoCompact *bool
 }
 
 // NewOMPParser returns a parser for one omp spawn of instance (named in
@@ -194,6 +198,8 @@ func (p *OMPParser) Parse(line string) (AgentEvent, error) {
 		ev := AgentEvent{Type: Done, Raw: trimmed}
 		if p.sawUsage {
 			u := p.usage
+			u.Window = p.window
+			u.AutoCompact = p.autoCompact
 			ev.Usage = &u
 		}
 		p.reset()
@@ -203,7 +209,21 @@ func (p *OMPParser) Parse(line string) (AgentEvent, error) {
 		if raw.Aborted {
 			return AgentEvent{Type: Trace, Text: trimmed, Raw: trimmed}, nil
 		}
-		return AgentEvent{Type: Compaction, Raw: trimmed, Compaction: &CompactionInfo{Trigger: "auto"}}, nil
+		return compactionEvent(trimmed, "auto"), nil
+
+	case "compaction":
+		// wick ran omp's RPC `compact` for a /compact turn.
+		return compactionEvent(trimmed, "manual"), nil
+
+	case "context":
+		w, auto := contextState(trimmed)
+		if w > 0 {
+			p.window = w
+		}
+		if auto != nil {
+			p.autoCompact = auto
+		}
+		return AgentEvent{Raw: trimmed}, nil
 
 	case "auto_retry_start":
 		return AgentEvent{Type: Warning, ErrorMsg: accountErrorMsg("omp", p.instance, raw.ErrorMessage), Raw: trimmed}, nil

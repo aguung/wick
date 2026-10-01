@@ -219,6 +219,15 @@ func TestResolveModelLiveDefault(t *testing.T) {
 		OpencodeConfig: &provider.OpencodeConfig{DataDir: data, Model: "openai/o5"},
 	}
 	ctx := context.Background()
+	// Nothing known yet and no running server: no CLI run for a default,
+	// the configured opencode_model applies.
+	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/o5" {
+		t.Fatalf("cold live list: %q %v", m, err)
+	}
+	// After the user's Refresh the live list decides.
+	if _, _, err := provider.CachedCLIModels(ctx, ins, true); err != nil {
+		t.Fatal(err)
+	}
 	if m, _, err := resolveModel(ctx, ins, provider.SpawnOptions{}, nil); err != nil || m != "openai/gpt-5.5" {
 		t.Fatalf("first live match: %q %v", m, err)
 	}
@@ -280,5 +289,47 @@ func TestUseServerAndSkillsEnv(t *testing.T) {
 	env, _ = spawnEnv(ins, "", "", "", nil)
 	if has(env, "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1") {
 		t.Fatal("LoadExternalSkills still disables the scan")
+	}
+}
+
+// opencode rows of the live-model table: every turn names a model, and it
+// is the TARGET instance's — a session copied in from another instance
+// runs on this one's live default, not the model its messages recorded.
+func TestResolveModelLiveTable(t *testing.T) {
+	t.Cleanup(provider.SetModelStateDirForTest(t.TempDir()))
+	ctx := context.Background()
+	mk := func(name, def string) provider.Instance {
+		return provider.Instance{Type: provider.TypeOpencode, Name: name, LiveModels: true, LiveModelDefault: def,
+			OpencodeConfig: &provider.OpencodeConfig{DataDir: t.TempDir(), AllowHosted: true}}
+	}
+	b := mk("oc-live-b", "opencode/nemotron-free")
+	t.Cleanup(provider.SetCLIModelsForTest(b, "opencode/mimo-free", "opencode/nemotron-free"))
+	noDef := mk("oc-live-nodef", "")
+	t.Cleanup(provider.SetCLIModelsForTest(noDef, "opencode/mimo-free", "opencode/nemotron-free"))
+
+	rows := []struct {
+		name string
+		ins  provider.Instance
+		opt  provider.SpawnOptions
+		args []string
+		want string
+	}{
+		{"session pin wins", b, provider.SpawnOptions{ModelID: "opencode/mimo-free"}, nil, "opencode/mimo-free"},
+		{"--model in args wins", b, provider.SpawnOptions{}, []string{"--model", "opencode/x-free"}, "opencode/x-free"},
+		{"live + chosen Default model", b, provider.SpawnOptions{}, nil, "opencode/nemotron-free"},
+		{"resumed session from another instance: still B's default", b, provider.SpawnOptions{ResumeID: "ses_1"}, nil, "opencode/nemotron-free"},
+		{"live, no Default: first live model", noDef, provider.SpawnOptions{}, nil, "opencode/mimo-free"},
+	}
+	for _, r := range rows {
+		r.opt.Instance = &r.ins
+		m, _, err := resolveModel(ctx, r.ins, r.opt, r.args)
+		if err != nil || m != r.want {
+			t.Errorf("%s: model %q err %v, want %q", r.name, m, err, r.want)
+		}
+	}
+	// The chosen Default refused on this account: the next usable model.
+	provider.MarkModelUnavailable(b, "opencode", "opencode/nemotron-free", "model_not_found")
+	if m, _, err := resolveModel(ctx, b, provider.SpawnOptions{Instance: &b}, nil); err != nil || m != "opencode/mimo-free" {
+		t.Errorf("refused default: %q %v", m, err)
 	}
 }
