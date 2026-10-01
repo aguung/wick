@@ -26,6 +26,7 @@
   } from "$lib/api/workflow";
   import { workflowAPI } from "$lib/api/workflow";
   import Field from "./fields/Field.svelte";
+  import MarkdownField from "./MarkdownField.svelte";
   import ChannelPicker from "./fields/ChannelPicker.svelte";
   import SchemaForm from "./fields/SchemaForm.svelte";
 
@@ -205,7 +206,7 @@
         <span class="text-sm font-semibold truncate">{trigger.label || trigger.type}</span>
         <span class="text-xs text-black-700 dark:text-black-600 font-mono shrink-0">trigger · {trigger.type}</span>
         <div class="flex-1"></div>
-        <button class="text-black-700 dark:text-black-500 hover:text-black-800 dark:text-white-100 text-xl leading-none shrink-0" onclick={close} aria-label="Close">✕</button>
+        <button class="text-black-700 dark:text-black-500 hover:text-black-800 dark:hover:text-white-100 text-xl leading-none shrink-0" onclick={close} aria-label="Close">✕</button>
       </header>
 
       <!-- Mobile pane switcher — hidden on lg where all 3 columns show. -->
@@ -299,6 +300,11 @@
                   </span>
                 {/if}
               </label>
+              <MarkdownField
+                required
+                value={trigger.description ?? ""}
+                oncommit={(v) => patch("description", v)}
+              />
 
               <!-- Cron-specific fields. -->
               {#if trigger.type === "cron"}

@@ -5,7 +5,8 @@
   // initial port has zero JS-lib dependency. When we wire Drawflow back,
   // it mounts inside this component and the layout/positions feed into
   // its API rather than absolute `<div style>`.
-  import { draftWorkflow, selectedNodeID, selectedNodeIDs, updateNode, addNode, removeNode, removeTrigger, disconnect, setEdgeCase, paletteOpen, paletteAddRequest, detailNodeID, detailTriggerID, runStatusByNode, validationReport, triggerRunStatus, lastFiredTriggerID, pinnedTriggerID, loadPinnedTrigger, savePinnedTrigger, triggerEventByID, setLockedField, searchOpen } from "$lib/stores/editor";
+  import { draftWorkflow, selectedNodeID, selectedNodeIDs, updateNode, addNode, removeNode, removeTrigger, disconnect, setEdgeCase, paletteOpen, paletteAddRequest, detailNodeID, detailTriggerID, runStatusByNode, validationReport, triggerRunStatus, lastFiredTriggerID, pinnedTriggerID, loadPinnedTrigger, savePinnedTrigger, triggerEventByID, setLockedField, searchOpen, STICKY_NOTE_W, STICKY_NOTE_H } from "$lib/stores/editor";
+  import StickyNote from "./StickyNote.svelte";
   import { toastError } from "@wick-fe/common-stores";
   import { get } from "svelte/store";
 
@@ -388,7 +389,7 @@
     if (!wf) return [];
     const out: { id: string; cx: number; cy: number }[] = [];
     for (const n of wf.graph?.nodes ?? []) {
-      if (n.id === excludeID) continue;
+      if (n.id === excludeID || n.type === "sticky_note") continue;
       const x = n._canvas?.x ?? 0;
       const y = n._canvas?.y ?? 0;
       out.push({ id: n.id, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
@@ -549,7 +550,7 @@
     let bestID: string | null = null;
     let bestDist = HIT_RADIUS;
     for (const n of wf.graph.nodes) {
-      if (n.id === connecting.fromID) continue;
+      if (n.id === connecting.fromID || n.type === "sticky_note") continue;
       const x = (n._canvas?.x ?? 0) + NODE_W / 2;
       const y = n._canvas?.y ?? 0;
       const dx = connectCursor.x - x;
@@ -1091,7 +1092,52 @@
     }
   }
 
+  // Sticky notes are `sticky_note` nodes drawn in the back layer. A new
+  // note lands centred in the current viewport, selected so the colour
+  // toolbar is right there.
+  const DEFAULT_NOTE_TEXT = "## Note\nDouble-click to edit. Supports **markdown**.";
+  function addStickyNote() {
+    if (locked) {
+      showLockedHintCenter();
+      return;
+    }
+    let x = 80, y = 80;
+    if (canvasEl) {
+      const rect = canvasEl.getBoundingClientRect();
+      x = Math.round((rect.width / 2 - pan.x) / zoom - STICKY_NOTE_W / 2);
+      y = Math.round((rect.height / 2 - pan.y) / zoom - STICKY_NOTE_H / 2);
+    }
+    addNode({ id: "", type: "sticky_note", content: DEFAULT_NOTE_TEXT, color: "yellow", _canvas: { x, y } });
+    const nodes = get(draftWorkflow)?.graph?.nodes ?? [];
+    const added = nodes[nodes.length - 1];
+    if (added?.type !== "sticky_note") return;
+    selectedNodeIDs.set(new Set());
+    selectedNodeID.set(added.id);
+  }
+  function showLockedHintCenter() {
+    if (!canvasEl) return;
+    const rect = canvasEl.getBoundingClientRect();
+    showLockedHint({ clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  }
+  function selectNote(id: string) {
+    selectedNodeIDs.set(new Set());
+    selectedNodeID.set(id);
+  }
+
+  function isTypingTarget(): boolean {
+    const el = document.activeElement as HTMLElement | null;
+    const tag = (el?.tagName ?? "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || !!el?.isContentEditable;
+  }
+
   function onkeydown(e: KeyboardEvent) {
+    // Shift+S — add a sticky note (n8n shortcut).
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "S" || e.key === "s")) {
+      if (isTypingTarget() || $searchOpen) return;
+      e.preventDefault();
+      addStickyNote();
+      return;
+    }
     if ((e.key === "Delete" || e.key === "Backspace") && $selectedNodeID) {
       const tag = (document.activeElement?.tagName ?? "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
@@ -1224,6 +1270,19 @@
     style="transform: translate({pan.x}px,{pan.y}px) scale({zoom}); transform-origin: 0 0;"
   >
     {#if $draftWorkflow?.graph}
+      <!-- Sticky notes FIRST so they paint under the edge SVG and the
+           node cards — a note frames a block of steps, never covers it. -->
+      {#each ($draftWorkflow.graph.nodes ?? []).filter((n) => n.type === "sticky_note") as note (note.id)}
+        <StickyNote
+          {note}
+          {zoom}
+          {locked}
+          selected={$selectedNodeIDs.has(note.id) || $selectedNodeID === note.id}
+          onselect={() => selectNote(note.id)}
+          onpatch={(patch) => updateNode(note.id, patch)}
+          ondelete={() => removeNode(note.id)}
+        />
+      {/each}
       <svg
         class="absolute inset-0 pointer-events-none overflow-visible"
         style="width:1px;height:1px;left:0;top:0;"
@@ -1319,7 +1378,7 @@
         {/each}
       </svg>
 
-      {#each $draftWorkflow.graph.nodes ?? [] as node (node.id)}
+      {#each ($draftWorkflow.graph.nodes ?? []).filter((n) => n.type !== "sticky_note") as node (node.id)}
         {@const Comp = componentFor(node.type)}
         {@const status = $runStatusByNode[node.id]}
         {@const issue = nodeIssue(node)}
@@ -1536,6 +1595,14 @@
       aria-label="Search workflow"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    </button>
+    <button
+      class="h-9 w-9 rounded-full bg-white-100 dark:bg-navy-600/80 border border-white-400 dark:border-navy-500 hover:bg-white-200 dark:hover:bg-navy-600 text-black-800 dark:text-white-100 shadow-sm flex items-center justify-center"
+      onclick={addStickyNote}
+      title="Add sticky note (Shift+S)"
+      aria-label="Add sticky note"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9.5L21 14.5V5a2 2 0 0 0-2-2z"/><path d="M15 21v-5a1 1 0 0 1 1-1h5"/></svg>
     </button>
   </div>
 

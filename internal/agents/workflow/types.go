@@ -42,7 +42,16 @@ const (
 	NodeDataTableCount  NodeType = "datatable_count"
 	NodeSessionInit     NodeType = "session_init"
 	NodeWebhookRespond  NodeType = "webhook_respond"
+	NodeStickyNote      NodeType = "sticky_note"
 )
+
+// IsAnnotation reports whether nodes of this type are canvas-only
+// annotations (sticky_note). They never execute, take no edges, and
+// are skipped by reachability, cycle and test-coverage checks.
+func (t NodeType) IsAnnotation() bool { return t == NodeStickyNote }
+
+// Sticky note colour presets. Empty Color renders as yellow.
+var StickyNoteColors = []string{"yellow", "green", "blue", "purple", "red", "gray"}
 
 // IsDataTableNode reports whether t is one of the datatable_* variants.
 func (t NodeType) IsDataTableNode() bool {
@@ -282,6 +291,14 @@ type Node struct {
 	RespondStatus  int               `json:"respond_status,omitempty"`
 	RespondBody    string            `json:"respond_body,omitempty"`
 	RespondHeaders map[string]string `json:"respond_headers,omitempty"`
+
+	// sticky_note — markdown annotation drawn behind a block of nodes.
+	// Position lives in _canvas.positions like any node; Width/Height
+	// 0 = canvas default size, Color "" = yellow.
+	Content string `json:"content,omitempty"`
+	Color   string `json:"color,omitempty"`
+	Width   int    `json:"width,omitempty"`
+	Height  int    `json:"height,omitempty"`
 }
 
 // OnFailure values.
@@ -395,6 +412,9 @@ type Trigger struct {
 	ID        string      `json:"id,omitempty"`
 	Type      TriggerType `json:"type"`
 	EntryNode string      `json:"entry_node,omitempty"`
+	// Description is the markdown "what for + why" shown on the trigger
+	// card. Optional for the engine; workflow_validate warns when empty.
+	Description string `json:"description,omitempty"`
 
 	// cron
 	Schedule string `json:"schedule,omitempty"`

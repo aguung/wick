@@ -25,7 +25,11 @@ export type NodeType =
   | "datatable_delete"
   | "datatable_count"
   | "session_init"
-  | "webhook_respond";
+  | "webhook_respond"
+  // Canvas-only markdown annotation. Never executed, takes no edges.
+  | "sticky_note";
+
+export type StickyNoteColor = "yellow" | "green" | "blue" | "purple" | "red" | "gray";
 
 export type TriggerType =
   | "cron"
@@ -182,6 +186,12 @@ export type Node = {
   // output yet. Not consumed by the engine — purely a UX scratchpad.
   mock_input?: string;
 
+  // sticky_note — markdown body + look. Width/height 0/absent = default.
+  content?: string;
+  color?: StickyNoteColor;
+  width?: number;
+  height?: number;
+
   // canvas position (engine ignores; canvas persists)
   _canvas?: { x?: number; y?: number };
 };
@@ -206,6 +216,8 @@ export type Trigger = {
   id?: string;
   type: TriggerType;
   entry_node?: string;
+  // Markdown "what for + why" shown on the trigger card.
+  description?: string;
 
   // cron
   schedule?: string;

@@ -5,11 +5,16 @@
   // Keep this file dumb — it owns no behaviour, just layout.
   import type { Snippet } from "svelte";
   import type { NodeType } from "$lib/types/workflow";
+  import { mdPlainText } from "$lib/markdown";
 
   type Props = {
     id: string;
     type: NodeType;
     label?: string;
+    // Markdown "what for + why". Shown as a 2-line muted plain-text
+    // summary under the label; full text in the hover title. undefined
+    // = caller doesn't track descriptions (no marker), "" = missing.
+    description?: string;
     selected?: boolean;
     running?: boolean;
     errored?: boolean;
@@ -34,6 +39,7 @@
     id,
     type,
     label,
+    description,
     selected = false,
     running = false,
     errored = false,
@@ -52,6 +58,8 @@
   const displayType = $derived(
     headLabel ?? type.replace(/_/g, " ").toUpperCase(),
   );
+  const descText = $derived(mdPlainText(description ?? ""));
+  const descMissing = $derived(description !== undefined && descText === "");
 </script>
 
 <div
@@ -81,15 +89,25 @@
   >
     {#if icon}<span class="text-[11px] leading-none">{icon}</span>{/if}
     <span class="truncate">{displayType}</span>
+    {#if descMissing}
+      <span
+        class="ml-auto shrink-0 rounded px-1 text-[9px] font-semibold normal-case tracking-normal bg-amber-400 text-black-800"
+        title="No description — add what this is for + why"
+        aria-label="No description"
+      >no desc</span>
+    {/if}
     {#if running}
-      <span class="ml-auto inline-flex h-1.5 w-1.5 rounded-full bg-amber-300 animate-pulse" aria-label="running"></span>
+      <span class="{descMissing ? '' : 'ml-auto'} inline-flex h-1.5 w-1.5 rounded-full bg-amber-300 animate-pulse" aria-label="running"></span>
     {:else if errored}
-      <span class="ml-auto inline-flex h-1.5 w-1.5 rounded-full bg-rose-300" aria-label="error"></span>
+      <span class="{descMissing ? '' : 'ml-auto'} inline-flex h-1.5 w-1.5 rounded-full bg-rose-300" aria-label="error"></span>
     {/if}
   </header>
 
   <div class="px-3 py-2">
     <div class="text-xs font-medium text-black-800 dark:text-white-100 truncate">{label ?? id}</div>
+    {#if descText}
+      <div class="wf-node-desc mt-0.5 text-[11px] leading-snug text-black-700 dark:text-black-500" title={descText}>{descText}</div>
+    {/if}
     {#if body}
       <div class="mt-1 text-[11px] text-black-700 dark:text-black-600">
         {@render body()}
@@ -118,3 +136,15 @@
     ></span>
   {/if}
 </div>
+
+<style>
+  /* Two lines max so a long description never grows the card. */
+  .wf-node-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+</style>
