@@ -146,6 +146,8 @@ type fakeOpencode struct {
 
 	// summarizeErr, when set, fails summarize with it (HTTP 400).
 	summarizeErr string
+	// summarizeDelay holds the summarize answer this long (a slow model).
+	summarizeDelay time.Duration
 	// promptStatus, when set, is how prompt_async answers instead of 204.
 	promptStatus int
 	// gate, when set, holds the first prompt's idle until closed; later
@@ -286,6 +288,7 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "true")
 		go f.publish("session.idle", map[string]any{"sessionID": sid})
 	case strings.HasSuffix(r.URL.Path, "/summarize") && r.Method == http.MethodPost:
+		time.Sleep(f.summarizeDelay)
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.summarized = append(f.summarized, r.URL.Path+" "+string(b))
@@ -668,6 +671,25 @@ func TestRemoteCompactTurnAndWindow(t *testing.T) {
 	}
 	if len(f.prompts) != 0 {
 		t.Fatalf("/compact was sent to the model as a prompt: %v", f.prompts)
+	}
+}
+
+// A summarize slower than the per-request cap still completes: opencode
+// answers only once the summary is written, and on a big session that
+// takes minutes — with the cap wick reported a timeout for a compaction
+// that had in fact happened.
+func TestRemoteCompactOutlivesRequestCap(t *testing.T) {
+	old := apiRequestTimeout
+	apiRequestTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { apiRequestTimeout = old })
+	f := &fakeOpencode{summarizeDelay: 400 * time.Millisecond}
+	p, _ := startFake(t, f, turnSpec{title: "t", model: "openai/gpt-5.5", prompt: "/compact", resumeID: "ses_known"})
+	joined := strings.Join(readAll(t, p), "\n")
+	if err := p.Wait(); err != nil {
+		t.Fatalf("slow summarize failed the turn: %v", err)
+	}
+	if !strings.Contains(joined, `"type":"compaction"`) {
+		t.Fatalf("no compaction line after a slow summarize: %s", joined)
 	}
 }
 

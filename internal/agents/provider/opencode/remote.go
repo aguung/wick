@@ -342,6 +342,10 @@ const injectSettle = 300 * time.Millisecond
 // Silence watchdog bounds (vars: shortened in tests).
 var (
 	silentTurnTimeout = 90 * time.Second
+	// compactTimeout bounds one /compact (summarize) call.
+	compactTimeout = 10 * time.Minute
+	// apiRequestTimeout caps every other request to the server.
+	apiRequestTimeout = 60 * time.Second
 	silentTurnCheck   = 5 * time.Second
 )
 
@@ -601,7 +605,7 @@ func (p *remoteProcess) moreInjected(c *apiClient, sid string) bool {
 }
 
 func (p *remoteProcess) clientFor(l *lease) *apiClient {
-	return &apiClient{base: l.s.h.url, password: l.s.h.password, dir: p.dir, http: &http.Client{Timeout: 60 * time.Second}}
+	return &apiClient{base: l.s.h.url, password: l.s.h.password, dir: p.dir, http: &http.Client{Timeout: apiRequestTimeout}}
 }
 
 // lostSessionNotice opens a reply whose resume id this instance's server
@@ -653,7 +657,15 @@ func (p *remoteProcess) compactTurn(ctx context.Context, c *apiClient, sid, mode
 	prev := sessionContext(ctx, c, sid)
 	prov, id, _ := strings.Cut(model, "/")
 	body := map[string]any{"providerID": prov, "modelID": id, "auto": false}
-	err := c.do(ctx, http.MethodPost, "/session/"+sid+"/summarize", body, nil)
+	// summarize answers only once the summary is written — minutes for a
+	// big session on a slow model — so it gets its own client without the
+	// 60s per-request cap, bounded by compactTimeout instead. With the cap
+	// opencode finished the compaction while wick reported a timeout.
+	sctx, cancel := context.WithTimeout(ctx, compactTimeout)
+	defer cancel()
+	long := *c
+	long.http = &http.Client{}
+	err := long.do(sctx, http.MethodPost, "/session/"+sid+"/summarize", body, nil)
 	if err != nil && !compactNoop(err) {
 		return fmt.Errorf("opencode compact: %w", err)
 	}
