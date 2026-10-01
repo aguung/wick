@@ -555,7 +555,7 @@ func (p *rpcProcess) compactTurn(ctx context.Context, c *rpcConn, instructions s
 	}
 	end, _ := json.Marshal(map[string]any{"type": "agent_end", "messages": []any{}})
 	end = append(end, '\n')
-	f, err := c.call(ctx, cmd)
+	f, err := c.callWait(ctx, cmd, rpcCompactWait)
 	if err == nil && !f.Success {
 		err = fmt.Errorf("omp compact: %s", f.errText())
 	}

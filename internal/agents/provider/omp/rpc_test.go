@@ -67,9 +67,10 @@ type fakeOMP struct {
 	// failPrompt: prompt_result error before the agent runs.
 	failPrompt string
 	// compactErr: the RPC `compact` fails with this error.
-	compactErr string
-	out        *io.PipeWriter
-	done       chan struct{}
+	compactErr   string
+	compactDelay time.Duration // holds the compact answer this long (a slow model)
+	out          *io.PipeWriter
+	done         chan struct{}
 }
 
 func (f *fakeOMP) write(v any) {
@@ -94,6 +95,7 @@ func (f *fakeOMP) serve(in io.Reader) {
 				"model": map[string]any{"id": "gpt-5.6-luna", "provider": "openai-codex", "contextWindow": 272000}, "autoCompactionEnabled": true,
 				"contextUsage": map[string]any{"tokens": 25900, "contextWindow": 272000, "percent": 9.5}}})
 		case "compact":
+			time.Sleep(f.compactDelay)
 			if f.compactErr != "" {
 				f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": false, "error": f.compactErr})
 				continue
@@ -372,6 +374,25 @@ func TestRPCCompactTurn(t *testing.T) {
 	defer f.mu.Unlock()
 	if slices.Contains(f.cmds, "prompt") || !slices.Contains(f.cmds, "compact") {
 		t.Fatalf("commands %v", f.cmds)
+	}
+}
+
+// A compact slower than the per-command wait still completes: omp answers
+// only once the summary is written (session 292e2e51 got "no response in
+// 30s" for a compaction omp went on to finish).
+func TestRPCCompactOutlivesCallWait(t *testing.T) {
+	old := rpcCallWait
+	rpcCallWait = 100 * time.Millisecond
+	t.Cleanup(func() { rpcCallWait = old })
+	f := &fakeOMP{compactDelay: 400 * time.Millisecond}
+	p, m := runFakeTurn(t, f, "/compact")
+	defer m.Shutdown()
+	out := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("slow compact failed the turn: %v", err)
+	}
+	if !strings.Contains(out, `"type":"compaction"`) {
+		t.Fatalf("no compaction after a slow compact:\n%s", out)
 	}
 }
 
