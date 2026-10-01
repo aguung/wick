@@ -37,10 +37,6 @@ const (
 	// defaultUntrackedLimit is one page of the untracked rail.
 	defaultUntrackedLimit = 25
 	maxUntrackedLimit     = 200
-	// maxUntrackedOffset bounds how deep the rail pages. Pages are asked
-	// for one at a time (?untracked_offset=), so reaching old chats never
-	// means re-sending every row above them on each poll.
-	maxUntrackedOffset = 5000
 )
 
 // queryInt reads a bounded integer query param, falling back to def when it
@@ -130,10 +126,14 @@ type ticketBoardResponse struct {
 	Untracked []ticketSessionRow `json:"untracked"`
 	// UntrackedTotal is how many exist, however few were sent, so the rail
 	// can say "25 of 142" instead of implying it has them all.
-	UntrackedTotal int                    `json:"untracked_total"`
-	Statuses       []project.TicketStatus `json:"statuses"`
-	Users          map[string]string      `json:"users,omitempty"`
-	Me             string                 `json:"me,omitempty"`
+	UntrackedTotal int `json:"untracked_total"`
+	// UntrackedNext is the cursor for the page after these rows
+	// (?untracked_after=), empty when nothing follows them. Opaque: the
+	// client hands it back as-is and never builds one.
+	UntrackedNext string                 `json:"untracked_next,omitempty"`
+	Statuses      []project.TicketStatus `json:"statuses"`
+	Users         map[string]string      `json:"users,omitempty"`
+	Me            string                 `json:"me,omitempty"`
 }
 
 // cardFields picks what a card carries: the schema's show_on_card subset
@@ -284,9 +284,10 @@ func apiProjectTickets(c *tool.Ctx) {
 	//   ?assignee=ID|me  only this person's tickets; absent/empty = everyone
 	//   ?untracked=1     ask for the untracked list at all (default: no)
 	//   ?untracked_limit=N
-	//   ?untracked_offset=N   skip the first N rows — the rail's next page.
-	//                    The poll asks for the first page only; older pages
-	//                    are fetched once, on scroll.
+	//   ?untracked_after=C    the rail's next page: rows strictly after the
+	//                    row cursor C points at (a previous response's
+	//                    untracked_next). The poll asks for the first page
+	//                    only; older pages are fetched once, on scroll.
 	//   ?untracked_owner=me   only the caller's loose chats; absent = everyone's.
 	//                    Applied to the COUNT too, so the rail's number and its
 	//                    rows always describe the same set.
@@ -303,7 +304,18 @@ func apiProjectTickets(c *tool.Ctx) {
 	// opt-out spelling.
 	wantUntracked := isTrueish(c.Query("untracked"))
 	untrackedLimit := queryInt(c, "untracked_limit", defaultUntrackedLimit, 1, maxUntrackedLimit)
-	untrackedOffset := queryInt(c, "untracked_offset", 0, 0, maxUntrackedOffset)
+	// A cursor, not an offset — see railKey for why a row count skips chats.
+	// Unlike the clamped ints above, a bad one is refused: paging from a
+	// guessed place would silently draw the wrong rows.
+	var untrackedAfter *railKey
+	if raw := strings.TrimSpace(c.Query("untracked_after")); raw != "" {
+		k, err := decodeRailCursor(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		untrackedAfter = &k
+	}
 	// "me" resolves against the caller here, same as ?assignee=me. An
 	// untracked chat has no ticket, so ownership is the only "mine" there is.
 	untrackedOwner := ""
@@ -392,13 +404,13 @@ func apiProjectTickets(c *tool.Ctx) {
 	// board offer "Untracked (89)" as something to switch on without having
 	// paid to draw it.
 	untracked := []ticketSessionRow{}
-	page, untrackedTotal := pageLooseSessions(
+	page, untrackedNext, untrackedTotal := pageLooseSessions(
 		globalMgr.Registry().SessionIDs(), live, lc,
 		func(sid string, s session.Session) bool {
 			return s.Meta.ProjectID == id && s.Meta.ParentSessionID == "" && !ticketed[sid] &&
 				(untrackedOwner == "" || s.Meta.UserID == untrackedOwner)
 		},
-		untrackedOffset, untrackedLimit, wantUntracked,
+		untrackedAfter, untrackedLimit, wantUntracked,
 	)
 	for _, sid := range page {
 		untracked = append(untracked, sessionRow(sid, live, lc, ids))
@@ -411,6 +423,7 @@ func apiProjectTickets(c *tool.Ctx) {
 		Tickets:        cards,
 		Untracked:      untracked,
 		UntrackedTotal: untrackedTotal,
+		UntrackedNext:  untrackedNext,
 		// Board columns come from the project: a team names its own stages.
 		Statuses: cfg.StatusList(),
 	}
@@ -1344,31 +1357,39 @@ func apiTicketFilterSave(c *tool.Ctx) {
 	c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// pageLooseSessions picks one page of the untracked rail, in the sidebar's
-// order (running first, then newest by the pool's clock or the saved one),
+// pageLooseSessions picks one page of the untracked rail — the rows
+// strictly after `after` (nil = from the top), in the sidebar's order
+// (running first, then newest by the pool's clock or the saved one) —
 // without sorting every chat the project ever had.
 //
 // orderedIDs is the registry's list, already sorted by saved LastActive.
 // Only a session the pool knows about (or one queued) can rank anywhere
 // other than where that list puts it, and those are a handful — so they
-// are gathered whole, while the rest are taken in list order and the walk
-// stops collecting once it holds offset+limit of them: anything later is
-// older than every one already held and can never reach the page. The
-// merge of the two is then a sort of ~page-size items, not of thousands.
+// are gathered whole, while the rest are taken in list order, skipping any
+// at or before the cursor, and the walk stops collecting once it holds
+// `limit` of them: anything later is older than every one already held and
+// can never reach the page. It keeps collecting while the age still TIES
+// the last one held, since the id decides those and the registry's order
+// among equal ages is not the id's. The merge is then a sort of ~page-size
+// items, not of thousands.
 //
-// total counts every matching chat either way, because the header shows
-// "25/142" whether or not the rows were asked for.
+// next is the cursor of the page's last row, set only when more rows
+// follow it, so "no cursor" is the rail's "that was all". total counts every
+// matching chat either way, because the header shows "25/142" whether or
+// not the rows were asked for.
 func pageLooseSessions(
 	orderedIDs []string,
 	sessions map[string]session.Session,
 	lc map[string]view.SessionLifecycleVM,
 	keep func(sid string, s session.Session) bool,
-	offset, limit int,
+	after *railKey,
+	limit int,
 	wantRows bool,
-) (page []string, total int) {
-	need := offset + limit
+) (page []string, next string, total int) {
 	hot := make([]string, 0, 8)
-	cold := make([]string, 0, need)
+	cold := make([]string, 0, limit)
+	var coldLast int64
+	remaining := 0 // rows after the cursor, held or not
 	for _, sid := range orderedIDs {
 		s, ok := sessions[sid]
 		if !ok || !keep(sid, s) {
@@ -1378,24 +1399,30 @@ func pageLooseSessions(
 		if !wantRows {
 			continue
 		}
-		if _, live := lc[sid]; live || view.IsRunningStatus(view.SidebarRowStatus(s, lc[sid])) {
+		k := sidebarKey(sid, s, lc[sid])
+		if after != nil && !after.before(k) {
+			continue
+		}
+		remaining++
+		if _, live := lc[sid]; live || k.running {
 			hot = append(hot, sid)
 			continue
 		}
-		if len(cold) < need {
+		if len(cold) < limit || k.at == coldLast {
 			cold = append(cold, sid)
+			coldLast = k.at
 		}
 	}
-	if !wantRows || offset >= total {
-		return nil, total
+	if !wantRows || remaining == 0 {
+		return nil, "", total
 	}
 	merged := orderSidebarIDs(append(hot, cold...), sessions, lc)
-	if offset >= len(merged) {
-		return nil, total
+	if len(merged) > limit {
+		merged = merged[:limit]
 	}
-	end := offset + limit
-	if end > len(merged) {
-		end = len(merged)
+	if remaining > len(merged) {
+		last := merged[len(merged)-1]
+		next = sidebarKey(last, sessions[last], lc[last]).encode()
 	}
-	return merged[offset:end], total
+	return merged, next, total
 }

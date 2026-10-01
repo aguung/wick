@@ -527,3 +527,16 @@ describe("KanbanBoard — search", () => {
   });
 });
 
+
+/* "More to load" is the server's cursor, not drawn-vs-total: a drawn row that
+   has since left the set would make a count stop the rail a page early. */
+describe("KanbanBoard untracked paging", () => {
+  test("the rail offers more while the server sends a cursor", () => {
+    const { unmount } = renderWithRail({ board: { ...board, untracked_next: "c1" } });
+    const withCursor = screen.queryAllByTestId("scroll-sentinel").length;
+    unmount();
+    // 1 of 42 drawn, but no cursor: the server said that was all.
+    renderWithRail();
+    expect(screen.queryAllByTestId("scroll-sentinel").length).toBe(withCursor - 1);
+  });
+});

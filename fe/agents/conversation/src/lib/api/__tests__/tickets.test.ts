@@ -66,7 +66,7 @@ describe("tickets api", () => {
     expect(out.users).toEqual({});
   });
 
-  test("getProjectTickets asks for a later untracked page by offset, rows only", async () => {
+  test("getProjectTickets asks for a later untracked page by cursor, rows only", async () => {
     const captured: { method?: string; url?: string } = {};
     await Effect.runPromise(
       getProjectTickets(BASE, "p1", {
@@ -74,25 +74,26 @@ describe("tickets api", () => {
         statuses: [],
         untracked: true,
         untrackedLimit: 50,
-        untrackedOffset: 75,
+        untrackedAfter: "MHwxNzAwfHMwNzQ",
         untrackedOwner: "me",
       }).pipe(Effect.provide(captureLayer(captured, {}))),
     );
     const q = new URL(captured.url!, "http://x").searchParams;
-    expect(q.get("untracked_offset")).toBe("75");
+    expect(q.get("untracked_after")).toBe("MHwxNzAwfHMwNzQ");
+    expect(q.has("untracked_offset")).toBe(false);
     expect(q.get("untracked_limit")).toBe("50");
     expect(q.get("statuses")).toBe("");
     expect(q.get("untracked_owner")).toBe("me");
   });
 
-  test("the first page sends no offset", async () => {
+  test("the first page sends no cursor", async () => {
     const captured: { method?: string; url?: string } = {};
     await Effect.runPromise(
-      getProjectTickets(BASE, "p1", { untracked: true, untrackedLimit: 25, untrackedOffset: 0 }).pipe(
+      getProjectTickets(BASE, "p1", { untracked: true, untrackedLimit: 25, untrackedAfter: "" }).pipe(
         Effect.provide(captureLayer(captured, {})),
       ),
     );
-    expect(captured.url).not.toContain("untracked_offset");
+    expect(captured.url).not.toContain("untracked_after");
   });
 
   test("createTicket POSTs under the project", async () => {

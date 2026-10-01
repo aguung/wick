@@ -8,7 +8,8 @@ import (
 )
 
 // orderSidebarIDs puts running rows first (working / spawning / a working
-// sub-agent / queued), then everything else by last use, newest first.
+// sub-agent / queued), then everything else by last use, newest first,
+// then by id.
 //
 // It runs BEFORE the sidebar cap on purpose: "which one is running" is the
 // question the sidebar is scanned for, and a busy session that happened to
@@ -38,7 +39,13 @@ func orderSidebarIDs(ids []string, sessions map[string]session.Session, lc map[s
 		if rows[i].running != rows[j].running {
 			return rows[i].running
 		}
-		return rows[i].at > rows[j].at
+		if rows[i].at != rows[j].at {
+			return rows[i].at > rows[j].at
+		}
+		// The id breaks a tie so the order is total: the untracked rail
+		// pages by this key (railKey), and "after this row" needs every
+		// row to have exactly one place.
+		return rows[i].id < rows[j].id
 	})
 	out := make([]string, len(rows))
 	for i, r := range rows {
