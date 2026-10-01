@@ -239,6 +239,32 @@ const levelWriteInterval = 2 * time.Second
 //
 // Best-effort like the rest of this file — a ledger write must never
 // fail the turn that produced it.
+// recordLevelPoint appends a level-only point to the series (and sets the
+// level): a turn ended without its own usage. No turn counted, no flows.
+func (s *Store) recordLevelPoint(used int, at time.Time) error {
+	path := s.layout.SessionUsage(s.sessionID)
+	su, err := loadUsageFile(path)
+	if err != nil {
+		return err
+	}
+	su.SessionID = s.sessionID
+	key := s.provider
+	if key == "" {
+		key = "unknown"
+	}
+	p := su.Providers[key]
+	if p == nil {
+		p = &ProviderUsage{FirstAt: at}
+		su.Providers[key] = p
+	}
+	p.ContextUsed = used
+	p.Series = append(p.Series, UsagePoint{At: at, ContextUsed: used})
+	if n := len(p.Series); n > UsageSeriesMax {
+		p.Series = append(p.Series[:0], p.Series[n-UsageSeriesMax:]...)
+	}
+	return storage.WriteJSON(path, su)
+}
+
 func (s *Store) recordContextLevel(used int, at time.Time) error {
 	if used <= 0 {
 		return nil

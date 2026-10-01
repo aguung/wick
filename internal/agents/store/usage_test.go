@@ -1,6 +1,7 @@
 package store
 
 import (
+	"github.com/yogasw/wick/internal/agents/event"
 	"testing"
 	"time"
 
@@ -124,5 +125,41 @@ func TestRecordContextLevelIsThrottled(t *testing.T) {
 	su, _ = LoadSessionUsage(l, "s1")
 	if got := su.Providers["claude/default"].ContextUsed; got != 12_000 {
 		t.Fatalf("level = %d, want the reading past the interval to land", got)
+	}
+}
+
+// A turn stopped mid-way ends with a synthetic Done that carries no usage.
+// The level it climbed to must still land in the series, or the history
+// draws a flat line through the climb (session 292e2e51: 24k → 107k, then
+// Stop, and the chart showed neither).
+func TestStoppedTurnPlotsItsLastLevel(t *testing.T) {
+	l := usageLayout(t)
+	s := &Store{layout: l, sessionID: "s1", provider: "omp/yoga", now: time.Now}
+	for _, lvl := range []int{24_000, 60_000, 107_000} {
+		if _, err := s.Apply(event.AgentEvent{ContextUsed: lvl}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Apply(event.AgentEvent{Type: event.Done}); err != nil {
+		t.Fatal(err)
+	}
+	su, err := LoadSessionUsage(l, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := su.Providers["omp/yoga"]
+	if p == nil || len(p.Series) != 1 || p.Series[0].ContextUsed != 107_000 || p.ContextUsed != 107_000 {
+		t.Fatalf("stopped turn not plotted at its last level: %+v", p)
+	}
+	if p.Turns != 0 || p.UsageTotals != (UsageTotals{}) {
+		t.Fatalf("a level-only point counted a turn or flows: %+v", p)
+	}
+	// The next turn starts clean: a Done without levels plots nothing.
+	if _, err := s.Apply(event.AgentEvent{Type: event.Done}); err != nil {
+		t.Fatal(err)
+	}
+	su, _ = LoadSessionUsage(l, "s1")
+	if n := len(su.Providers["omp/yoga"].Series); n != 1 {
+		t.Fatalf("series = %d points, want 1", n)
 	}
 }
