@@ -995,25 +995,7 @@ func sidebarVMScoped(c *tool.Ctx, activePage, activeSessionID, scopedProjectID s
 	if sidebarOwner == "me" {
 		ids = ownedSessionIDs(c, ids, allSessions, scopedProjectID)
 	}
-	lc := make(map[string]view.SessionLifecycleVM)
-	liveBySession := make(map[string]string)
-	for _, e := range globalPool.ActiveSnapshot() {
-		entry := view.SessionLifecycleVM{Lifecycle: e.Lifecycle, PID: e.PID}
-		if !e.LastActive.IsZero() {
-			entry.LastActiveMs = e.LastActive.UnixMilli()
-		}
-		lc[e.SessionID] = entry
-		liveBySession[e.SessionID] = e.Lifecycle
-	}
-	// Sub-agents run under their own session ids, which have no sidebar row
-	// of their own, so their liveness is folded into the conversation that
-	// owns them. Without this a row goes dark as soon as the leader idles,
-	// even while its children are still working.
-	for root, sub := range rollUpSubAgentWork(liveBySession, sessionParentOf) {
-		entry := lc[root]
-		entry.SubAgent = sub
-		lc[root] = entry
-	}
+	lc := sidebarLifecycles()
 	// Running first, then last use — and only then the cap, so a busy
 	// session never falls off the list for being touched eleventh.
 	ids = orderSidebarIDs(ids, allSessions, lc)

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TicketCard, TicketField, TicketSessionRow } from "../types/agents.js";
   import { timeAgo } from "../timeFormat.js";
+  import { sessionRowBadge } from "../lifecycleCls.js";
   /* The clock, so a card's "5h ago" ages on its own instead of freezing at
      whatever it said when the board was drawn. */
   import { now } from "../stores/now.js";
@@ -238,8 +239,8 @@
               <path d="M6 4h.01M6 8h.01M6 12h.01M10 4h.01M10 8h.01M10 12h.01" stroke-linecap="round"></path>
             </svg>
             <span class="min-w-0 flex-1 truncate text-black-800 dark:text-black-600">{s.label || s.id}</span>
-            {#if s.lifecycle === "working"}
-              <span class="shrink-0 rounded bg-pos-100 px-1 text-[9px] font-medium text-pos-400">live</span>
+            {#if sessionRowBadge(s.lifecycle)}
+              <span class="shrink-0 rounded bg-pos-100 px-1 text-[9px] font-medium text-pos-400">{sessionRowBadge(s.lifecycle)}</span>
             {/if}
           </div>
         </li>

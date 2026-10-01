@@ -16,11 +16,12 @@
     saveTicketPrefs,
     type EmptiedTicket,
   } from "../api/tickets.js";
-  import type { TicketBoard, TicketFilter } from "../types/agents.js";
+  import type { TicketBoard, TicketFilter, TicketSessionRow } from "../types/agents.js";
   import { Composer } from "@wick-fe/common-ui";
   import { NOTIFY_KEY } from "../notify-pref.js";
   import SessionList from "./SessionList.svelte";
   import KanbanBoard from "./KanbanBoard.svelte";
+  import { mergeRail, keepPushedOff } from "../railPaging.js";
   import TicketDetail from "./TicketDetail.svelte";
   import OwnerTabs from "./OwnerTabs.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
@@ -169,9 +170,19 @@
      every visit to a project board starts back at "yours" — widening to
      everyone's loose chats is a per-look choice, not a standing one. */
   let untrackedOwner = $state<"me" | "all">("me");
-  /* One page of the rail; scrolling its end raises the limit (the server
-     caps at 200), and the raised limit re-keys the board request below. */
-  let untrackedLimit = $state(25);
+  /* The poll asks for the rail's FIRST page only. Older pages are fetched
+     once each, on scroll, and kept here — so a rail scrolled back through a
+     few hundred chats does not re-send all of them every 30 seconds. */
+  const UNTRACKED_PAGE = 25;
+  const UNTRACKED_MORE_PAGE = 50;
+  let untrackedMore = $state<TicketSessionRow[]>([]);
+  let loadingMoreUntracked = false;
+  /* The request the current board answered, so a poll can tell "the same
+     list moved" from "a different list". */
+  let boardKeyLoaded = "";
+  /* Chats this page just put on a ticket. They leave the rail for the rest
+     of the request even if a page loaded earlier still carries them. */
+  let trackedHere = $state(new Set<string>());
 
   /* The filter IS the request: statuses, assignee and the untracked rail all
      decide what the server builds, so a switched-off column costs nothing to
@@ -192,7 +203,7 @@
       statuses,
       assignee: ticketFilter.assignee || undefined,
       untracked: ticketFilter.show_untracked === true,
-      untrackedLimit,
+      untrackedLimit: UNTRACKED_PAGE,
       /* Your own loose chats by default — "all" is an explicit choice, and
          the count follows the scope so the rail's number and its rows always
          describe the same set. */
@@ -220,6 +231,10 @@
   $effect(() => {
     if (!filterLoaded) return;
     boardRequestKey; // the sole dependency: re-fetch when the request changes
+    // A different request (scope, filter, project) is a different list:
+    // the pages loaded under the old one no longer continue it.
+    untrackedMore = [];
+    trackedHere = new Set();
     reloadBoard();
   });
 
@@ -251,11 +266,59 @@
     return () => window.removeEventListener("popstate", onPop);
   });
 
+  /* Next page of the untracked rail, appended — see railPaging.ts for why
+     the offset is the drawn row count. */
+  function loadMoreUntracked() {
+    if (loadingMoreUntracked || !boardView) return;
+    loadingMoreUntracked = true;
+    const key = boardRequestKey;
+    const offset = boardView.untracked.length;
+    Effect.runPromise(
+      getProjectTickets(base, project.id, {
+        rows: 0,
+        statuses: [], // rows only — no cards
+        untracked: true,
+        untrackedLimit: UNTRACKED_MORE_PAGE,
+        untrackedOffset: offset,
+        untrackedOwner,
+      }).pipe(Effect.provide(WickClientLayer)),
+    )
+      .then((b) => {
+        if (key !== boardRequestKey) return; // the request changed meanwhile
+        const have = new Set([...(board?.untracked ?? []), ...untrackedMore].map((r) => r.id));
+        untrackedMore = [...untrackedMore, ...b.untracked.filter((r) => !have.has(r.id))];
+      })
+      .catch(() => { /* the sentinel offers it again on the next scroll */ })
+      .finally(() => { loadingMoreUntracked = false; });
+  }
+
+  /* The board as drawn: the polled first page, then the pages loaded on
+     scroll, minus any row the fresh first page now holds itself. */
+  const boardView = $derived.by(() => {
+    if (!board || untrackedMore.length === 0) return board;
+    return { ...board, untracked: mergeRail(board.untracked, untrackedMore, trackedHere) };
+  });
+
+  /* A chat the board just attached or turned into a ticket: off the rail. */
+  function sessionTracked(id: string) {
+    trackedHere = new Set(trackedHere).add(id);
+    untrackedMore = untrackedMore.filter((r) => r.id !== id);
+  }
+
   function reloadBoard() {
+    const key = boardRequestKey;
     Effect.runPromise(
       getProjectTickets(base, project.id, boardOptions).pipe(Effect.provide(WickClientLayer)),
     )
-      .then((b) => { board = b; })
+      .then((b) => {
+        if (key !== boardRequestKey) return; // superseded by a newer request
+        // Same list, moved: a chat pushed off page one stays on the rail.
+        if (board && boardKeyLoaded === key) {
+          untrackedMore = keepPushedOff(board.untracked, b.untracked, untrackedMore, trackedHere);
+        }
+        board = b;
+        boardKeyLoaded = key;
+      })
       .catch(() => { /* keep the previous board on a transient failure */ });
   }
 
@@ -507,15 +570,16 @@
           onNewSession={newSessionInTicket}
         />
       </div>
-    {:else if ticketEnabled && viewMode === "card" && board}
+    {:else if ticketEnabled && viewMode === "card" && boardView}
       <KanbanBoard
         {base}
         projectId={project.id}
-        {board}
+        board={boardView}
         filter={ticketFilter}
         {untrackedOwner}
-        onUntrackedOwner={(v) => { untrackedOwner = v; untrackedLimit = 25; }}
-        onUntrackedMore={() => { untrackedLimit = Math.min(200, untrackedLimit + 25); }}
+        onUntrackedOwner={(v) => { untrackedOwner = v; }}
+        onUntrackedMore={loadMoreUntracked}
+        onSessionTracked={sessionTracked}
         onFilter={applyFilter}
         onOpen={(id) => { gotoTicket(id); }}
         onOpenSession={onSelectSession}
