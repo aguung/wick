@@ -47,6 +47,22 @@ func TestLiveModelChoicesMatchDrillIn(t *testing.T) {
 		}
 	}
 
+	// A Refresh replaced the list: the old rows are not served under the
+	// new stamp; the next build carries the new list's groups.
+	restore := provider.SetCLIModelsForTest(known, "opencode/mimo-free", "openrouter/qwen", "anthropic/claude-x")
+	t.Cleanup(restore)
+	if rows, at2, _ := liveModelChoices(context.Background(), known); rows != nil {
+		t.Fatalf("old rows served after the list changed (stamp %v): %+v", at2, rows)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for rows = nil; rows == nil && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		rows, _, _ = liveModelChoices(context.Background(), known)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rebuilt rows = %+v, want the 3 groups of the new list", rows)
+	}
+
 	if rows, _, _ := liveModelChoices(context.Background(), mk("oc-cold")); rows != nil {
 		t.Fatalf("cold instance: %+v, want nil (listing never waits on a harvest)", rows)
 	}

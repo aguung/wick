@@ -1652,7 +1652,11 @@ func liveModelChoices(_ context.Context, ins provider.Instance) ([]view.ModelCho
 	if stale && !building {
 		go buildLiveRows(sets, ins, key, at)
 	}
-	if !ok || len(e.rows) <= 1 {
+	// Rows built from an older list (a Refresh since) would show models that
+	// may be gone under the new list's stamp: the flat list, which is the
+	// new one, until the rebuild lands. Past the TTL alone the list is the
+	// same, so the rows still describe it.
+	if !ok || len(e.rows) <= 1 || !e.listAt.Equal(at) {
 		return nil, time.Time{}, ""
 	}
 	return e.rows, at, src
