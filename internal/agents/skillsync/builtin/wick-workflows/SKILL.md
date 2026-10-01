@@ -51,7 +51,7 @@ If the task is a single prompt and a single reply, a workflow is overhead. Say s
 }
 ```
 
-Node types include `classify`, `agent`, `connector`, `http`, `shell`, `branch`, `parallel`, the `datatable_*` family, and `sticky_note` — a canvas-only annotation (fields `content`, `color`, `width`, `height`) that never executes and takes no edges. Do not guess a node's schema — fetch it (see *Authoring over MCP* below).
+Node types include `classify`, `agent`, `connector`, `http`, `shell`, `branch`, `parallel`, the `datatable_*` family, and `sticky_note` — a canvas-only annotation (fields `content`, `color`, `width`, `height`, `texts`) that never executes and takes no edges. Do not guess a node's schema — fetch it (see *Authoring over MCP* below).
 
 ## Triggers
 
@@ -104,7 +104,7 @@ These keep a workflow readable by the next person — human or AI — who opens 
    // Output: {"ticket_id": "T-123"} atau {"ticket_id": ""}
    ```
 
-3. **Group each path with a `sticky_note` node.** Add it with `workflow_add_node` (`type: sticky_note`, `content` = markdown title of the path + a short summary, `color` one of yellow/green/blue/purple/red/gray, `width`/`height` big enough to cover the block). It renders behind the block's nodes. Its `content` counts as its description. There is no separate note op — `workflow_update_node`, `workflow_move_nodes` and `workflow_delete_node` handle it like any node.
+3. **Group each path with a `sticky_note` node.** Add it with `workflow_add_node` (`type: sticky_note`, `content` = markdown title of the path + a short summary, `color` one of yellow/green/blue/purple/red/gray, `width`/`height` big enough to cover the block). It renders behind the block's nodes. The note is a board: `content` is its title (plain markdown, top left). To pin several annotations on it (like writing on a screenshot), set `texts`: `[{id, content, x, y, width, color, size}]` — each is a small sticky card; `x`/`y` (top-left of the card) and `width` are relative 0..1 to the note, so cards follow it on resize; `color` uses the same presets (default yellow), `size` is the font size `sm`/`md`/`lg` (default md). E.g. the flow explanation in the empty column on the right at `{x:0.55, y:0.15, width:0.4, color:"blue"}`. Its `content` or any `texts[].content` counts as its description. There is no separate note op — `workflow_update_node`, `workflow_move_nodes` and `workflow_delete_node` handle it like any node.
 4. **After every graph edit, tidy the canvas.** One column per trigger, top→bottom, parallel branches in the column next to it, no crossing edges, each sticky note wrapping its block. `workflow_auto_layout` does the lanes (it leaves sticky notes where they are, so re-wrap them with `workflow_move_nodes`); check `workflow_canvas_view` before `workflow_publish`.
 5. **Plan, do not poll.** Every mutation returns the whole workflow, so plan the edits up front, batch moves in one `workflow_move_nodes`, and do not call `workflow_get` between edits to "see" a result you already have.
 

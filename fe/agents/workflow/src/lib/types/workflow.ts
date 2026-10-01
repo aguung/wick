@@ -31,6 +31,21 @@ export type NodeType =
 
 export type StickyNoteColor = "yellow" | "green" | "blue" | "purple" | "red" | "gray";
 
+export type StickyTextSize = "sm" | "md" | "lg";
+
+// One small sticky card on a sticky_note board: top-left corner (x, y)
+// and card width, all relative 0..1 to the board so cards follow a
+// resize. Color "" = yellow, size "" = md.
+export type StickyText = {
+  id: string;
+  content: string;
+  x: number;
+  y: number;
+  width?: number;
+  color?: StickyNoteColor;
+  size?: StickyTextSize;
+};
+
 export type TriggerType =
   | "cron"
   | "channel"
@@ -191,6 +206,9 @@ export type Node = {
   color?: StickyNoteColor;
   width?: number;
   height?: number;
+  // The note is a board: content is its title, texts are small sticky
+  // cards placed on it (x/y/width relative 0..1 to the board).
+  texts?: StickyText[];
 
   // canvas position (engine ignores; canvas persists)
   _canvas?: { x?: number; y?: number };

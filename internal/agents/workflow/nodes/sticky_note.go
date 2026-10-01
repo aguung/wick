@@ -21,7 +21,7 @@ func (e *StickyNoteExecutor) Descriptor() engine.NodeDescriptor {
 		Label:       "Sticky note",
 		Badge:       "note",
 		Description: "Canvas-only markdown annotation drawn behind nodes to frame and explain a block of steps. Never executes, takes no edges.",
-		WhenToUse:   "Group a lane/block of nodes: put the title + summary (what for + why) in content and size it to cover the block. Move/resize with workflow_move_nodes / workflow_update_node {width,height}.",
+		WhenToUse:   "Group a lane/block of nodes: put the title + summary (what for + why) in content and size it to cover the block. content is the board title; for annotations placed freely on it set texts [{id,content,x,y,width,color,size}] = small sticky cards (x/y/width relative 0..1, color presets, size sm|md|lg; e.g. explanation {x:0.55,y:0.15,width:0.4,color:blue}). Move/resize with workflow_move_nodes / workflow_update_node {width,height}.",
 		Schema:      integration.StructSchema(stickyNoteSchema{}),
 	}
 }

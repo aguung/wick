@@ -65,3 +65,27 @@ func TestConnect_StickyNoteRejected(t *testing.T) {
 		}
 	}
 }
+
+// texts arrives from MCP as []any of JSON objects.
+func TestUpdateNode_StickyNoteTexts(t *testing.T) {
+	svc := newStub("wf")
+	w := svc.workflows["wf"]
+	w.Graph.Nodes = append(w.Graph.Nodes, workflow.Node{ID: "note", Type: workflow.NodeStickyNote, Content: "# Lane A"})
+	svc.workflows["wf"] = w
+
+	_, err := newCanvas(svc).UpdateNode("wf", "note", map[string]any{"texts": []any{
+		map[string]any{"id": "t1", "content": "# Lane A", "x": 0.03, "y": 0.02},
+		map[string]any{"id": "t2", "content": "why", "x": 0.55, "y": 0.1, "width": 0.4, "color": "blue", "size": "lg"},
+	}})
+	if err != nil {
+		t.Fatalf("UpdateNode texts: %v", err)
+	}
+	got, _ := findNode(svc.workflows["wf"].Graph.Nodes, "note")
+	if len(got.Texts) != 2 || got.Texts[1].ID != "t2" || got.Texts[1].X != 0.55 || got.Texts[1].Width != 0.4 || got.Texts[1].Color != "blue" || got.Texts[1].Size != "lg" {
+		t.Fatalf("texts not applied: %+v", got.Texts)
+	}
+
+	if _, err := newCanvas(svc).UpdateNode("wf", "note", map[string]any{"texts": "nope"}); err == nil {
+		t.Fatal("expected malformed texts to fail")
+	}
+}

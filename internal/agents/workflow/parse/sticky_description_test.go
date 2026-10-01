@@ -81,3 +81,26 @@ func TestValidate_MissingDescriptionWarns(t *testing.T) {
 		}
 	}
 }
+
+// A note whose only prose lives in texts still counts as described;
+// out-of-range placement and duplicate ids warn but never block.
+func TestValidate_StickyTexts(t *testing.T) {
+	w := stickyWorkflow()
+	w.Graph.Nodes[1].Content = ""
+	w.Graph.Nodes[1].Texts = []workflow.StickyText{{ID: "t1", Content: "# Block A", X: 0.03, Y: 0.02, Width: 0.94, Color: "blue", Size: "lg"}}
+	if r := Validate(w); !r.Ok() || len(r.Warnings) != 0 {
+		t.Fatalf("texts as description: errors=%v warnings=%v", r.Errors, r.Warnings)
+	}
+
+	w.Graph.Nodes[1].Texts = append(w.Graph.Nodes[1].Texts,
+		workflow.StickyText{ID: "t1", Content: "dup", X: 1.4, Y: -0.1, Width: 2, Color: "pink", Size: "xl"})
+	r := Validate(w)
+	if !r.Ok() {
+		t.Fatalf("bad texts must warn, not error: %v", r.Errors)
+	}
+	for _, want := range []string{"duplicate sticky text id", "texts[1] x/y", "texts[1].width", "texts[1].color", "texts[1].size"} {
+		if !hasMsg(r.Warnings, want) {
+			t.Errorf("missing warning %q in %v", want, r.Warnings)
+		}
+	}
+}

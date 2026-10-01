@@ -239,6 +239,9 @@ func Validate(w workflow.Workflow) *Result {
 		desc := n.Description
 		if n.Type.IsAnnotation() {
 			desc = n.Content
+			for _, t := range n.Texts {
+				desc += t.Content
+			}
 		}
 		if strings.TrimSpace(desc) == "" {
 			field := ".description"
@@ -618,6 +621,7 @@ func validateNodeBody(r *Result, path string, n workflow.Node) {
 		if n.Width < 0 || n.Height < 0 {
 			r.Errors = append(r.Errors, Error{Path: path, Message: "width/height must be >= 0"})
 		}
+		validateStickyTexts(r, path, n.Texts)
 	case workflow.NodeWebhookRespond:
 		// no required fields — respond_status/body/headers all optional
 	case workflow.NodeSessionInit:
@@ -836,4 +840,33 @@ func triggerReachesRespondNode(g workflow.Graph, entryNodeID string) bool {
 		}
 	}
 	return false
+}
+
+// validateStickyTexts warns (never blocks) on sticky_note cards placed
+// outside the board, sharing an id, or with an unknown color/size — the
+// canvas clamps / falls back to the default on the next edit.
+func validateStickyTexts(r *Result, path string, texts []workflow.StickyText) {
+	ids := map[string]bool{}
+	for i, t := range texts {
+		tp := fmt.Sprintf("%s.texts[%d]", path, i)
+		switch {
+		case t.ID == "":
+			r.Warnings = append(r.Warnings, Error{Path: tp + ".id", Message: "sticky text has no id"})
+		case ids[t.ID]:
+			r.Warnings = append(r.Warnings, Error{Path: tp + ".id", Message: fmt.Sprintf("duplicate sticky text id %q", t.ID)})
+		}
+		ids[t.ID] = true
+		if t.X < 0 || t.X > 1 || t.Y < 0 || t.Y > 1 {
+			r.Warnings = append(r.Warnings, Error{Path: tp, Message: "x/y are relative to the note and must be within 0..1"})
+		}
+		if t.Width < 0 || t.Width > 1 {
+			r.Warnings = append(r.Warnings, Error{Path: tp + ".width", Message: "width is relative to the note and must be within 0..1 (0 = default)"})
+		}
+		if t.Color != "" && !slices.Contains(workflow.StickyNoteColors, t.Color) {
+			r.Warnings = append(r.Warnings, Error{Path: tp + ".color", Message: fmt.Sprintf("%q is not a sticky note color (%s); rendered as yellow", t.Color, strings.Join(workflow.StickyNoteColors, ", "))})
+		}
+		if t.Size != "" && !slices.Contains(workflow.StickyTextSizes, t.Size) {
+			r.Warnings = append(r.Warnings, Error{Path: tp + ".size", Message: fmt.Sprintf("%q is not a sticky text size (%s); rendered as md", t.Size, strings.Join(workflow.StickyTextSizes, ", "))})
+		}
+	}
 }

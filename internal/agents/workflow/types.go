@@ -299,7 +299,28 @@ type Node struct {
 	Color   string `json:"color,omitempty"`
 	Width   int    `json:"width,omitempty"`
 	Height  int    `json:"height,omitempty"`
+	// The note is a board: Content is its title (plain markdown, top
+	// left) and Texts are small sticky cards placed freely on it.
+	Texts []StickyText `json:"texts,omitempty"`
 }
+
+// StickyText is one small sticky card on a sticky_note board. X/Y are
+// the top-left corner and Width the card width (0 = 0.4), all relative
+// 0..1 to the board's size, so cards follow the board when it is
+// resized. Color is a StickyNoteColors preset ("" = yellow); Size is a
+// StickyTextSizes font size ("" = md).
+type StickyText struct {
+	ID      string  `json:"id"`
+	Content string  `json:"content"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Width   float64 `json:"width,omitempty"`
+	Color   string  `json:"color,omitempty"`
+	Size    string  `json:"size,omitempty"`
+}
+
+// Sticky card font sizes. Empty Size renders as md.
+var StickyTextSizes = []string{"sm", "md", "lg"}
 
 // OnFailure values.
 const (

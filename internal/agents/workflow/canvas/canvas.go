@@ -8,6 +8,7 @@
 package canvas
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -548,7 +549,7 @@ func applyNodePatch(n *workflow.Node, patch map[string]any) error {
 		"expression": {}, "engine": {}, "result": {},
 		"max_turns": {}, "skills": {}, "tools": {},
 		// go_script body + sticky_note fields.
-		"code": {}, "content": {}, "color": {}, "width": {}, "height": {},
+		"code": {}, "content": {}, "color": {}, "width": {}, "height": {}, "texts": {},
 	}
 	var unknown []string
 	for k := range patch {
@@ -649,6 +650,19 @@ func applyNodePatch(n *workflow.Node, patch map[string]any) error {
 		n.Height = v
 	case float64:
 		n.Height = int(v)
+	}
+	if v, ok := patch["texts"]; ok {
+		// Round-trip through JSON: the patch arrives as []any of maps
+		// from MCP, or already typed from Go callers.
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("texts: %w", err)
+		}
+		var texts []workflow.StickyText
+		if err := json.Unmarshal(raw, &texts); err != nil {
+			return fmt.Errorf("texts: want [{id,content,x,y,width,color,size}]: %w", err)
+		}
+		n.Texts = texts
 	}
 	switch v := patch["max_turns"].(type) {
 	case int:
