@@ -150,15 +150,23 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 	if !refresh {
 		stamp := AuthStamp(ins)
 		cliModelsMu.Lock()
-		e, ok := cliModelsCache[key]
+		e, ok := cliModelsLookup(ins, key)
 		cliModelsMu.Unlock()
 		if ok && e.authStamp == stamp && (len(e.models) > 0 || e.err != nil) {
+			return e.models, e.at, e.err
+		}
+		// A known list whose account files moved since (omp writes its
+		// own on every turn, a restart reads the file back): serve it at
+		// once and re-read the harvester in the background — the picker
+		// never waits on a list it already has.
+		if ok && len(e.models) > 0 {
+			HarvestCLIModels(ins)
 			return e.models, e.at, e.err
 		}
 		if hm, src := harvest(ctx, ins); len(hm) > 0 {
 			cliModelsMu.Lock()
 			e = cliModelsEntry{models: hm, at: cliModelsNow(), source: src, authStamp: stamp}
-			cliModelsCache[key] = e
+			cliModelsStore(ins, key, e)
 			cliModelsMu.Unlock()
 			return e.models, e.at, nil
 		}
@@ -166,7 +174,7 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 	}
 	for {
 		cliModelsMu.Lock()
-		e, ok := cliModelsCache[key]
+		e, ok := cliModelsLookup(ins, key)
 		if ok && e.err == nil && e.source == "cli" && cliModelsNow().Sub(e.at) < cliModelsMinRefresh {
 			cliModelsMu.Unlock()
 			return e.models, e.at, e.err // just fetched: a refresh now would only burn a process
@@ -188,10 +196,10 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 		cliModelsMu.Lock()
 		e = cliModelsEntry{models: models, err: err, at: cliModelsNow(), source: "cli", authStamp: AuthStamp(ins)}
 		// A failed refresh keeps the last good list on screen/in the picker.
-		if prev, had := cliModelsCache[key]; err != nil && had && prev.err == nil {
+		if prev, had := cliModelsLookup(ins, key); err != nil && had && prev.err == nil {
 			e.models = prev.models
 		}
-		cliModelsCache[key] = e
+		cliModelsStore(ins, key, e)
 		delete(cliModelsInflight, key)
 		close(done)
 		cliModelsMu.Unlock()
@@ -204,7 +212,7 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 func CLIModelsInfo(ins Instance) (time.Time, string) {
 	cliModelsMu.Lock()
 	defer cliModelsMu.Unlock()
-	e := cliModelsCache[cliModelsKey(ins)]
+	e, _ := cliModelsLookup(ins, cliModelsKey(ins))
 	return e.at, e.source
 }
 
@@ -215,7 +223,7 @@ func CLIModelsInfo(ins Instance) (time.Time, string) {
 func PeekCLIModels(ins Instance) []ModelSeed {
 	key := cliModelsKey(ins)
 	cliModelsMu.Lock()
-	e, ok := cliModelsCache[key]
+	e, ok := cliModelsLookup(ins, key)
 	cliModelsMu.Unlock()
 	if !ok {
 		go func() {
@@ -261,7 +269,7 @@ func HarvestCLIModels(ins Instance) {
 			return
 		}
 		cliModelsMu.Lock()
-		cliModelsCache[key] = cliModelsEntry{models: hm, at: cliModelsNow(), source: src, authStamp: AuthStamp(ins)}
+		cliModelsStore(ins, key, cliModelsEntry{models: hm, at: cliModelsNow(), source: src, authStamp: AuthStamp(ins)})
 		cliModelsMu.Unlock()
 	}()
 }
@@ -401,6 +409,6 @@ func SetCLIModelsForTest(ins Instance, ids ...string) (restore func()) {
 // login), where the minimum refresh interval must not serve the old one.
 func InvalidateCLIModels(ins Instance) {
 	cliModelsMu.Lock()
-	delete(cliModelsCache, cliModelsKey(ins))
+	cliModelsDrop(ins, cliModelsKey(ins))
 	cliModelsMu.Unlock()
 }

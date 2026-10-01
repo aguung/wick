@@ -82,7 +82,7 @@ func StalePin(ins *Instance, pin string) (string, bool) {
 func cachedCLIModelsOnly(ins Instance) []ModelSeed {
 	cliModelsMu.Lock()
 	defer cliModelsMu.Unlock()
-	if e, ok := cliModelsCache[cliModelsKey(ins)]; ok && e.err == nil {
+	if e, ok := cliModelsLookup(ins, cliModelsKey(ins)); ok && e.err == nil {
 		return e.models
 	}
 	return nil
