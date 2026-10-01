@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { apiGetE, apiPostE } from "@wick-fe/common-api";
-import { withModelListMeta } from "@wick-fe/common-ui";
+import { withModelListMeta, optionModelsWithMeta } from "@wick-fe/common-ui";
 import type { ProviderOption, ProviderModelOption, ProjectOption } from "../types/agents.js";
 
 export const getProviderOptions = (base: string) =>
@@ -9,7 +9,7 @@ export const getProviderOptions = (base: string) =>
       (r ?? []).map((p) => ({
         ...p,
         usesAIRouter: p.usesAIRouter ?? p.uses_airouter ?? false,
-        models: p.models ?? undefined,
+        models: optionModelsWithMeta(p),
       })),
     ),
   );

@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import Composer from "../Composer.svelte";
+import { optionModelsWithMeta } from "../model-list-meta.js";
 
 describe("Composer — send + attachments", () => {
   test("clicking Send with text calls onSend and clears the textarea", async () => {
@@ -115,6 +116,29 @@ describe("Composer — toolbar dropdowns + bell", () => {
     // Picking a model pins it as "value::modelID".
     await fireEvent.click(screen.getByText("Model B"));
     expect(onChange).toHaveBeenCalledWith("wick/wick::m-b");
+  });
+
+  test("a known live list opens with its rows and stamp before the drill-in fetch returns", async () => {
+    // The fetch never settles: what shows is the option row's own list.
+    const loadModels = vi.fn(() => new Promise<never>(() => {}));
+    const models = optionModelsWithMeta({
+      models: [
+        { id: "openai-codex", label: "openai-codex", default: true, live: true },
+        { id: "anthropic", label: "anthropic", default: false, live: true },
+      ],
+      models_fetched_at: "2026-10-01T08:25:00Z",
+      models_source: "files",
+    });
+    render(Composer, {
+      props: {
+        onSend: vi.fn(),
+        provider: { options: [{ label: "omp · waba", value: "omp/waba", models }], value: "omp/waba", onChange: vi.fn(), loadModels },
+      },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /provider/i }));
+    expect(loadModels).toHaveBeenCalledWith("omp/waba");
+    expect(screen.getByText("anthropic")).toBeDefined();
+    expect(screen.getByTestId("composer-models-updated").textContent).toContain("files");
   });
 
   test("drilled provider offers a 'Use default' row that pins the provider without a model", async () => {

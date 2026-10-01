@@ -26,6 +26,23 @@ export function withModelListMeta<T>(
   return list;
 }
 
+/** An option row's `models` with the stamp /providers/options sends next to
+    them (models_fetched_at / models_source / models_can_refresh), so the
+    picker shows "Updated … · files" before its drill-in fetch returns. */
+export function optionModelsWithMeta<T>(p: {
+  models?: T[] | null;
+  models_fetched_at?: string;
+  models_source?: string;
+  models_can_refresh?: boolean;
+}): T[] | undefined {
+  if (!p.models) return undefined;
+  return withModelListMeta(p.models, {
+    fetched_at: p.models_fetched_at,
+    source: p.models_source,
+    can_refresh: p.models_can_refresh,
+  });
+}
+
 /** The meta withModelListMeta attached, if any. */
 export function modelListMeta(list: unknown): ModelListMeta | undefined {
   if (!list || typeof list !== "object") return undefined;

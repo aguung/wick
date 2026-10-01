@@ -500,7 +500,7 @@ func saveProviderInstance(c *tool.Ctx) {
 			}
 		}
 	}
-	if mode :=strings.TrimSpace(c.Form("storage_mode")); mode != "" {
+	if mode := strings.TrimSpace(c.Form("storage_mode")); mode != "" {
 		ins.Storage = &provider.StorageConfig{
 			Mode:            mode,
 			SyncPath:        strings.TrimSpace(c.Form("storage_path")),
@@ -1608,15 +1608,46 @@ func providerChoicesCached(ctx context.Context) []view.ProviderChoiceVM {
 		if st.Instance.Disabled {
 			continue
 		}
-		out = append(out, view.ProviderChoiceVM{
+		vm := view.ProviderChoiceVM{
 			Type:         string(st.Instance.Type),
 			Name:         st.Instance.Name,
 			Version:      st.Version,
 			UsesAIRouter: st.Instance.UseAIRouter,
 			Models:       modelChoicesForList(st.Instance),
-		})
+		}
+		if rows, at, src := liveModelChoices(ctx, st.Instance); rows != nil {
+			vm.Models, vm.ModelsAt, vm.ModelsSource = rows, at, src
+		}
+		out = append(out, vm)
 	}
 	return out
+}
+
+// liveModelChoices is an omp/opencode instance's grouped first level (the
+// rows the drill-in endpoint returns: provider → account → model), built
+// from a list already known in memory or on disk. The picker then opens on
+// its final shape instead of a flat list that is swapped a moment later.
+// nil while cold: listing providers never waits on a harvest.
+func liveModelChoices(ctx context.Context, ins provider.Instance) ([]view.ModelChoiceVM, time.Time, string) {
+	if !provider.LiveModelsEnabled(ins) || !ins.ModelSelect {
+		return nil, time.Time{}, ""
+	}
+	sets, grouped := provider.ModelSetsFor(ins.Type)
+	at, src := provider.CLIModelsInfo(ins)
+	if !grouped || at.IsZero() {
+		return nil, time.Time{}, ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	rows, err := sets.Sets(ctx, ins)
+	if err != nil || len(rows) <= 1 {
+		return nil, time.Time{}, ""
+	}
+	out := make([]view.ModelChoiceVM, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, view.ModelChoiceVM{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps})
+	}
+	return out, at, src
 }
 
 // modelChoicesForList is the top-level provider-list variant: it collapses a

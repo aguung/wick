@@ -1,0 +1,40 @@
+package agents
+
+import (
+	"context"
+	"testing"
+
+	"github.com/yogasw/wick/internal/agents/provider"
+)
+
+// The provider list carries an omp/opencode instance's known live list in
+// the grouped shape the drill-in returns, so the picker does not open on a
+// flat list and swap it a moment later; a cold instance carries none.
+func TestLiveModelChoicesMatchDrillIn(t *testing.T) {
+	t.Cleanup(provider.SetModelStateDirForTest(t.TempDir()))
+	mk := func(name string) provider.Instance {
+		return provider.Instance{Type: provider.TypeOpencode, Name: name, LiveModels: true, ModelSelect: true,
+			OpencodeConfig: &provider.OpencodeConfig{DataDir: t.TempDir(), AllowHosted: true}}
+	}
+	known := mk("oc-known")
+	t.Cleanup(provider.SetCLIModelsForTest(known, "opencode/mimo-free", "opencode/nemotron-free", "openrouter/qwen"))
+
+	rows, at, _ := liveModelChoices(context.Background(), known)
+	if at.IsZero() || len(rows) != 2 {
+		t.Fatalf("known list: rows=%+v at=%v, want the 2 provider groups with a stamp", rows, at)
+	}
+	sets, _ := provider.ModelSetsFor(known.Type)
+	want, err := sets.Sets(context.Background(), known)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if rows[i].ID != want[i].ID || rows[i].Label != want[i].Label || rows[i].Live != want[i].Live || rows[i].Default != want[i].Default {
+			t.Fatalf("row %d = %+v, drill-in has %+v", i, rows[i], want[i])
+		}
+	}
+
+	if rows, _, _ := liveModelChoices(context.Background(), mk("oc-cold")); rows != nil {
+		t.Fatalf("cold instance: %+v, want nil (listing never waits on a harvest)", rows)
+	}
+}

@@ -2509,6 +2509,10 @@ func providerOptionsJSON(c *tool.Ctx) {
 		// non-wick rows clean. ShowCaps is a pointer so "false" round-trips.
 		ShowCaps *bool  `json:"show_capabilities,omitempty"`
 		CapsMode string `json:"capability_display_mode,omitempty"`
+		// The live list's stamp, same meaning as on the drill-in endpoint.
+		FetchedAt  string `json:"models_fetched_at,omitempty"`
+		Source     string `json:"models_source,omitempty"`
+		CanRefresh bool   `json:"models_can_refresh,omitempty"`
 	}
 	// Access-tag filtered: this endpoint feeds every provider picker in
 	// the product, so one filter here covers the composer, the project
@@ -2521,6 +2525,10 @@ func providerOptionsJSON(c *tool.Ctx) {
 			models = append(models, model{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps})
 		}
 		o := option{Type: p.Type, Name: p.Name, Version: p.Version, UsesAIRouter: p.UsesAIRouter, Models: models}
+		if !p.ModelsAt.IsZero() {
+			o.FetchedAt, o.Source = p.ModelsAt.UTC().Format(time.RFC3339), p.ModelsSource
+			o.CanRefresh = canManageProvider(c, provider.Type(p.Type), p.Name)
+		}
 		if p.Type == string(provider.TypeWick) {
 			show, mode := wickCapabilityPrefs()
 			o.ShowCaps = &show

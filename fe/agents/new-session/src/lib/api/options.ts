@@ -1,4 +1,4 @@
-import { withModelListMeta } from "@wick-fe/common-ui";
+import { withModelListMeta, optionModelsWithMeta } from "@wick-fe/common-ui";
 import { Effect } from "effect";
 import { apiGetE } from "@wick-fe/common-api";
 import type { ModelCaps } from "@wick-fe/common-ui";
@@ -46,7 +46,7 @@ export type ProjectOption = {
 export const getProviderOptions = (base: string) =>
   apiGetE<(ProviderOption & { uses_airouter?: boolean })[] | null>(`${base}/providers/options`).pipe(
     Effect.map((r) =>
-      (r ?? []).map((p) => ({ ...p, usesAIRouter: p.usesAIRouter ?? p.uses_airouter ?? false })),
+      (r ?? []).map((p) => ({ ...p, usesAIRouter: p.usesAIRouter ?? p.uses_airouter ?? false, models: optionModelsWithMeta(p) })),
     ),
   );
 

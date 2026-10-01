@@ -1317,7 +1317,7 @@
                 </div>
               {/each}
             </div>
-            {@const drillMeta = modelMeta[inSet ? setCacheKey(drill.value, inSet) : drill.value]}
+            {@const drillMeta = modelMeta[inSet ? setCacheKey(drill.value, inSet) : drill.value] ?? (inSet ? undefined : modelListMeta(drill.models))}
             {#if drillMeta}
               <div class="flex items-center justify-between gap-2 border-t border-white-300 dark:border-navy-600 px-3 py-1.5 text-[11px] text-black-700 dark:text-black-600" data-testid="composer-models-updated">
                 <span>{describeModelListMeta(drillMeta)}</span>
