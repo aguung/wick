@@ -741,6 +741,19 @@ func NewServer() *Server {
 		return wb, wa, func() { g.ReleaseScope(unit) }
 	}
 	upgrade.Register("provider binary installs", managedbin.Default.InflightCount)
+	// Provider helper processes (omp/opencode model listings, export/
+	// import, usage and auth-broker probes, version probes) run under the
+	// same policy as agent spawns, each with its instance's own limit —
+	// see provider.HelperCommand.
+	provider.HelperGuard = agentsFactory.MemGuardLoader
+	// Every helper is recorded; the reaper kills any still running past
+	// its deadline, and helper scopes a previous wick left are stopped.
+	provider.StartHelperReaper(context.Background())
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		provider.CleanupStaleHelperScopes(ctx)
+	}()
 	// Web terminals (gotty) run their command in the same memory scope an
 	// agent spawn gets; gotty and everything under it share one scope.
 	terminal.Default.Wrap = func(bin string, args []string) (string, []string, func()) {
@@ -1253,7 +1266,8 @@ func NewServer() *Server {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = provider.RescanAll(ctx)
+		// Fresh persisted probes (<24h, same binary) are not re-spawned.
+		_ = provider.RescanStale(ctx)
 	}()
 
 	// ── Gate: ApprovalManager (shared socket + initial spec.json) ────────

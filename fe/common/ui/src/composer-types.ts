@@ -71,7 +71,7 @@ export type ComposerSelect = {
      as encodePin(path, model) = "<path>@<model>". */
   loadModels?: (
     optionValue: string,
-    opts?: { entry?: string },
+    opts?: { entry?: string; refresh?: boolean },
   ) => Promise<ComposerModelOption[]>;
   /** Render capability chips on model rows. Default true (undefined = show). */
   showCapabilities?: boolean;

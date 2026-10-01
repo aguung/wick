@@ -166,9 +166,15 @@ func FetchOpencodeCatalog(ctx context.Context, ins Instance) (*OpencodeCatalog, 
 	return e.cat, e.err
 }
 
+// opencodeCatalogTTL is how often a render re-reads the catalog from the
+// instance's RUNNING server. That read never starts one: without
+// WithHelperSpawn the fetcher only asks a live `opencode serve`.
+const opencodeCatalogTTL = 10 * time.Minute
+
 // PeekOpencodeCatalog returns the cached catalog for ins (possibly stale,
 // nil when none was ever fetched) without blocking, and starts a
-// background fetch when it is cold or expired. For render paths.
+// background fetch when it is cold or expired. For render paths: the fetch
+// reads a running `opencode serve` only, never a throwaway one.
 func PeekOpencodeCatalog(ins Instance) *OpencodeCatalog {
 	if OpencodeCatalogFetcher == nil || ins.Type != TypeOpencode {
 		return nil
@@ -177,7 +183,7 @@ func PeekOpencodeCatalog(ins Instance) *OpencodeCatalog {
 	opencodeCatalogMu.Lock()
 	e, ok := opencodeCatalogCache[key]
 	_, busy := opencodeCatalogInflight[key]
-	ttl := cliModelsTTL
+	ttl := opencodeCatalogTTL
 	if e.err != nil {
 		ttl = opencodeCatalogRetry
 	}

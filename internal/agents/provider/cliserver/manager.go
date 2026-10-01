@@ -23,6 +23,7 @@ package cliserver
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -314,6 +315,44 @@ func (m *Manager[H]) RetireKey(key string) {
 	}
 	m.mu.Unlock()
 	m.killAll(victims, "stale server stopped")
+}
+
+// RetireGroups is Retire for every server whose (instance, group) match
+// reports true: a transcript another instance now writes must not stay
+// open, stale, in a process that could serve it again.
+func (m *Manager[H]) RetireGroups(match func(instance, group string) bool) {
+	m.mu.Lock()
+	victims := m.markLocked(func(s *server[H]) bool { return match(s.instance, s.group) }, "")
+	m.mu.Unlock()
+	m.killAll(victims, "stale server stopped")
+}
+
+// RetireIdle stops every warm server that is idle — started, alive, not
+// stale, and holding no lease (no turn running, none queued for it) —
+// unless keep(instance, group) says it serves the spawn about to start.
+// Oldest-idle first. Returns how many it stopped. A busy or queued server
+// is never touched: it stays until its last lease is released.
+func (m *Manager[H]) RetireIdle(keep func(instance, group string) bool) int {
+	m.mu.Lock()
+	var idle []*server[H]
+	for _, s := range m.servers {
+		if !s.isReady() || !s.started || s.stale || s.dead() || s.active > 0 {
+			continue
+		}
+		if keep != nil && keep(s.instance, s.group) {
+			continue
+		}
+		idle = append(idle, s)
+	}
+	sort.Slice(idle, func(i, j int) bool { return idle[i].lastUsed.Before(idle[j].lastUsed) })
+	var victims []*server[H]
+	for _, s := range idle {
+		s.stale = true
+		victims = append(victims, m.dropLocked(s)...)
+	}
+	m.mu.Unlock()
+	m.killAll(victims, "idle server stopped so another spawn gets its memory")
+	return len(victims)
 }
 
 func (m *Manager[H]) retireLocked(instance, keep string) []*server[H] {

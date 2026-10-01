@@ -61,7 +61,7 @@ func (s *Service) Route(ctx context.Context, in RouteInput) []Dispatch {
 		return nil
 	}
 
-	rootID := s.RootForSession(ctx, in.SessionID)
+	rootID := s.rootForMention(ctx, in.SessionID, in.Text)
 	res, err := s.NewResolver(ctx, rootID, in.ProjectID)
 	if err != nil {
 		log.Warn().Err(err).Str("session", in.SessionID).
@@ -313,4 +313,47 @@ func (s *Service) RootForSession(ctx context.Context, sessionID string) string {
 		}
 	}
 	return ""
+}
+
+// rootForMention is RootForSession for a message that mentions agents. A
+// leader owns one tree per top-level delegate, and RootForSession picks
+// the newest — so "@agent" for a sub-agent started earlier (still running,
+// still listed) resolved against the wrong tree and fell through as plain
+// text. For a leader the first mentioned handle is looked up across ALL
+// its direct children (the one still working, else the newest — the same
+// rule message/stop use) and its tree is the one routed to.
+func (s *Service) rootForMention(ctx context.Context, sessionID, text string) string {
+	if s == nil || s.Repo == nil || sessionID == "" {
+		return ""
+	}
+	if row, err := s.Repo.FindByChildSession(ctx, sessionID); err == nil && row != nil {
+		return row.RootID // a sub-agent: its own tree
+	}
+	rows, err := s.Repo.ListByParent(ctx, sessionID)
+	if err != nil || len(rows) == 0 {
+		return s.RootForSession(ctx, sessionID)
+	}
+	handles := make([]string, 0, len(rows))
+	for _, r := range rows {
+		handles = append(handles, r.Handle)
+	}
+	for _, m := range ParseMentions(text, handles) {
+		var newest *entity.AgentDelegation
+		for i := range rows {
+			r := &rows[i]
+			if r.Handle != m.Handle || r.RootID == "" {
+				continue
+			}
+			if !entity.IsTerminalDelegationStatus(r.Status) {
+				return r.RootID
+			}
+			if newest == nil {
+				newest = r
+			}
+		}
+		if newest != nil {
+			return newest.RootID
+		}
+	}
+	return s.RootForSession(ctx, sessionID)
 }

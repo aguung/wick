@@ -140,10 +140,11 @@ type ompUsageJSON struct {
 
 // ompRunner execs `omp --profile <p> usage --json`. Swapped in tests.
 var ompRunner = func(ctx context.Context, env []string) ([]byte, error) {
-	cmd, err := ompCommand(ctx, env, "usage", "--json")
+	cmd, release, err := ompCommand(ctx, env, "usage", "--json")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return cmd.Output()
 }
 

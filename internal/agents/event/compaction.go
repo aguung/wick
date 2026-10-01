@@ -27,6 +27,16 @@ func (c *CompactionInfo) Summary() string {
 	if trigger == "" {
 		trigger = "auto"
 	}
+	if c.PreTokens == 0 && c.PostTokens == 0 {
+		// The CLI reported no counts (opencode's summarize answers true).
+		return fmt.Sprintf("Context compacted (%s)", trigger)
+	}
+	if c.PostTokens == 0 {
+		// Only the "before" side is known (omp's RPC compact answers with
+		// tokensBefore alone when the provider compacts remotely). "→ 0"
+		// would read as an emptied context, which it is not.
+		return fmt.Sprintf("Context compacted (%s) — was %s tokens", trigger, ShortTokens(c.PreTokens))
+	}
 	return fmt.Sprintf("Context compacted (%s) — %s → %s tokens",
 		trigger, ShortTokens(c.PreTokens), ShortTokens(c.PostTokens))
 }

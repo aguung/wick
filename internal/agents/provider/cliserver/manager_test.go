@@ -301,3 +301,54 @@ func TestLiveInGroup(t *testing.T) {
 	}
 	b.Release()
 }
+
+// RetireGroups stops only the servers its match picks: another
+// instance's server of the same session goes, everything else stays.
+func TestRetireGroups(t *testing.T) {
+	f := &starter{}
+	m, _ := newTest(f)
+	for _, s := range []Spec{
+		{Instance: "a", Group: "a/s1", Key: "a1"},
+		{Instance: "b", Group: "b/s1", Key: "b1"},
+		{Instance: "a", Group: "a/s2", Key: "a2"},
+	} {
+		l, _ := m.Acquire(context.Background(), s, f.start)
+		l.Release()
+	}
+	m.RetireGroups(func(instance, group string) bool { return instance != "b" && group == instance+"/s1" })
+	if _, k := f.counts(); k != 1 || m.Len() != 2 {
+		t.Fatalf("killed=%d len=%d, want 1 and 2", k, m.Len())
+	}
+	if _, ok := m.LiveInGroup("a/s1"); ok {
+		t.Fatal("a/s1 survived")
+	}
+}
+
+// RetireIdle stops idle servers only: one holding a lease (a turn running
+// or queued) stays, and so does whatever keep protects.
+func TestRetireIdle(t *testing.T) {
+	f := &starter{}
+	m, _ := newTest(f)
+	idle, _ := m.Acquire(context.Background(), Spec{Instance: "a", Group: "a/s1", Key: "a1"}, f.start)
+	idle.Release()
+	busy, _ := m.Acquire(context.Background(), Spec{Instance: "b", Group: "b/s2", Key: "b2"}, f.start)
+	own, _ := m.Acquire(context.Background(), Spec{Instance: "c", Group: "c/s3", Key: "c3"}, f.start)
+	own.Release()
+	n := m.RetireIdle(func(instance, group string) bool { return group == "c/s3" })
+	if n != 1 {
+		t.Fatalf("stopped %d, want 1", n)
+	}
+	if _, ok := m.LiveInGroup("a/s1"); ok {
+		t.Fatal("idle server survived")
+	}
+	if _, ok := m.LiveInGroup("b/s2"); !ok {
+		t.Fatal("busy server stopped")
+	}
+	if _, ok := m.LiveInGroup("c/s3"); !ok {
+		t.Fatal("kept server stopped")
+	}
+	busy.Release()
+	if n := m.RetireIdle(nil); n != 2 {
+		t.Fatalf("after release: stopped %d, want 2", n)
+	}
+}

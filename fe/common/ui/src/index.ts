@@ -101,3 +101,5 @@ export type { PathHit } from "./file-search.js";
 export { formatSize, formatRelTime } from "./file-meta.js";
 export { matchModelFilter, MODEL_FILTER_HELP } from "./modelFilter.js";
 export { encodePath, decodePath, encodePin, decodePin } from "./model-path.js";
+export { withModelListMeta, modelListMeta, describeModelListMeta } from "./model-list-meta.js";
+export type { ModelListMeta } from "./model-list-meta.js";

@@ -144,6 +144,10 @@ type SessionContextDTO struct {
 	// CompactNote explains a false CanCompact in one sentence, so the
 	// UI never has to keep its own copy of the reason.
 	CompactNote string `json:"compact_note,omitempty"`
+	// AutoCompact is whether the active provider compacts by itself once
+	// the window fills, as it last reported (omp get_state, opencode
+	// config); omitted when it never said.
+	AutoCompact *bool `json:"auto_compact,omitempty"`
 }
 
 // SessionContextProviderDTO is one provider's row inside the panel.
@@ -207,6 +211,7 @@ func apiSessionContext(c *tool.Ctx) {
 		if name == active {
 			out.Provider, out.Model = name, p.Model
 			out.Used, out.Window = p.ContextUsed, p.ContextWindow
+			out.AutoCompact = p.AutoCompact
 			out.Pct = row.Pct
 			out.Trend, out.TrendAt = trendOf(p.Series)
 			// The spend behind each point. Built here and not inside

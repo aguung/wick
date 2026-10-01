@@ -195,3 +195,65 @@ func TestAccountPlanLabel(t *testing.T) {
 		t.Fatalf("opencode has no plan, got %q", got)
 	}
 }
+
+// The composer picker reads provider.EffectiveLiveModels, the same list
+// the provider page shows: a model the account refused is greyed out and
+// never the default, and a chosen Default leads.
+func TestCLIModelSetsUseEffectiveLiveList(t *testing.T) {
+	fakeModelSets(t, []provider.ModelSeed{{ID: "openai-codex/gpt-5.5"}, {ID: "openai-codex/gpt-5.6-luna"}, {ID: "openai-codex/gpt-5.4-mini"}}, nil)
+	ins := liveIns
+	ins.Name = "yoga-eff"
+	provider.MarkModelUnavailable(ins, "openai-codex", "openai-codex/gpt-5.5", "")
+	s, _ := provider.ModelSetsFor(provider.TypeOMP)
+	rows, _ := s.Sets(context.Background(), ins)
+	if len(rows) != 3 || rows[0].ID != "openai-codex/gpt-5.5" || !rows[0].Unavailable || rows[0].Default || rows[0].Desc != provider.NotAvailableDesc {
+		t.Fatalf("refused row: %+v", rows)
+	}
+	if !rows[1].Default {
+		t.Fatalf("default = first usable row: %+v", rows)
+	}
+	want := provider.EffectiveLiveModels(ins, []provider.ModelSeed{{ID: "openai-codex/gpt-5.5"}, {ID: "openai-codex/gpt-5.6-luna"}, {ID: "openai-codex/gpt-5.4-mini"}})
+	for i := range rows {
+		if rows[i].ID != want[i].ID || rows[i].Default != want[i].Default || rows[i].Unavailable != want[i].Unavailable {
+			t.Fatalf("picker row %d %+v differs from the provider page row %+v", i, rows[i], want[i])
+		}
+	}
+	ins.LiveModelDefault = "openai-codex/gpt-5.4-mini"
+	rows, _ = s.Sets(context.Background(), ins)
+	if rows[0].ID != "openai-codex/gpt-5.4-mini" || !rows[0].Default {
+		t.Fatalf("chosen default first: %+v", rows)
+	}
+}
+
+func TestHelperLabel(t *testing.T) {
+	cases := map[string][]string{
+		"omp-usage":       {"--profile", "wick-yoga", "usage", "--json"},
+		"omp-auth-broker": {"--profile", "wick-yoga", "auth-broker", "list", "--json"},
+		"opencode-auth":   {"auth", "logout", "openai"},
+	}
+	for want, args := range cases {
+		def := "omp"
+		if want == "opencode-auth" {
+			def = "opencode"
+		}
+		if got := helperLabel(def, args); got != want {
+			t.Errorf("%v: %q, want %q", args, got, want)
+		}
+	}
+}
+
+// omp usage / auth-broker listings go through the helper guard.
+func TestOMPRunnersUseHelperGuard(t *testing.T) {
+	var labels []string
+	t.Cleanup(provider.ObserveHelpersForTest(func(label string, _ *provider.Instance) { labels = append(labels, label) }))
+	bin := filepath.Join(t.TempDir(), "omp")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho '{}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{provider.AccountBinEnvKey + "=" + bin, "OMP_PROFILE=wick-x"}
+	_, _ = ompRunner(context.Background(), env)
+	_, _ = ompOAuthListRunner(context.Background(), env)
+	if len(labels) != 2 || labels[0] != "omp-usage" || labels[1] != "omp-auth-broker" {
+		t.Fatalf("labels = %v", labels)
+	}
+}

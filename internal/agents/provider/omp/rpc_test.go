@@ -65,8 +65,10 @@ type fakeOMP struct {
 	hang bool
 	// failPrompt: prompt_result error before the agent runs.
 	failPrompt string
-	out      *io.PipeWriter
-	done     chan struct{}
+	// compactErr: the RPC `compact` fails with this error.
+	compactErr string
+	out        *io.PipeWriter
+	done       chan struct{}
 }
 
 func (f *fakeOMP) write(v any) {
@@ -86,7 +88,19 @@ func (f *fakeOMP) serve(in io.Reader) {
 		f.mu.Unlock()
 		switch typ {
 		case "get_state":
-			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true, "data": map[string]any{"sessionId": "omp-s1"}})
+			// The model object omp 18.4.4 returns carries contextWindow.
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true, "data": map[string]any{"sessionId": "omp-s1",
+				"model": map[string]any{"id": "gpt-5.6-luna", "provider": "openai-codex", "contextWindow": 272000}, "autoCompactionEnabled": true,
+				"contextUsage": map[string]any{"tokens": 25900, "contextWindow": 272000, "percent": 9.5}}})
+		case "compact":
+			if f.compactErr != "" {
+				f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": false, "error": f.compactErr})
+				continue
+			}
+			// CompactionResult of omp's RPC `compact` (counts of the real
+			// session 93c7b1e2 compaction).
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true,
+				"data": map[string]any{"summary": "Remote compaction", "tokensBefore": 26715, "tokensAfter": 25227, "method": "remote"}})
 		case "steer":
 			f.mu.Lock()
 			f.steers = append(f.steers, c["message"].(string))
@@ -334,5 +348,118 @@ func TestTurnSinkDoesNotBlockAfterTurnEnds(t *testing.T) {
 	case <-returned:
 	case <-time.After(2 * time.Second):
 		t.Fatal("sink blocked on a full results channel after the turn ended")
+	}
+}
+
+// "/compact" runs omp's RPC `compact` (never a prompt: that compacts but
+// ends no turn, and the UI spun forever) and closes the turn with the
+// result; every turn opens with the model's context window.
+func TestRPCCompactTurn(t *testing.T) {
+	f := &fakeOMP{}
+	p, m := runFakeTurn(t, f, "/compact")
+	defer m.Shutdown()
+	out := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"type":"context"`, `"window":272000`, `"autoCompact":true`, `"type":"compaction"`, `"tokensBefore":26715`, `"tokensAfter":25900`, `"type":"agent_end"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %s in\n%s", want, out)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if slices.Contains(f.cmds, "prompt") || !slices.Contains(f.cmds, "compact") {
+		t.Fatalf("commands %v", f.cmds)
+	}
+}
+
+// omp refusing a second /compact ("Already compacted") ends the turn with
+// a neutral notice, never an error bubble.
+func TestRPCCompactAlreadyCompacted(t *testing.T) {
+	f := &fakeOMP{compactErr: "Already compacted"}
+	p, m := runFakeTurn(t, f, "/compact")
+	defer m.Shutdown()
+	out := readAll(t, p)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("no-op compact failed the turn: %v", err)
+	}
+	if !strings.Contains(out, "Nothing to compact — already compacted") || strings.Contains(out, `"type":"compaction"`) ||
+		strings.Contains(out, `"stopReason":"error"`) || !strings.Contains(out, `"type":"agent_end"`) {
+		t.Fatalf("out:\n%s", out)
+	}
+	parser := event.NewOMPParser("omp")
+	var types []event.EventType
+	for _, l := range strings.Split(out, "\n") {
+		if l == "" {
+			continue
+		}
+		ev, _ := parser.Parse(l)
+		types = append(types, ev.Type)
+	}
+	if slices.Contains(types, event.Error) || !slices.Contains(types, event.TextDelta) || !slices.Contains(types, event.Done) {
+		t.Fatalf("events %v", types)
+	}
+}
+
+func TestCompactNoop(t *testing.T) {
+	for _, msg := range []string{"Already compacted", "omp: ALREADY COMPACTED.", "Nothing to compact (session too small)"} {
+		if _, ok := compactNoop(msg); !ok {
+			t.Errorf("%q not a no-op", msg)
+		}
+	}
+	if _, ok := compactNoop("Compaction already in progress"); ok {
+		t.Error("in-progress compaction read as a no-op")
+	}
+}
+
+func TestCompactPrompt(t *testing.T) {
+	for in, want := range map[string]string{"/compact": "", " /COMPACT ": "", "/compact keep the API notes": "keep the API notes"} {
+		if got, ok := compactPrompt(in); !ok || got != want {
+			t.Errorf("%q: %q %v", in, got, ok)
+		}
+	}
+	for _, in := range []string{"/compaction", "please /compact", "hello"} {
+		if _, ok := compactPrompt(in); ok {
+			t.Errorf("%q treated as /compact", in)
+		}
+	}
+}
+
+// A turn whose stream nobody reads (its agent's reader left on a
+// cancelled ctx) blocks on its first write, before the prompt. It must
+// end within rpcPromptWait and give the lease back, so the idle process
+// can be yielded instead of counting as busy forever.
+func TestRPCTurnNeverPromptedReleasesLease(t *testing.T) {
+	old := rpcPromptWait
+	rpcPromptWait = 200 * time.Millisecond
+	defer func() { rpcPromptWait = old }()
+	f := &fakeOMP{}
+	p, m := runFakeTurn(t, f, "hello")
+	defer m.Shutdown()
+	done := make(chan struct{})
+	go func() { _ = p.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("unread turn still holds its lease")
+	}
+	f.mu.Lock()
+	prompted := slices.Contains(f.cmds, "prompt")
+	f.mu.Unlock()
+	if prompted {
+		t.Fatal("turn sent its prompt although its stream was never read")
+	}
+	waitUntil(t, func() bool { return m.RetireIdle(nil) == 1 })
+}
+
+func waitUntil(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

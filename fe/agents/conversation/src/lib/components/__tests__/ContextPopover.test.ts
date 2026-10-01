@@ -437,4 +437,13 @@ describe("ContextPopover — the hover readout holds its height", () => {
     await fireEvent.click(screen.getByTestId("context-usage-open"));
     expect(onOpenUsage).toHaveBeenCalledOnce();
   });
+  it("says what the provider reported about auto-compact", () => {
+    const { unmount } = render(ContextPopover, {
+      props: { ...base, data: ctx({ provider: "omp/pro", auto_compact: false }) },
+    });
+    expect(screen.getByTestId("auto-compact-note").textContent).toMatch(/Auto-compact is off at omp\/pro/);
+    unmount();
+    render(ContextPopover, { props: { ...base, data: ctx({ provider: "oc", auto_compact: true }) } });
+    expect(screen.getByTestId("auto-compact-note").textContent).toMatch(/auto-compact is on at oc/);
+  });
 });

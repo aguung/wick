@@ -93,6 +93,9 @@ type ProviderUsage struct {
 	// when the CLI does not report a limit (codex does not).
 	ContextUsed   int `json:"context_used,omitempty"`
 	ContextWindow int `json:"context_window,omitempty"`
+	// AutoCompact is the provider's own auto-compact state as last
+	// reported (omp get_state, opencode config); nil when never said.
+	AutoCompact *bool `json:"auto_compact,omitempty"`
 
 	FirstAt time.Time    `json:"first_at"`
 	LastAt  time.Time    `json:"last_at"`
@@ -182,6 +185,9 @@ func (s *Store) recordUsage(u *event.TokenUsage, at time.Time) error {
 	}
 	if u.Window > 0 {
 		p.ContextWindow = u.Window
+	}
+	if u.AutoCompact != nil {
+		p.AutoCompact = u.AutoCompact
 	}
 	// A turn whose level could not be read (codex with no rollout to
 	// consult) carries the last known one into the series. Plotting the

@@ -499,7 +499,7 @@ describe("ProviderDetail - omp/opencode live model list", () => {
 
   it("live mode shows the CLI list panel instead of the manual list; toggle saves live_models", async () => {
     vi.mocked(api.apiGetProviderDetail).mockResolvedValue(liveDetail(true));
-    vi.mocked(api.apiGetCLIModels).mockResolvedValue({ models: [{ id: "openai/gpt-5.5" }, { id: "google/gemini-3" }], offered: [], hostedAllowed: false, fetchedAt: "" });
+    vi.mocked(api.apiGetCLIModels).mockResolvedValue({ models: [{ id: "openai/gpt-5.5" }, { id: "google/gemini-3" }], hostedAllowed: false, fetchedAt: "" });
     render(ProviderDetail, { props: { ...defaultProps, type: "opencode", name: "oc" } });
     expect(await screen.findByTestId("live-models-panel")).toBeTruthy();
     expect(screen.queryByText("+ Add model")).toBeNull();

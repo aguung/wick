@@ -14,6 +14,7 @@
   import CapabilityChips from "./CapabilityChips.svelte";
   import CapabilityModal from "./CapabilityModal.svelte";
   import ProviderIcon from "./ProviderIcon.svelte";
+  import { modelListMeta, describeModelListMeta, type ModelListMeta } from "./model-list-meta.js";
   import type { ComposerCommand, ComposerSelect, ComposerSelectOption, ComposerModelOption } from "./composer-types.js";
   import { matchModelFilter } from "./modelFilter.js";
 
@@ -727,14 +728,22 @@
     modelDrillOpt = o;
     void loadModelsFor(o);
   }
-  async function loadModelsFor(o: ComposerSelectOption) {
+  // "Last updated" per loaded list (omp/opencode live lists, see
+  // model-list-meta.ts), keyed like modelCache.
+  let modelMeta = $state<Record<string, ModelListMeta>>({});
+  function noteMeta(key: string, list: unknown) {
+    const m = modelListMeta(list);
+    if (m) modelMeta = { ...modelMeta, [key]: m };
+  }
+  async function loadModelsFor(o: ComposerSelectOption, refresh = false) {
     if (!provider?.loadModels) return; // no loader wired → static list only
-    if (modelCache[o.value] || modelLoading.has(o.value)) return; // cached / in flight
+    if ((modelCache[o.value] && !refresh) || modelLoading.has(o.value)) return; // cached / in flight
     const next = new Set(modelLoading);
     next.add(o.value);
     modelLoading = next;
     try {
-      const live = await provider.loadModels(o.value);
+      const live = refresh ? await provider.loadModels(o.value, { refresh: true }) : await provider.loadModels(o.value);
+      noteMeta(o.value, live);
       if (live && live.length > 0) modelCache = { ...modelCache, [o.value]: live };
     } catch {
       // Non-fatal — keep the static list.
@@ -755,16 +764,17 @@
     void loadSetModels(m);
   }
   function closeSetDrill() { setDrill = null; modelDrillSearch = ""; }
-  async function loadSetModels(m: ComposerModelOption) {
+  async function loadSetModels(m: ComposerModelOption, refresh = false) {
     const o = modelDrillOpt;
     if (!o || !provider?.loadModels) return;
     const key = setCacheKey(o.value, m);
-    if (modelCache[key] || modelLoading.has(key)) return;
+    if ((modelCache[key] && !refresh) || modelLoading.has(key)) return;
     const next = new Set(modelLoading);
     next.add(key);
     modelLoading = next;
     try {
-      const live = await provider.loadModels(o.value, { entry: m.id });
+      const live = await provider.loadModels(o.value, refresh ? { entry: m.id, refresh: true } : { entry: m.id });
+      noteMeta(key, live);
       modelCache = { ...modelCache, [key]: live ?? [] };
     } catch {
       modelCache = { ...modelCache, [key]: [] };
@@ -778,15 +788,18 @@
   // Reload button: drop the current view's cached list and re-fetch, so a
   // stale vendor list (models added/removed since first drill) can be
   // refreshed without reopening the whole picker.
+  // For an omp/opencode live list the server may run the CLI once
+  // (refresh): only when it says this caller may (can_refresh).
   function reloadDrill() {
     const o = modelDrillOpt;
     if (!o) return;
     const key = setDrill ? setCacheKey(o.value, setDrill) : o.value;
+    const refresh = !!modelMeta[key]?.canRefresh;
     const next = { ...modelCache };
     delete next[key];
     modelCache = next;
-    if (setDrill) void loadSetModels(setDrill);
-    else void loadModelsFor(o);
+    if (setDrill) void loadSetModels(setDrill, refresh);
+    else void loadModelsFor(o, refresh);
   }
 
   // Commit a model selection and close the whole menu. Inside a live-set
@@ -1304,6 +1317,15 @@
                 </div>
               {/each}
             </div>
+            {@const drillMeta = modelMeta[inSet ? setCacheKey(drill.value, inSet) : drill.value]}
+            {#if drillMeta}
+              <div class="flex items-center justify-between gap-2 border-t border-white-300 dark:border-navy-600 px-3 py-1.5 text-[11px] text-black-700 dark:text-black-600" data-testid="composer-models-updated">
+                <span>{describeModelListMeta(drillMeta)}</span>
+                {#if drillMeta.canRefresh}
+                  <button type="button" disabled={loading} onclick={reloadDrill} class="text-green-600 dark:text-green-400 hover:underline disabled:opacity-50" data-testid="composer-models-refresh">{loading ? "Refreshing…" : "Refresh"}</button>
+                {/if}
+              </div>
+            {/if}
           {:else if typeDrillKey && provider}
             {@const group = providerGroups.find((g) => g.type === typeDrillKey)}
             <button

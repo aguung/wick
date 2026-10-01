@@ -154,3 +154,48 @@ func ResolvePin(ins *Instance, pin string) (SpawnPin, bool) {
 	}
 	return p, true
 }
+
+// FlattenModelSets walks t's picker levels down to the model rows, in
+// picker order — what the composer picker would offer if every level were
+// opened. A level that has an "Auto (rotation)" row is walked through that
+// row only, so a provider with several accounts lists each model once
+// (on Auto, where the instance-wide availability marks apply). For a
+// settings page that shows the whole effective list (the provider page's
+// live model list) through the very same ModelSets the picker drills.
+func FlattenModelSets(ctx context.Context, s ModelSets, ins Instance) ([]ModelChoice, error) {
+	rows, err := s.Sets(ctx, ins)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	return flattenLevel(ctx, s, ins, nil, rows, 0)
+}
+
+func flattenLevel(ctx context.Context, s ModelSets, ins Instance, path []string, rows []ModelChoice, depth int) ([]ModelChoice, error) {
+	if depth > 4 {
+		return nil, nil
+	}
+	for _, r := range rows {
+		if r.Live && r.ID == AutoAccount {
+			rows = []ModelChoice{r}
+			break
+		}
+	}
+	var out []ModelChoice
+	for _, r := range rows {
+		if !r.Live {
+			out = append(out, r)
+			continue
+		}
+		next := append(append([]string{}, path...), r.ID)
+		kids, err := s.Expand(ctx, ins, next)
+		if err != nil {
+			return out, err
+		}
+		sub, err := flattenLevel(ctx, s, ins, next, kids, depth+1)
+		out = append(out, sub...)
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}

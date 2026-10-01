@@ -52,6 +52,11 @@ type Agent struct {
 	// Persisted via store; mirrored here so re-spawn (without going
 	// through pool.Reload) can pass --resume.
 	resumeID string
+	// resumeLost: a turn failed in-band because the CLI could not find
+	// the resumed conversation (omp RPC / opencode report it as the
+	// turn's error, not on stderr). resumeID is already cleared; the
+	// pool takes the flag to clear the persisted id and say so.
+	resumeLost bool
 
 	// onEvent is fired for every parsed event — pool / SSE consumers
 	// can subscribe to react to state changes (queue draining, dashboard
@@ -848,6 +853,16 @@ func (a *Agent) ResumeID() string {
 	return a.resumeID
 }
 
+// TakeResumeLost reports (once) that a turn failed because the CLI could
+// not find the conversation it was told to resume; see resumeLost.
+func (a *Agent) TakeResumeLost() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	lost := a.resumeLost
+	a.resumeLost = false
+	return lost
+}
+
 // SpawnResumeID returns the --resume id this spawn started with, so the
 // pool can tell a fresh-spawn failure from a stale-resume failure.
 func (a *Agent) SpawnResumeID() string {
@@ -870,8 +885,15 @@ func (a *Agent) StderrTail() string {
 
 // IsResumeNotFound reports whether output indicates a --resume id the
 // CLI couldn't find, so the pool can clear the stale id and respawn fresh.
+// claude says "No conversation found", omp `Session "<id>" not found`,
+// opencode "Session not found".
 func IsResumeNotFound(s string) bool {
-	return strings.Contains(strings.ToLower(s), "no conversation found")
+	l := strings.ToLower(s)
+	if strings.Contains(l, "no conversation found") || strings.Contains(l, "session not found") {
+		return true
+	}
+	i := strings.Index(l, `session "`)
+	return i >= 0 && strings.Contains(l[i:], `" not found`)
 }
 
 // PID returns the OS pid of the current subprocess, or 0 if not
@@ -988,6 +1010,11 @@ func (a *Agent) run(ctx context.Context) {
 	a.mu.Unlock()
 	watch := newModelTurnWatch(a.cfg.Instance, pin)
 	if watch != nil {
+		// No pin: the model the spawner chose itself (live Default, own
+		// model, opencode's instanceDefault) is in the argv. opencode's
+		// error frames never name it, so without this a model_not_found
+		// on it was never recorded as a refusal.
+		watch.seedModelFromArgv(proc.Argv())
 		a.mu.Lock()
 		turnMsg := a.turnMsg
 		a.mu.Unlock()
@@ -1101,7 +1128,14 @@ func (a *Agent) run(ctx context.Context) {
 			// goroutine is still parked on a not-yet-EOF pipe, which would
 			// freeze Stop()'s <-done wait. Reap the process asynchronously
 			// instead so the reader (and thus done) closes immediately.
-			go func() { _ = proc.Wait() }()
+			//
+			// Kill too: nobody reads this turn from here on. A subprocess
+			// is already gone (CommandContext), but an in-wick turn (omp
+			// RPC, opencode serve) ignores ctx — left alive it blocks on
+			// its next stdout write before ever prompting, and holds its
+			// server's lease forever. Kill is idempotent, so the Stop and
+			// respawn paths that already killed it lose nothing.
+			go func() { _ = proc.Kill(); _ = proc.Wait() }()
 			// Fire the exit hook so the pool releases the slot and drains
 			// the queue. Without this a preempt/Stop leaves the slot held
 			// forever — the queued session never spawns (the "stuck idle,
@@ -1187,6 +1221,15 @@ func (a *Agent) run(ctx context.Context) {
 			case event.Done, event.Error:
 				if ev.Type == event.Error {
 					turnErrored = true
+					if IsResumeNotFound(ev.ErrorMsg) {
+						a.mu.Lock()
+						if a.resumeID != "" {
+							// The next respawn must start clean, not
+							// resume the same missing id again.
+							a.resumeID, a.resumeLost = "", true
+						}
+						a.mu.Unlock()
+					}
 					if !retried {
 						retried = a.retryRefusedModel(watch, produced)
 					}

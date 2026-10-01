@@ -26,7 +26,7 @@
   // Lazy model loader so a role can be pinned to a wick live-set leaf, not
   // just to an instance. Failure yields an empty list — the picker then shows
   // no extra models rather than breaking the page.
-  async function loadProviderModels(optionValue: string, opts?: { entry?: string }) {
+  async function loadProviderModels(optionValue: string, opts?: { entry?: string; refresh?: boolean }) {
     const slash = optionValue.indexOf("/");
     const type = slash < 0 ? optionValue : optionValue.slice(0, slash);
     const name = slash < 0 ? optionValue : optionValue.slice(slash + 1);

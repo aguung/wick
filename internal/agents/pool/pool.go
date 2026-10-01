@@ -902,6 +902,11 @@ func (p *Pool) send(ctx context.Context, sessionID, agentName, source, role, tex
 	// the per-provider cap alongside the global one.
 	pType, pName := p.providerForSession(sessionID, agentName)
 
+	// A spawn is about to be admitted: idle warm omp/opencode servers that
+	// will not serve it give their memory back first (before the free-RAM
+	// check, which they would otherwise fail).
+	yieldIdleServers(sessionID, pType, pName)
+
 	p.mu.Lock()
 	// If this session is already mid-spawn, the in-flight spawn's Drain
 	// will pick up the buffered message — nothing more to do here.
@@ -1569,6 +1574,17 @@ func providerMaxConcurrent(pType, pName string) int {
 // pool is closed — Stop() relies on this so no fresh spawns sneak past
 // the shutdown barrier.
 func (p *Pool) tryGrantQueue() {
+	p.mu.Lock()
+	if p.closed || len(p.queue) == 0 {
+		p.mu.Unlock()
+		return
+	}
+	head := p.queue[0]
+	p.mu.Unlock()
+	// A queued spawn is waiting (for a slot or for memory): idle warm
+	// servers that will not serve it go first.
+	hType, hName := p.providerForSession(head.sessionID, head.agentName)
+	yieldIdleServers(head.sessionID, hType, hName)
 	p.mu.Lock()
 	if p.closed || len(p.queue) == 0 {
 		p.mu.Unlock()
@@ -2315,7 +2331,9 @@ func (p *Pool) DequeueSession(sessionID string) int {
 // claude (append mode) keeps the 1-agent-1-process model: every exit is
 // the agent dying, so all reasons release.
 func (p *Pool) HandleExit(sessionID, agentName string, reason provider.ExitReason, reasonDetail string) {
-	if reason == provider.ExitError {
+	// ExitClean too: omp RPC / opencode report a missing resume as the
+	// turn's own error and exit clean, so the flag, not stderr, says so.
+	if reason == provider.ExitError || reason == provider.ExitClean {
 		p.healStaleResume(sessionID, agentName)
 	}
 	if reason == provider.ExitClean || reason == provider.ExitRespawn {
@@ -2439,6 +2457,12 @@ func (p *Pool) recoverFromExit(sessionID, agentName string, reason provider.Exit
 // AND dispatches to the originating channel. Without it a Slack thread whose
 // agent just gave up would show nothing at all.
 func (p *Pool) haltNotify(sessionID, agentName, msg string) {
+	p.noticeNotify(sessionID, agentName, msg, errCrashLoopHalted)
+}
+
+// noticeNotify is haltNotify's delivery for any notice: persisted as a
+// buffered system turn, and published inline + to the channel.
+func (p *Pool) noticeNotify(sessionID, agentName, msg string, cause error) {
 	if err := p.Send(context.Background(), sessionID, agentName, "recover-halt", "system", msg); err != nil {
 		log.Warn().Err(err).
 			Str("component", "pool").
@@ -2453,7 +2477,7 @@ func (p *Pool) haltNotify(sessionID, agentName, msg string) {
 		AgentName: agentName,
 		Ctx:       context.Background(),
 		Message:   msg,
-		Err:       errCrashLoopHalted,
+		Err:       cause,
 	})
 }
 
@@ -2482,11 +2506,15 @@ func (p *Pool) healStaleResume(sessionID, agentName string) {
 	if !ok || entry.agent == nil {
 		return
 	}
-	if entry.agent.SpawnResumeID() == "" {
-		return // fresh spawn — nothing stale to clear
-	}
-	if !provider.IsResumeNotFound(entry.agent.StderrTail()) {
-		return
+	// A turn that already reported the missing conversation in-band, or
+	// a --resume spawn that died saying so on stderr.
+	if !entry.agent.TakeResumeLost() {
+		if entry.agent.SpawnResumeID() == "" {
+			return // fresh spawn — nothing stale to clear
+		}
+		if !provider.IsResumeNotFound(entry.agent.StderrTail()) {
+			return
+		}
 	}
 	if err := session.SetCLISessionID(p.cfg.Layout, sessionID, agentName, ""); err != nil {
 		log.Warn().Str("session", sessionID).Str("agent", agentName).Err(err).
@@ -2495,7 +2523,16 @@ func (p *Pool) healStaleResume(sessionID, agentName string) {
 	}
 	log.Info().Str("session", sessionID).Str("agent", agentName).
 		Msg("pool: cleared stale CLI resume id (No conversation found) — next spawn starts fresh")
+	// Never a silent drop: the user reads that the conversation restarts.
+	// Off the exit path: the entry is still being torn down here.
+	go p.noticeNotify(sessionID, agentName, ResumeDroppedNotice, errResumeDropped)
 }
+
+// ResumeDroppedNotice is what the user reads when healStaleResume drops a
+// resume id the provider could no longer find.
+const ResumeDroppedNotice = "The provider could not find this session's earlier conversation, so the next message starts a fresh one. Earlier turns stay in this session's history, but the agent won't remember them."
+
+var errResumeDropped = errors.New("resume id not found by the provider; cleared")
 
 // sessionHasCLISession reports whether any agent already captured a CLI
 // session id (i.e. a resumable conversation exists for this session).
@@ -2592,4 +2629,17 @@ func (p *Pool) recordCompactUnsupported(ctx context.Context, sessionID, agentNam
 	// rule, so nobody is left watching a command that appears to have
 	// gone nowhere.
 	p.notifyUserMessage(sessionID, agentName, source, text, sender)
+}
+
+// yieldIdleServers stops idle warm provider servers (omp RPC / auth broker,
+// opencode serve) that the spawn for sessionID on pType/pName will not
+// use, so their memory goes to it. The session's own servers and, for
+// omp/opencode, those of the instance it runs on are kept; a server with a
+// turn running or queued is never stopped (provider.YieldIdleServers).
+var yieldIdleServers = func(sessionID, pType, pName string) {
+	instance := ""
+	if pType == string(provider.TypeOMP) || pType == string(provider.TypeOpencode) {
+		instance = pName
+	}
+	provider.YieldIdleServers(sessionID, instance)
 }

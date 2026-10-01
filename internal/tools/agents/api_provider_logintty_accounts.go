@@ -43,6 +43,8 @@ func apiProviderLoginTTYLogout(c *tool.Ctx) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// The account lost a provider: its cached model list is wrong now.
+	provider.InvalidateCLIModels(ins)
 	c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -88,7 +90,10 @@ func apiProviderAPIKeySet(c *tool.Ctx) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if _, _, err := provider.CachedCLIModels(ctx, saved, true); err != nil {
+			// The key changed what the account may list: drop the cached
+			// list and re-read it from the CLI's files / running server.
+			provider.InvalidateCLIModels(saved)
+			if _, _, err := provider.CachedCLIModels(ctx, saved, false); err != nil {
 				log.Debug().Err(err).Str("provider", string(saved.Type)+"/"+saved.Name).Msg("live models refresh after API key save")
 			}
 		}()

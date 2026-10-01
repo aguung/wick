@@ -77,9 +77,11 @@ func modelProvider(id string) string {
 	return ""
 }
 
-// liveModels is the instance's filtered live list, default first. nil when
-// live models are off (the flat curated list applies instead).
-func liveModels(ctx context.Context, ins provider.Instance) ([]provider.ModelSeed, error) {
+// liveModels is the instance's effective live list (provider.
+// EffectiveLiveModels: filter, chosen Default first, refusals marked, the
+// default a spawn runs flagged) — the same list the provider page shows.
+// nil when live models are off (the flat curated list applies instead).
+func liveModels(ctx context.Context, ins provider.Instance) ([]provider.LiveModel, error) {
 	if !provider.LiveModelsEnabled(ins) || !ins.ModelSelect {
 		return nil, nil
 	}
@@ -87,7 +89,7 @@ func liveModels(ctx context.Context, ins provider.Instance) ([]provider.ModelSee
 	if len(models) == 0 {
 		return nil, err
 	}
-	return provider.LiveDefaultFirst(provider.FilterLiveModels(ins, models), ins.LiveModelDefault), nil
+	return provider.EffectiveLiveModels(ins, models), nil
 }
 
 // providerAccounts returns the active accounts per provider, pool order.
@@ -117,19 +119,26 @@ func (s cliModelSets) Sets(ctx context.Context, ins provider.Instance) ([]provid
 	}
 	var order []string
 	count := map[string]int{}
+	defProv := ""
 	for _, m := range models {
 		p := modelProvider(m.ID)
 		if count[p] == 0 {
 			order = append(order, p)
 		}
 		count[p]++
+		if m.Default {
+			defProv = p
+		}
+	}
+	if defProv == "" {
+		defProv = order[0]
 	}
 	if len(order) == 1 {
 		return s.Expand(ctx, ins, []string{order[0]})
 	}
 	accts := providerAccounts(ins)
 	out := make([]provider.ModelChoice, 0, len(order))
-	for i, p := range order {
+	for _, p := range order {
 		label := p
 		if p == "" {
 			label = "Other"
@@ -138,7 +147,7 @@ func (s cliModelSets) Sets(ctx context.Context, ins provider.Instance) ([]provid
 		if n := len(accts[p]); n > 1 {
 			desc += fmt.Sprintf(" · %d accounts", n)
 		}
-		out = append(out, provider.ModelChoice{ID: p, Label: label, Desc: desc, Live: true, Default: i == 0})
+		out = append(out, provider.ModelChoice{ID: p, Label: label, Desc: desc, Live: true, Default: p == defProv})
 	}
 	return out, nil
 }
@@ -165,14 +174,38 @@ func (cliModelSets) Expand(ctx context.Context, ins provider.Instance, path []st
 		return nil, err
 	}
 	var rows []provider.ModelChoice
+	hasDefault := false
 	for _, m := range models {
 		if modelProvider(m.ID) != prov {
 			continue
 		}
 		label := strings.TrimPrefix(m.ID, prov+"/")
-		rows = append(rows, provider.ModelChoice{ID: m.ID, Label: label, Desc: m.Desc, Default: len(rows) == 0})
+		desc := m.Desc
+		if m.Unavailable && desc == "" {
+			desc = provider.NotAvailableDesc
+			if m.Reason != "" {
+				desc += " — " + m.Reason
+			}
+		}
+		rows = append(rows, provider.ModelChoice{ID: m.ID, Label: label, Desc: desc, Default: m.Default, Unavailable: m.Unavailable})
+		hasDefault = hasDefault || m.Default
 	}
-	return provider.ApplyAvailability(ins, provider.AvailabilityAccount(prov, account), rows), nil
+	if account != "" && account != provider.AutoAccount {
+		// One pinned account: its own refusals and last-worked model on
+		// top of the instance-wide marks.
+		return provider.ApplyAvailability(ins, provider.AvailabilityAccount(prov, account), rows), nil
+	}
+	if !hasDefault {
+		// The instance default is under another provider: this level's
+		// default is its first usable row.
+		for i := range rows {
+			if !rows[i].Unavailable {
+				rows[i].Default = true
+				break
+			}
+		}
+	}
+	return rows, nil
 }
 
 // autoDesc explains who rotates: omp does it natively; for opencode wick

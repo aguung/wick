@@ -170,5 +170,14 @@ func (a *Agent) spawnModelIDLocked() string {
 	if a.modelOverride != "" {
 		return a.modelOverride
 	}
+	// A pin this instance cannot run (chosen on another account, or refused
+	// here since) would fail every turn with model_not_found: drop it for
+	// this agent and say so; the spawn then runs the instance's default.
+	if m, stale := StalePin(a.cfg.Instance, a.cfg.ModelID); stale {
+		if a.store != nil {
+			_ = a.store.AppendNoticeTurn(StalePinNotice(*a.cfg.Instance, m))
+		}
+		a.cfg.ModelID = ""
+	}
 	return a.cfg.ModelID
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -186,4 +188,48 @@ func TestApplyAvailabilityConcurrentWithMark(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// flatSets is a two-provider picker: openai-codex has two accounts (Auto +
+// #1 + #2), anthropic one.
+type flatSets struct{}
+
+func (flatSets) Sets(context.Context, Instance) ([]ModelChoice, error) {
+	return []ModelChoice{{ID: "openai-codex", Live: true, Default: true}, {ID: "anthropic", Live: true}}, nil
+}
+
+func (flatSets) Expand(_ context.Context, _ Instance, path []string) ([]ModelChoice, error) {
+	switch strings.Join(path, "/") {
+	case "openai-codex":
+		return []ModelChoice{{ID: AutoAccount, Live: true, Default: true}, {ID: "1", Live: true}, {ID: "2", Live: true}}, nil
+	case "openai-codex/" + AutoAccount:
+		return []ModelChoice{{ID: "openai-codex/gpt-5.5", Unavailable: true}, {ID: "openai-codex/gpt-5.6-luna", Default: true}}, nil
+	case "openai-codex/1", "openai-codex/2":
+		return []ModelChoice{{ID: "openai-codex/per-account-dup"}}, nil
+	case "anthropic":
+		return []ModelChoice{{ID: "anthropic/claude"}}, nil
+	}
+	return nil, nil
+}
+
+func (flatSets) Resolve(Instance, []string, string) (SpawnPin, error) { return SpawnPin{}, nil }
+
+// The provider page's flat list walks the picker's own levels: accounts
+// collapse onto Auto (each model once), marks and default kept.
+func TestFlattenModelSets(t *testing.T) {
+	rows, err := FlattenModelSets(context.Background(), flatSets{}, Instance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.ID)
+	}
+	want := []string{"openai-codex/gpt-5.5", "openai-codex/gpt-5.6-luna", "anthropic/claude"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows %v, want %v", got, want)
+	}
+	if !rows[0].Unavailable || !rows[1].Default {
+		t.Fatalf("marks lost: %+v", rows)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/yogasw/wick/internal/agents/event"
 	"io"
 	"strings"
 	"sync"
@@ -38,6 +39,11 @@ const (
 	// in flight when the process goes.
 	mcpRevokeGrace = 90 * time.Second
 )
+
+// rpcPromptWait bounds a turn from its slot to its prompt going out: the
+// steps before it (new_session, get_state, pin) are each bounded well
+// inside it. A var so tests can shorten it.
+var rpcPromptWait = 2 * time.Minute
 
 var rpcServers = newRPCManager()
 
@@ -353,6 +359,23 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	if err := l.WaitSlot(ctx); err != nil {
 		return err
 	}
+	// Bounded: a turn that holds the slot but never gets its prompt out
+	// (its stream unread, an RPC that answers nothing) is killed — Kill
+	// closes the stream, so whatever it blocks on returns and the lease
+	// goes back. Without it the process counts as busy forever and is
+	// neither reaped nor yielded.
+	wait := rpcPromptWait
+	guard := time.AfterFunc(wait, func() {
+		p.mu.Lock()
+		prompted := p.prompted
+		p.mu.Unlock()
+		if !prompted {
+			log.Warn().Int("rpc_pid", l.H.Pid()).Dur("after", wait).
+				Msg("agents.omp: turn never sent its prompt; ending it")
+			_ = p.Kill()
+		}
+	})
+	defer guard.Stop()
 	c := l.H
 	if t.fresh {
 		if _, err := c.call(ctx, map[string]any{"type": "new_session"}); err != nil {
@@ -365,6 +388,14 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	}
 	var state struct {
 		SessionID string `json:"sessionId"`
+		// The active model (packages/ai Model): its contextWindow is the
+		// meter's scale — no extra process, the RPC is already running.
+		Model *struct {
+			ContextWindow int `json:"contextWindow"`
+		} `json:"model"`
+		// Whether omp compacts by itself once the window fills; shown in
+		// the context panel next to the manual button.
+		AutoCompactionEnabled *bool `json:"autoCompactionEnabled"`
 	}
 	_ = json.Unmarshal(st.Data, &state)
 	c.mu.Lock()
@@ -383,9 +414,30 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	unsub := c.subscribe(turnSink(frames, results, p.done))
 	defer unsub()
 	p.emit(headerLine(state.SessionID, t.cwd))
+	window := 0
+	if state.Model != nil {
+		window = state.Model.ContextWindow
+	}
+	if window > 0 || state.AutoCompactionEnabled != nil {
+		p.emit(event.ContextStateLine(window, state.AutoCompactionEnabled))
+	}
+	// "/compact": omp's official RPC `compact` (its slash command sent as
+	// a prompt compacts too, but emits no turn — the turn never ended and
+	// the UI kept spinning). The result's token counts become the notice,
+	// then the turn ends.
+	if instr, ok := compactPrompt(t.prompt); ok {
+		return p.compactTurn(ctx, c, instr)
+	}
 
 	p.injMu.Lock()
 	p.mu.Lock()
+	if p.killed {
+		// Killed before the prompt went out (stopped, or the guard
+		// above): sending it now would start a run nobody reads.
+		p.mu.Unlock()
+		p.injMu.Unlock()
+		return errTurnKilled
+	}
 	p.conn = c
 	if len(p.early) > 0 {
 		t.prompt = strings.Join(append([]string{t.prompt}, p.early...), "\n\n")
@@ -480,4 +532,94 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 		p.emit(errorLines(msg))
 	}
 	return nil
+}
+
+// compactPrompt reports a "/compact [instructions]" turn and its
+// instructions.
+func compactPrompt(prompt string) (string, bool) {
+	p := strings.TrimSpace(prompt)
+	if !strings.EqualFold(p, "/compact") && !strings.HasPrefix(strings.ToLower(p), "/compact ") {
+		return "", false
+	}
+	return strings.TrimSpace(p[len("/compact"):]), true
+}
+
+// compactTurn runs omp's RPC `compact` and ends the turn with its result
+// (a compaction line the parser turns into the "Compacted: X → Y" notice,
+// then agent_end), or with omp's own error. A compact omp refuses because
+// there is nothing to do is a notice, not an error.
+func (p *rpcProcess) compactTurn(ctx context.Context, c *rpcConn, instructions string) error {
+	cmd := map[string]any{"type": "compact"}
+	if instructions != "" {
+		cmd["customInstructions"] = instructions
+	}
+	f, err := c.call(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	end, _ := json.Marshal(map[string]any{"type": "agent_end", "messages": []any{}})
+	end = append(end, '\n')
+	if !f.Success {
+		msg := f.errText()
+		notice, ok := compactNoop(msg)
+		if !ok {
+			return fmt.Errorf("omp compact: %s", msg)
+		}
+		p.emit(textLine(notice))
+		p.emit(end)
+		return nil
+	}
+	var res struct {
+		TokensBefore int `json:"tokensBefore"`
+		TokensAfter  int `json:"tokensAfter"`
+	}
+	_ = json.Unmarshal(f.Data, &res)
+	// The context the next turn starts from: get_state's contextUsage
+	// counts system prompt + tools + what survived, which tokensAfter
+	// does not always (omp leaves it out when it compacts remotely).
+	after := res.TokensAfter
+	if n := stateContextTokens(ctx, c); n > 0 {
+		after = n
+	}
+	p.emit(event.CompactionLine("manual", res.TokensBefore, after))
+	p.emit(end)
+	return nil
+}
+
+// compactNoop reads omp's refusals to compact a session there is nothing
+// to compact in ("Already compacted" right after a compact, "Nothing to
+// compact (session too small)") into the neutral notice for the turn.
+func compactNoop(msg string) (string, bool) {
+	m := strings.ToLower(msg)
+	switch {
+	case strings.Contains(m, "already compacted"):
+		return "Nothing to compact — already compacted, no new history since the last compact.\n", true
+	case strings.Contains(m, "nothing to compact"):
+		return "Nothing to compact — the session is too small to compact yet.\n", true
+	}
+	return "", false
+}
+
+// stateContextTokens is get_state's contextUsage.tokens (0 = unknown).
+func stateContextTokens(ctx context.Context, c *rpcConn) int {
+	st, err := c.call(ctx, map[string]any{"type": "get_state"})
+	if err != nil || !st.Success {
+		return 0
+	}
+	var state struct {
+		ContextUsage *struct {
+			Tokens int `json:"tokens"`
+		} `json:"contextUsage"`
+	}
+	if json.Unmarshal(st.Data, &state) != nil || state.ContextUsage == nil {
+		return 0
+	}
+	return state.ContextUsage.Tokens
+}
+
+// textLine is assistant text wick writes into the turn itself.
+func textLine(text string) []byte {
+	b, _ := json.Marshal(map[string]any{"type": "message_update",
+		"assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": text}})
+	return append(b, '\n')
 }

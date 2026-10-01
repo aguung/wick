@@ -144,35 +144,58 @@ func ListAccounts(t provider.Type, env []string) []PoolAccount {
 // when the provider is given — cli/cmd/providers.ts). Swapped in tests.
 var logoutRunner = func(ctx context.Context, t provider.Type, env []string, prov string) ([]byte, error) {
 	var cmd *exec.Cmd
+	var release func()
 	var err error
 	if t == provider.TypeOMP {
-		cmd, err = ompCommand(ctx, env, "auth-broker", "logout", prov)
+		cmd, release, err = ompCommand(ctx, env, "auth-broker", "logout", prov)
 	} else {
-		cmd, err = cliCommand(ctx, env, "opencode", "auth", "logout", prov)
+		cmd, release, err = cliCommand(ctx, env, "opencode", "auth", "logout", prov)
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return cmd.CombinedOutput()
 }
 
 // cliCommand resolves the instance binary (AccountBinEnvKey, else def) and
-// builds a scrubbed-env command.
-func cliCommand(ctx context.Context, env []string, def string, args ...string) (*exec.Cmd, error) {
+// builds a scrubbed-env command; release must run after it ended.
+func cliCommand(ctx context.Context, env []string, def string, args ...string) (*exec.Cmd, func(), error) {
 	bin := envValue(env, provider.AccountBinEnvKey)
 	if bin == "" {
 		bin = def
 	}
 	resolved, err := safeexec.ResolveBin(bin)
 	if err != nil {
-		return nil, fmt.Errorf("%s binary not found: %w", def, err)
+		return nil, nil, fmt.Errorf("%s binary not found: %w", def, err)
 	}
-	cmd := safeexec.CommandContext(ctx, resolved, args...)
+	// A full omp/opencode process: inside the memory guard like an agent
+	// spawn ("omp-usage", "omp-auth-broker", "opencode-auth" …), with the
+	// limit of the instance env belongs to. release runs once the
+	// process has ended.
+	cmd, release := provider.HelperCommand(ctx, provider.InstanceForAccountEnv(env), helperLabel(def, args), resolved, args...)
 	cmd.Env = append(envscrub.ScrubOSEnv(), env...)
-	return cmd, nil
+	return cmd, release, nil
 }
 
-func ompCommand(ctx context.Context, env []string, args ...string) (*exec.Cmd, error) {
+// helperLabel names a helper scope: "<cli>-<subcommand>", the first
+// argument that is not a flag (or a flag's value) — "omp-usage",
+// "omp-auth-broker", "opencode-auth".
+func helperLabel(def string, args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--profile" {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			return def + "-" + a
+		}
+	}
+	return def + "-cli"
+}
+
+func ompCommand(ctx context.Context, env []string, args ...string) (*exec.Cmd, func(), error) {
 	return cliCommand(ctx, env, "omp", append([]string{"--profile", ompProfileFromEnv(env)}, args...)...)
 }
 
@@ -213,10 +236,11 @@ func invalidateOMPUsage(env []string) {
 
 // ompOAuthListRunner execs `omp auth-broker list --json`. Swapped in tests.
 var ompOAuthListRunner = func(ctx context.Context, env []string) ([]byte, error) {
-	cmd, err := ompCommand(ctx, env, "auth-broker", "list", "--json")
+	cmd, release, err := ompCommand(ctx, env, "auth-broker", "list", "--json")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return cmd.Output()
 }
 

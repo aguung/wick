@@ -104,8 +104,11 @@ var startRPCFn startFn = startRPC
 
 // spawnRPC runs one turn on the wick session's omp RPC process, starting
 // it (with --resume when the session has one) when there is none.
-func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins provider.Instance, bin, soul, overlay string, mcpVars, brokerVars []string, releaseBroker func()) (provider.Process, error) {
-	args := buildRPCArgs(ins, opt, soul, overlay, s.ExtraArgs)
+// resume is the --resume value (the id, or the transcript's path when
+// another profile holds it); opt.ResumeID stays the id the live process
+// is compared against.
+func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins provider.Instance, bin, resume, soul, overlay string, mcpVars, brokerVars []string, releaseBroker func()) (provider.Process, error) {
+	args := buildRPCArgs(ins, withResume(opt, resume), soul, overlay, s.ExtraArgs)
 	env := append(envscrub.ScrubOSEnv(), opt.ExtraEnv...)
 	env = append(env, mcpVars...)
 	// Same as -p: no ~/.claude MCP/config source, no config overlays from
@@ -114,6 +117,9 @@ func (s Spawner) spawnRPC(ctx context.Context, opt provider.SpawnOptions, ins pr
 	// A sharer's broker URL + token: part of the key, so a broker that
 	// came back on another port gets a fresh process.
 	env = append(env, brokerVars...)
+	if opt.Workspace != "" {
+		env = append(env, "PWD="+opt.Workspace) // like --cwd; see Spawn
+	}
 	key := rpcKey(ins.Name, opt.SessionID, s.MCPOwner, bin, opt.Workspace, env, args)
 
 	// A live process serving another omp session than this turn resumes

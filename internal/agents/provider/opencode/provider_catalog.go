@@ -2,8 +2,10 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yogasw/wick/internal/agents/provider"
@@ -23,7 +25,26 @@ import (
 // same group and the stale sweep would kill the real server. One boot
 // costs about what `opencode models` does, and yields all three lists.
 
-func init() { provider.OpencodeCatalogFetcher = fetchInstanceCatalog }
+func init() {
+	provider.OpencodeCatalogFetcher = fetchInstanceCatalog
+	provider.RegisterModelHarvester(provider.TypeOpencode, harvestModels)
+}
+
+// errNoLiveServe: no `opencode serve` is running for the instance and the
+// caller may not start one.
+var errNoLiveServe = errors.New("opencode: no running server for the catalog (Refresh to start one)")
+
+// harvestModels is opencode's provider.ModelHarvester: the catalog of the
+// instance's running `opencode serve` (GET /provider), the same list the
+// CLI path builds (provider.ListCLIModels → catalogModels). Nothing is
+// started when no server runs.
+func harvestModels(ctx context.Context, ins provider.Instance) ([]provider.ModelSeed, error) {
+	cat, err := fetchInstanceCatalog(ctx, ins)
+	if err != nil || cat == nil {
+		return nil, err
+	}
+	return cat.Models(), nil
+}
 
 // catalogServe boots the throwaway server; swapped in tests.
 var catalogServe = startServe
@@ -41,6 +62,12 @@ func fetchInstanceCatalog(ctx context.Context, ins provider.Instance) (*provider
 			return cat, nil
 		}
 	}
+	// No server running: a throwaway one is a full opencode process, so it
+	// starts only for the user's explicit Refresh / login action
+	// (provider.WithHelperSpawn); a render or harvest gets nothing.
+	if !provider.HelperSpawnAllowed(ctx) {
+		return nil, errNoLiveServe
+	}
 	bin, found := provider.ResolveBinary(ins)
 	if !found {
 		return nil, fmt.Errorf("opencode binary not found: %s", bin)
@@ -56,6 +83,17 @@ func fetchInstanceCatalog(ctx context.Context, ins provider.Instance) (*provider
 	// AccountEnv carries the instance Env, so API keys count as connected.
 	spec.bin = bin
 	spec.env = append(append(envscrub.ScrubOSEnv(), provider.AccountEnv(ins)...), added...)
+	// The throwaway server is a full opencode process: one model listing
+	// at a time across instances, inside the memory guard
+	// ("opencode-catalog" scope, the instance's own limit).
+	free, err := provider.AcquireHelperSlot(ctx)
+	defer free()
+	if err != nil {
+		return nil, err
+	}
+	wrap, release := provider.HelperWrap(&ins, provider.HelperLabel(provider.TypeOpencode, "catalog"))
+	defer release()
+	spec.wrap = wrap
 	h, err := catalogServe(ctx, spec, randomPassword())
 	if err != nil {
 		return nil, err
@@ -78,6 +116,9 @@ type providerList struct {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
 			Status string `json:"status"`
+			Limit  struct {
+				Context int `json:"context"`
+			} `json:"limit"`
 		} `json:"models"`
 	} `json:"all"`
 	Default   map[string]string `json:"default"`
@@ -125,4 +166,48 @@ func fetchCatalog(ctx context.Context, c *apiClient) (*provider.OpencodeCatalog,
 		}
 	}
 	return cat, nil
+}
+
+// modelWindow is model's ("provider/model") context limit from the running
+// server's GET /provider (limit.context), 0 when not listed.
+func modelWindow(ctx context.Context, c *apiClient, model string) int {
+	prov, id, ok := strings.Cut(model, "/")
+	if !ok {
+		return 0
+	}
+	var list providerList
+	if err := c.do(ctx, http.MethodGet, "/provider", nil, &list); err != nil {
+		return 0
+	}
+	for _, p := range list.All {
+		if p.ID != prov {
+			continue
+		}
+		for key, m := range p.Models {
+			if key == id || m.ID == id {
+				return m.Limit.Context
+			}
+		}
+	}
+	return 0
+}
+
+// autoCompaction is whether this server compacts a session by itself
+// once the window fills: its resolved config's compaction.auto (GET
+// /config), true when unset — opencode compacts unless that is false.
+// nil when the config cannot be read.
+func autoCompaction(ctx context.Context, c *apiClient) *bool {
+	var cfg struct {
+		Compaction *struct {
+			Auto *bool `json:"auto"`
+		} `json:"compaction"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/config", nil, &cfg); err != nil {
+		return nil
+	}
+	on := true
+	if cfg.Compaction != nil && cfg.Compaction.Auto != nil {
+		on = *cfg.Compaction.Auto
+	}
+	return &on
 }

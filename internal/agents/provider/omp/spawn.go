@@ -93,6 +93,25 @@ func writeSoul(opt provider.SpawnOptions) string {
 	return p
 }
 
+// sessionOMPDir is the wick session's own .omp dir ("" without one).
+func sessionOMPDir(opt provider.SpawnOptions) string {
+	dir := opt.SessionDir
+	if dir == "" {
+		dir = opt.Workspace
+	}
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, ".omp")
+}
+
+// withResume is opt with the --resume value swapped for resume (an id or
+// a transcript path); opt.ResumeID itself stays the id everywhere else.
+func withResume(opt provider.SpawnOptions, resume string) provider.SpawnOptions {
+	opt.ResumeID = resume
+	return opt
+}
+
 // writeOverlay writes the isolation overlay under the per-session dir and
 // returns its path ("" when there is nowhere to put it).
 func writeOverlay(opt provider.SpawnOptions) string {
@@ -170,11 +189,12 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	var mcpVars []string
 	endpoint := mcpEndpointFromEnv()
 	withWick := endpoint != "" && s.MCPToken != ""
-	if home, _ := homeDir(); home != "" {
-		cfgDir := envValue(opt.ExtraEnv, "PI_CONFIG_DIR")
-		if cfgDir == "" {
-			cfgDir = os.Getenv("PI_CONFIG_DIR")
-		}
+	home, _ := homeDir()
+	cfgDir := envValue(opt.ExtraEnv, "PI_CONFIG_DIR")
+	if cfgDir == "" {
+		cfgDir = os.Getenv("PI_CONFIG_DIR")
+	}
+	if home != "" {
 		if err := ensureMCPConfig(profileAgentDir(home, cfgDir, profile), withWick, extras); err != nil {
 			log.Warn().Err(err).Str("profile", profile).Msg("agents.spawn: omp mcp.json not updated — wick tools unavailable")
 		} else if withWick {
@@ -189,14 +209,39 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 		return nil, fmt.Errorf("omp instance %s: %w", ins.Name, err)
 	}
 
+	// The transcript may live in another instance's profile (the session
+	// was moved here): resume it by path so the conversation carries on.
+	resume := opt.ResumeID
+	if home != "" {
+		resume = resumeArg(ompRoot(home, cfgDir), profile, opt.ResumeID, sessionOMPDir(opt))
+	}
+	// Another instance's RPC process holding this session's transcript
+	// open would serve a stale copy of it on a switch back: it goes.
+	if opt.SessionID != "" {
+		rpcServers.RetireGroups(func(instance, group string) bool {
+			return instance != ins.Name && group == instance+"/"+opt.SessionID
+		})
+	}
+
+	// No pin: the chosen live Default model, or — resuming a transcript
+	// another profile wrote last — this instance's own model.
+	extra := s.ExtraArgs
+	if m := defaultModelArgs(ctx, ins, opt, profile, resume, sessionOMPDir(opt), s.ExtraArgs); m != nil {
+		log.Info().Str("profile", profile).Str("resume", opt.ResumeID).Str("model", m[1]).
+			Msg("agents.spawn: omp model from the instance (no session pin)")
+		extra = append(append([]string{}, s.ExtraArgs...), m...)
+	}
+	noteWriter(sessionOMPDir(opt), profile, opt.ResumeID)
+	s.ExtraArgs = extra
+
 	soul, overlay := writeSoul(opt), writeOverlay(opt)
 	if useServer(ins, s.ExtraArgs, opt.ExtraArgs) {
-		return s.spawnRPC(ctx, opt, ins, bin, soul, overlay, mcpVars, brokerVars, releaseBroker)
+		return s.spawnRPC(ctx, opt, ins, bin, resume, soul, overlay, mcpVars, brokerVars, releaseBroker)
 	}
 	// Server mode off: a plain -p run, and an RPC process the instance no
 	// longer uses stops once it has no turn.
 	rpcServers.Retire(ins.Name)
-	args := buildArgs(ins, opt, soul, overlay, s.ExtraArgs)
+	args := buildArgs(ins, withResume(opt, resume), soul, overlay, s.ExtraArgs)
 
 	execBin, execArgs, scopeUnit := opt.MemGuard.Wrap(bin, args, "omp", opt.SpawnSeq)
 	cmd := safeexec.CommandContext(ctx, execBin, execArgs...)
@@ -209,6 +254,10 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	// wick's own environment.
 	cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR=", "PI_CONFIG_FILES=")
 	cmd.Env = append(cmd.Env, brokerVars...)
+	// Like --cwd: an inherited PWD must not name another directory.
+	if opt.Workspace != "" {
+		cmd.Env = append(cmd.Env, "PWD="+opt.Workspace)
+	}
 	hideConsole(cmd)
 	procgroup.Apply(cmd)
 
@@ -239,7 +288,9 @@ func (s Spawner) Spawn(ctx context.Context, opt provider.SpawnOptions) (provider
 	go writePrompt(stdin, opt.InitialMessage)
 
 	log.Info().Int("pid", cmd.Process.Pid).Str("scope", scopeUnit).Msg("agents.spawn: started (omp)")
-	proc := &process{cmd: cmd, stdout: stdout, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}
+	// No RPC to ask get_state: the window comes from models.db (window.go).
+	stdoutR := withContextLine(stdout, spawnWindow(ctx, ins, args))
+	proc := &process{cmd: cmd, stdout: stdoutR, env: addedEnv, scopeUnit: scopeUnit, realBin: bin, realArgv: args}
 	revoke := s.RevocableToken
 	proc.onExit = func() {
 		releaseBroker()
