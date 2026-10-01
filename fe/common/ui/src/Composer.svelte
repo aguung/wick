@@ -735,6 +735,11 @@
     const m = modelListMeta(list);
     if (m) modelMeta = { ...modelMeta, [key]: m };
   }
+  // The stamp shown for a level: its own load's, else (top level only) the
+  // one the option row came with. The footer and Refresh read the same.
+  function levelMeta(key: string, o: ComposerSelectOption, inSet = !!setDrill): ModelListMeta | undefined {
+    return modelMeta[key] ?? (inSet ? undefined : modelListMeta(o.models));
+  }
   async function loadModelsFor(o: ComposerSelectOption, refresh = false) {
     if (!provider?.loadModels) return; // no loader wired → static list only
     if ((modelCache[o.value] && !refresh) || modelLoading.has(o.value)) return; // cached / in flight
@@ -794,7 +799,7 @@
     const o = modelDrillOpt;
     if (!o) return;
     const key = setDrill ? setCacheKey(o.value, setDrill) : o.value;
-    const refresh = !!modelMeta[key]?.canRefresh;
+    const refresh = !!levelMeta(key, o)?.canRefresh;
     const next = { ...modelCache };
     delete next[key];
     modelCache = next;
@@ -1317,7 +1322,7 @@
                 </div>
               {/each}
             </div>
-            {@const drillMeta = modelMeta[inSet ? setCacheKey(drill.value, inSet) : drill.value] ?? (inSet ? undefined : modelListMeta(drill.models))}
+            {@const drillMeta = levelMeta(inSet ? setCacheKey(drill.value, inSet) : drill.value, drill, !!inSet)}
             {#if drillMeta}
               <div class="flex items-center justify-between gap-2 border-t border-white-300 dark:border-navy-600 px-3 py-1.5 text-[11px] text-black-700 dark:text-black-600" data-testid="composer-models-updated">
                 <span>{describeModelListMeta(drillMeta)}</span>

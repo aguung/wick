@@ -141,6 +141,33 @@ describe("Composer — toolbar dropdowns + bell", () => {
     expect(screen.getByTestId("composer-models-updated").textContent).toContain("files");
   });
 
+  test("Refresh offered from the option row's stamp asks for a CLI run", async () => {
+    // The drill-in comes back without a stamp of its own: the row's applies.
+    const loadModels = vi.fn(async (_v: string, _o?: { refresh?: boolean }) => [
+      { id: "openai-codex", label: "openai-codex", default: true, live: true },
+    ]);
+    const models = optionModelsWithMeta({
+      models: [
+        { id: "openai-codex", label: "openai-codex", default: true, live: true },
+        { id: "anthropic", label: "anthropic", default: false, live: true },
+      ],
+      models_fetched_at: "2026-10-01T08:25:00Z",
+      models_source: "files",
+      models_can_refresh: true,
+    });
+    render(Composer, {
+      props: {
+        onSend: vi.fn(),
+        provider: { options: [{ label: "omp · waba", value: "omp/waba", models }], value: "omp/waba", onChange: vi.fn(), loadModels },
+      },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /provider/i }));
+    await waitFor(() => expect(loadModels).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10));
+    await fireEvent.click(screen.getByTestId("composer-models-refresh"));
+    expect(loadModels).toHaveBeenLastCalledWith("omp/waba", { refresh: true });
+  });
+
   test("drilled provider offers a 'Use default' row that pins the provider without a model", async () => {
     const onChange = vi.fn();
     render(Composer, {

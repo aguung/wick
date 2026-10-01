@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -1624,11 +1625,13 @@ func providerChoicesCached(ctx context.Context) []view.ProviderChoiceVM {
 }
 
 // liveModelChoices is an omp/opencode instance's grouped first level (the
-// rows the drill-in endpoint returns: provider → account → model), built
-// from a list already known in memory or on disk. The picker then opens on
-// its final shape instead of a flat list that is swapped a moment later.
-// nil while cold: listing providers never waits on a harvest.
-func liveModelChoices(ctx context.Context, ins provider.Instance) ([]view.ModelChoiceVM, time.Time, string) {
+// rows the drill-in endpoint returns: provider → account → model), so the
+// picker opens on its final shape instead of a flat list swapped a moment
+// later. It only ever returns rows built earlier: building them can read
+// omp's account pool (`omp usage`, up to 45s on a cold cache), and this
+// feeds every provider list. A miss starts that build in the background —
+// the next list has it — and returns nil (the flat list stays).
+func liveModelChoices(_ context.Context, ins provider.Instance) ([]view.ModelChoiceVM, time.Time, string) {
 	if !provider.LiveModelsEnabled(ins) || !ins.ModelSelect {
 		return nil, time.Time{}, ""
 	}
@@ -1637,18 +1640,56 @@ func liveModelChoices(ctx context.Context, ins provider.Instance) ([]view.ModelC
 	if !grouped || at.IsZero() {
 		return nil, time.Time{}, ""
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	key := string(ins.Type) + "/" + ins.Name
+	liveRowsMu.Lock()
+	e, ok := liveRowsCache[key]
+	stale := !ok || !e.listAt.Equal(at) || time.Since(e.builtAt) > liveRowsTTL
+	building := liveRowsBuilding[key]
+	if stale && !building {
+		liveRowsBuilding[key] = true
+	}
+	liveRowsMu.Unlock()
+	if stale && !building {
+		go buildLiveRows(sets, ins, key, at)
+	}
+	if !ok || len(e.rows) <= 1 {
+		return nil, time.Time{}, ""
+	}
+	return e.rows, at, src
+}
+
+// buildLiveRows computes ins's first level for liveModelChoices.
+func buildLiveRows(sets provider.ModelSets, ins provider.Instance, key string, listAt time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	rows, err := sets.Sets(ctx, ins)
-	if err != nil || len(rows) <= 1 {
-		return nil, time.Time{}, ""
+	liveRowsMu.Lock()
+	defer liveRowsMu.Unlock()
+	delete(liveRowsBuilding, key)
+	if err != nil {
+		return
 	}
 	out := make([]view.ModelChoiceVM, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, view.ModelChoiceVM{ID: m.ID, Label: m.Label, Default: m.Default, Desc: m.Desc, Live: m.Live, Caps: m.Caps})
 	}
-	return out, at, src
+	liveRowsCache[key] = liveRowsEntry{rows: out, listAt: listAt, builtAt: time.Now()}
 }
+
+type liveRowsEntry struct {
+	rows    []view.ModelChoiceVM
+	listAt  time.Time // the cached list they were built from
+	builtAt time.Time
+}
+
+var (
+	liveRowsMu       sync.Mutex
+	liveRowsCache    = map[string]liveRowsEntry{}
+	liveRowsBuilding = map[string]bool{}
+)
+
+// liveRowsTTL bounds how long the account part (labels, counts) is reused.
+const liveRowsTTL = 5 * time.Minute
 
 // modelChoicesForList is the top-level provider-list variant: it collapses a
 // single-model instance to nil so the picker shows no needless drill arrow

@@ -3,8 +3,10 @@ package agents
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/yogasw/wick/internal/agents/provider"
+	"github.com/yogasw/wick/internal/tools/agents/view"
 )
 
 // The provider list carries an omp/opencode instance's known live list in
@@ -19,7 +21,18 @@ func TestLiveModelChoicesMatchDrillIn(t *testing.T) {
 	known := mk("oc-known")
 	t.Cleanup(provider.SetCLIModelsForTest(known, "opencode/mimo-free", "opencode/nemotron-free", "openrouter/qwen"))
 
-	rows, at, _ := liveModelChoices(context.Background(), known)
+	// The first list never waits on the build (it can run `omp usage`);
+	// it starts it, and a later list carries the rows.
+	if rows, _, _ := liveModelChoices(context.Background(), known); rows != nil {
+		t.Fatalf("first list waited on the build: %+v", rows)
+	}
+	var rows []view.ModelChoiceVM
+	var at time.Time
+	deadline := time.Now().Add(5 * time.Second)
+	for rows == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		rows, at, _ = liveModelChoices(context.Background(), known)
+	}
 	if at.IsZero() || len(rows) != 2 {
 		t.Fatalf("known list: rows=%+v at=%v, want the 2 provider groups with a stamp", rows, at)
 	}
