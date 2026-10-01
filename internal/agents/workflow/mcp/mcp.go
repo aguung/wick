@@ -183,14 +183,21 @@ func WorkspaceFormatContracts() map[string]any {
 				"open_modal":      "{{.Node.openmodal.view_id}}",
 			},
 		},
+		"authoring": map[string]any{
+			"rule":                "Every node AND every trigger gets a markdown description: what it is for + a \"Kenapa:\" line (why it exists). A node/trigger without one is unfinished — workflow_validate warns per id. When you change what a node does, update its Kenapa line in the same edit.",
+			"example_description": "Kirim ringkasan ke thread asal.\n\nKenapa: pelapor butuh jawaban di thread yang sama, bukan DM.",
+			"go_script":           "Open every go_script / code body with a header comment: Buat apa / Kenapa / Input / Output. Each helper func gets a one-line comment.",
+			"sticky_note":         "Group each path with a node of type sticky_note (added via workflow_add_node; fields content = markdown title + short summary, color yellow|green|blue|purple|red|gray, width, height). It renders behind the block, never executes, takes no edges, and needs no description (content counts).",
+			"cost":                "Every mutation returns the whole workflow — plan the edits first, batch moves with workflow_move_nodes, and do not poll workflow_get between edits.",
+		},
 		"canvas_ops": map[string]any{
-			"rule": "Always use canvas ops to read and organise node positions — never guess x/y coordinates.",
+			"rule": "Always use canvas ops to read and organise node positions — never guess x/y coordinates. After EVERY graph edit tidy the canvas so a human can read it: one column per trigger, top→bottom, parallel branches in the next column over, no crossing edges, sticky_note nodes wrapping their block. Check workflow_canvas_view before workflow_publish.",
 			"ops": map[string]string{
 				"workflow_canvas_view": "Read current layout: returns table of {id, label, type, x, y, edges_to} + ASCII sketch. Call this FIRST when the user asks about canvas layout or before moving nodes.",
 				"workflow_move_nodes":  "Move one or more nodes in a single call. Pass moves=[{node_id,x,y},...]. More efficient than N workflow_move_node calls; safe to mix graph nodes and trigger IDs.",
-				"workflow_auto_layout": "Auto-arrange all nodes using DAG rank layout (Kahn's BFS). Triggers land at y=60 above their entry node; graph nodes fan left→right by rank. Pass node_ids=[] to scope; empty = all. Always publish after if the user wants the layout live.",
+				"workflow_auto_layout": "Auto-arrange nodes in lanes: one column per trigger (trigger at y=60 above its entry node), nodes top→bottom by DAG rank (Kahn's BFS), shared nodes in the first trigger's lane, parallel branches spread right inside the lane. sticky_note nodes are not moved — re-wrap them with workflow_move_nodes after. Pass node_ids=[] to scope; empty = all. Always publish after if the user wants the layout live.",
 			},
-			"workflow": "workflow_canvas_view → (understand layout) → workflow_move_nodes OR workflow_auto_layout → workflow_publish",
+			"workflow": "edit graph → workflow_auto_layout → workflow_move_nodes (wrap sticky_note around each block) → workflow_canvas_view (verify) → workflow_publish",
 		},
 	}
 }

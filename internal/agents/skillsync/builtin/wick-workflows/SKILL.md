@@ -51,7 +51,7 @@ If the task is a single prompt and a single reply, a workflow is overhead. Say s
 }
 ```
 
-Node types include `classify`, `agent`, `connector`, `http`, `shell`, `branch`, `parallel`, and the `datatable_*` family. Do not guess a node's schema — fetch it (see *Authoring over MCP* below).
+Node types include `classify`, `agent`, `connector`, `http`, `shell`, `branch`, `parallel`, the `datatable_*` family, and `sticky_note` — a canvas-only annotation (fields `content`, `color`, `width`, `height`) that never executes and takes no edges. Do not guess a node's schema — fetch it (see *Authoring over MCP* below).
 
 ## Triggers
 
@@ -82,6 +82,31 @@ Every trigger contributes to `.Event` — payload, source identity, timestamp, u
 Workflows are scaffolded and edited through `workflow_*` operations. The discipline is the same as connectors: **fetch the schema, do not guess it.** The node catalog, per-node input schema, and output fields are all introspectable — a node's `Descriptor()` is the source of truth, so what MCP returns is always current.
 
 Editing a live workflow creates a new version rather than mutating the running one. Publish makes a version active.
+
+### Rules for every edit (required)
+
+These keep a workflow readable by the next person — human or AI — who opens it. A workflow that breaks them is not finished.
+
+1. **Every node and every trigger gets a `description`.** Markdown: one line on what it is for, then a `Kenapa:` line on why it exists. Pass it in `workflow_add_node` / `workflow_update_node` (nodes) and `workflow_set_triggers` (triggers). `workflow_validate` warns once per id that lacks one. When you change what a node does, update its `Kenapa:` line in the same edit.
+
+   ```markdown
+   Kirim ringkasan ke thread asal.
+
+   Kenapa: pelapor butuh jawaban di thread yang sama, bukan DM.
+   ```
+
+2. **Every `go_script` / code body opens with a header comment** — `Buat apa` / `Kenapa` / `Input` / `Output` — and each helper function gets a one-line comment.
+
+   ```go
+   // Buat apa: ambil nomor tiket dari teks pesan.
+   // Kenapa: node berikutnya butuh id tiket, bukan teks mentah.
+   // Input: .Node.trigger.payload.text
+   // Output: {"ticket_id": "T-123"} atau {"ticket_id": ""}
+   ```
+
+3. **Group each path with a `sticky_note` node.** Add it with `workflow_add_node` (`type: sticky_note`, `content` = markdown title of the path + a short summary, `color` one of yellow/green/blue/purple/red/gray, `width`/`height` big enough to cover the block). It renders behind the block's nodes. Its `content` counts as its description. There is no separate note op — `workflow_update_node`, `workflow_move_nodes` and `workflow_delete_node` handle it like any node.
+4. **After every graph edit, tidy the canvas.** One column per trigger, top→bottom, parallel branches in the column next to it, no crossing edges, each sticky note wrapping its block. `workflow_auto_layout` does the lanes (it leaves sticky notes where they are, so re-wrap them with `workflow_move_nodes`); check `workflow_canvas_view` before `workflow_publish`.
+5. **Plan, do not poll.** Every mutation returns the whole workflow, so plan the edits up front, batch moves in one `workflow_move_nodes`, and do not call `workflow_get` between edits to "see" a result you already have.
 
 ## Debugging a run
 

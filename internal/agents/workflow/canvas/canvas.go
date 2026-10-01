@@ -186,12 +186,14 @@ func (c *Canvas) MoveNodes(id string, moves []NodeMove) (workflow.Workflow, erro
 }
 
 // layout constants used by AutoLayout.
-// Top-down layout: Y = depth level, X = horizontal spread within level.
+// Top-down lane layout: each trigger owns a column (lane), Y = depth
+// level, X = parallel branches spread rightwards inside the lane.
 const (
-	layoutXGap    = 260 // horizontal gap between nodes in the same level
+	layoutXGap    = 260 // horizontal gap between nodes in the same row of a lane
 	layoutYGap    = 220 // vertical gap between depth levels
-	layoutXOrigin = 420 // center X around which each level is spread
-	layoutYOrigin = 60  // Y for depth 0 (triggers / root nodes)
+	layoutLaneGap = 200 // extra empty space between two lanes
+	layoutXOrigin = 160 // X of the first lane's left edge
+	layoutYOrigin = 60  // Y for the trigger row
 )
 
 // AutoLayout computes DAG-aware positions and applies them in one draft
@@ -216,36 +218,56 @@ func (c *Canvas) AutoLayout(id string, nodeIDs []string) (workflow.Workflow, err
 	})
 }
 
-// computeLayout returns top-down DAG positions.
+// computeLayout returns top-down lane positions.
 //
 // Layout model:
 //
-//	triggers                → Y = layoutYOrigin (60)
+//	triggers                → Y = layoutYOrigin (60), top of their lane
 //	graph depth 0 (roots)   → Y = layoutYOrigin + layoutYGap (280)
-//	graph depth 1           → Y = layoutYOrigin + 2*layoutYGap (500)
 //	graph depth N           → Y = layoutYOrigin + (N+1)*layoutYGap
 //
-// Triggers are placed DIRECTLY ABOVE their entry node (same X).
-// This guarantees no trigger-to-entry edge ever crosses another edge.
-// Multiple triggers on the same entry node are spread symmetrically.
+// Lanes: walking the triggers in declared order, each trigger claims
+// every node reachable from its entry that no earlier trigger claimed.
+// So a node only one trigger reaches sits in that trigger's lane, and a
+// node shared by several triggers sits in the FIRST trigger's lane.
+// Triggers on the same entry share one lane. Nodes no trigger reaches
+// (orphan roots, cycles) get lanes of their own after the trigger lanes.
+// Lanes sit side by side left→right with layoutLaneGap between them, so
+// two triggers' paths never stack on or cross each other.
 //
-// Within each depth level graph nodes are spread horizontally and
-// centred around layoutXOrigin, sorted by ID for determinism.
+// Inside a lane, a depth row with several nodes (parallel branches)
+// spreads rightwards from the lane's left edge, sorted by ID.
+//
+// sticky_note nodes are never moved: they are annotations the author
+// placed around a block by hand, and guessing their new box from the
+// block's new layout is worse than leaving them for the author/AI to
+// re-wrap with workflow_move_nodes.
 //
 // When restrict is non-empty only those node IDs are repositioned and
 // trigger placement is skipped.
 func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[string]any {
 	layoutAll := len(restrict) == 0
 
+	annotation := make(map[string]bool)
+	for _, n := range w.Graph.Nodes {
+		if n.Type.IsAnnotation() {
+			annotation[n.ID] = true
+		}
+	}
+
 	// --- Build scope: graph nodes only (triggers placed separately) ---
 	scope := make(map[string]bool)
 	if layoutAll {
 		for _, n := range w.Graph.Nodes {
-			scope[n.ID] = true
+			if !annotation[n.ID] {
+				scope[n.ID] = true
+			}
 		}
 	} else {
 		for _, id := range restrict {
-			scope[id] = true
+			if !annotation[id] {
+				scope[id] = true
+			}
 		}
 	}
 
@@ -262,21 +284,27 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 			inbound[e.To]++
 		}
 	}
+	for id := range children {
+		sort.Strings(children[id])
+	}
+	roots := make([]string, 0, len(scope))
+	for id := range scope {
+		if inbound[id] == 0 {
+			roots = append(roots, id)
+		}
+	}
+	sort.Strings(roots)
 
 	// --- Kahn's BFS: depth = rows below the trigger row --------------
-	// Initialise all depths to 0 so roots appear in byDepth map.
 	depth := make(map[string]int, len(scope))
 	for id := range scope {
 		depth[id] = 0
 	}
-	ready := make([]string, 0, len(scope))
-	for id := range scope {
-		if inbound[id] == 0 {
-			ready = append(ready, id)
-		}
+	pending := make(map[string]int, len(inbound))
+	for id, n := range inbound {
+		pending[id] = n
 	}
-	sort.Strings(ready)
-
+	ready := append([]string(nil), roots...)
 	visited := make(map[string]bool, len(scope))
 	maxDepth := 0
 	for len(ready) > 0 {
@@ -286,106 +314,144 @@ func computeLayout(w *workflow.Workflow, restrict []string) map[string]map[strin
 			continue
 		}
 		visited[cur] = true
-		ch := append([]string(nil), children[cur]...)
-		sort.Strings(ch)
-		for _, child := range ch {
+		for _, child := range children[cur] {
 			if d := depth[cur] + 1; d > depth[child] {
 				depth[child] = d
 				if d > maxDepth {
 					maxDepth = d
 				}
 			}
-			inbound[child]--
-			if inbound[child] == 0 {
+			pending[child]--
+			if pending[child] == 0 {
 				ready = append(ready, child)
 				sort.Strings(ready)
 			}
 		}
 	}
 	// Unreachable nodes (cycles) land after the deepest reachable row.
+	cyclic := make([]string, 0)
 	for id := range scope {
 		if !visited[id] {
-			maxDepth++
-			depth[id] = maxDepth
+			cyclic = append(cyclic, id)
+		}
+	}
+	sort.Strings(cyclic)
+	for _, id := range cyclic {
+		maxDepth++
+		depth[id] = maxDepth
+	}
+
+	// --- Assign lanes -------------------------------------------------
+	// lane[id] = index into lanes. claim walks every node reachable from
+	// seed that has no lane yet and gives it lane l.
+	lane := make(map[string]int, len(scope))
+	laneCount := 0
+	claim := func(seed string, l int) bool {
+		if !scope[seed] {
+			return false
+		}
+		if _, taken := lane[seed]; taken {
+			return false
+		}
+		stack := []string{seed}
+		for len(stack) > 0 {
+			cur := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if _, taken := lane[cur]; taken {
+				continue
+			}
+			lane[cur] = l
+			stack = append(stack, children[cur]...)
+		}
+		return true
+	}
+
+	trigs := withTriggerIDs(w.Triggers)
+	entryOf := func(t workflow.Trigger) string {
+		if t.EntryNode != "" {
+			return t.EntryNode
+		}
+		return w.Graph.Entry
+	}
+	trigLane := make(map[string]int, len(trigs))
+	for _, t := range trigs {
+		entry := entryOf(t)
+		if l, ok := lane[entry]; ok {
+			trigLane[t.ID] = l // entry already claimed: share that lane
+			continue
+		}
+		if claim(entry, laneCount) {
+			trigLane[t.ID] = laneCount
+			laneCount++
+			continue
+		}
+		trigLane[t.ID] = -1 // entry missing / out of scope
+	}
+	for _, id := range append(roots, cyclic...) {
+		if claim(id, laneCount) {
+			laneCount++
 		}
 	}
 
-	// --- Group by depth, sort within level for determinism -----------
-	byDepth := make(map[int][]string, maxDepth+1)
-	for id, d := range depth {
-		byDepth[d] = append(byDepth[d], id)
+	// --- Lane widths: widest row (or trigger row) decides --------------
+	rows := make(map[int]map[int][]string, laneCount) // lane → depth → ids
+	for id, l := range lane {
+		if rows[l] == nil {
+			rows[l] = map[int][]string{}
+		}
+		rows[l][depth[id]] = append(rows[l][depth[id]], id)
 	}
-	for d := range byDepth {
-		sort.Strings(byDepth[d])
+	trigsInLane := make(map[int][]string, laneCount)
+	orphanTrigs := make([]string, 0)
+	for _, t := range trigs {
+		if l := trigLane[t.ID]; l >= 0 {
+			trigsInLane[l] = append(trigsInLane[l], t.ID)
+		} else {
+			orphanTrigs = append(orphanTrigs, t.ID)
+		}
+	}
+	laneX := make([]int, laneCount)
+	x := layoutXOrigin
+	for l := 0; l < laneCount; l++ {
+		laneX[l] = x
+		cols := 1
+		if layoutAll && len(trigsInLane[l]) > cols {
+			cols = len(trigsInLane[l])
+		}
+		for d := range rows[l] {
+			sort.Strings(rows[l][d])
+			if len(rows[l][d]) > cols {
+				cols = len(rows[l][d])
+			}
+		}
+		x += cols*layoutXGap + layoutLaneGap
 	}
 
 	// --- Assign graph node positions ---------------------------------
-	// depth 0 → Y = layoutYOrigin + layoutYGap  (280 default)
-	// depth N → Y = layoutYOrigin + (N+1)*layoutYGap
-	out := make(map[string]map[string]any, len(scope))
-	for d := 0; d <= maxDepth; d++ {
-		ids := byDepth[d]
-		if len(ids) == 0 {
-			continue
-		}
-		y := layoutYOrigin + (d+1)*layoutYGap
-		totalW := (len(ids) - 1) * layoutXGap
-		startX := layoutXOrigin - totalW/2
-		for i, id := range ids {
-			out[id] = map[string]any{
-				"x": startX + i*layoutXGap,
-				"y": y,
+	out := make(map[string]map[string]any, len(scope)+len(trigs))
+	for l := 0; l < laneCount; l++ {
+		for d, ids := range rows[l] {
+			y := layoutYOrigin + (d+1)*layoutYGap
+			for i, id := range ids {
+				out[id] = map[string]any{"x": laneX[l] + i*layoutXGap, "y": y}
 			}
 		}
 	}
 
-	// --- Place triggers directly above their entry nodes -------------
-	// Each trigger shares the X of its entry node (straight edge, no
-	// crossing). Multiple triggers on the same entry are spread
-	// symmetrically around that X.
+	// --- Triggers: top row of their lane ------------------------------
+	// Lay out EVERY trigger, including any that still lack an id
+	// (workflows written before SetTriggers started minting them).
+	// Skipping those left their cards stacked at the canvas origin with
+	// no edge to their entry node. A trigger whose entry is missing gets
+	// a trailing column of its own so it never overlaps a lane.
 	if layoutAll {
-		// Lay out EVERY trigger, including any that still lack an id
-		// (workflows written before SetTriggers started minting them).
-		// Skipping those left their cards stacked at the canvas origin
-		// with no edge to their entry node.
-		//
-		// One shared row, evenly spaced. Spreading each entry node's
-		// triggers around its own X independently looked tidier but let
-		// the groups overlap: four triggers on an entry at x=420 span
-		// 30..810, which swallows a second entry's single trigger at
-		// x=160 and stacks the cards on top of each other. Ordering the
-		// row by entry X keeps each trigger near its target without ever
-		// colliding.
-		trigs := withTriggerIDs(w.Triggers)
-		if len(trigs) > 0 {
-			entryX := func(t workflow.Trigger) int {
-				if pos, ok := out[t.EntryNode]; ok {
-					if x, ok := pos["x"].(int); ok {
-						return x
-					}
-				}
-				return layoutXOrigin
+		for l := 0; l < laneCount; l++ {
+			for i, id := range trigsInLane[l] {
+				out[id] = map[string]any{"x": laneX[l] + i*layoutXGap, "y": layoutYOrigin}
 			}
-			sort.SliceStable(trigs, func(i, j int) bool {
-				xi, xj := entryX(trigs[i]), entryX(trigs[j])
-				if xi != xj {
-					return xi < xj
-				}
-				return trigs[i].ID < trigs[j].ID
-			})
-			sum := 0
-			for _, t := range trigs {
-				sum += entryX(t)
-			}
-			centre := sum / len(trigs)
-			totalW := (len(trigs) - 1) * layoutXGap
-			startX := centre - totalW/2
-			for i, t := range trigs {
-				out[t.ID] = map[string]any{
-					"x": startX + i*layoutXGap,
-					"y": layoutYOrigin,
-				}
-			}
+		}
+		for i, id := range orphanTrigs {
+			out[id] = map[string]any{"x": x + i*layoutXGap, "y": layoutYOrigin}
 		}
 	}
 	return out
