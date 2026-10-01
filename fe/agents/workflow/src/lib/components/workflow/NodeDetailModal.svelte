@@ -17,6 +17,7 @@
 
   import { detailNodeID, draftWorkflow, removeNode, updateNode, renameNodeLabel, isValidLabel, LABEL_FORMAT_HINT, stepResultsByNode, runStatusByNode, triggerEventByID, type StepResult } from "$lib/stores/editor";
   import JsonViewer from "./fields/JsonViewer.svelte";
+  import MarkdownField from "./MarkdownField.svelte";
   import { resolveNodeInput, EVENT_SOURCE } from "./nodeInput";
   import { inferSchema } from "./fields/jsonSchema";
   import { catalog } from "$lib/stores/catalog";
@@ -546,7 +547,7 @@
         <span class="text-sm font-semibold truncate">{node.label || node.id}</span>
         <span class="text-xs text-black-700 dark:text-black-600 shrink-0">{node.type}</span>
         <div class="flex-1"></div>
-        <button class="text-black-700 dark:text-black-500 hover:text-black-800 dark:text-white-100 text-xl leading-none shrink-0" onclick={close} aria-label="Close">✕</button>
+        <button class="text-black-700 dark:text-black-500 hover:text-black-800 dark:hover:text-white-100 text-xl leading-none shrink-0" onclick={close} aria-label="Close">✕</button>
       </header>
 
       <!-- Mobile pane switcher — hidden on lg where all 3 columns show. -->
@@ -707,16 +708,21 @@
                   </span>
                 {/if}
               </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs font-medium">Description</span>
-                <textarea
-                  class="rounded border border-white-400 dark:border-navy-600 bg-white-100 dark:bg-navy-700 px-3 py-1.5 text-sm"
-                  rows="2"
-                  placeholder="Notes for collaborators (optional)"
+              {#if node.type === "sticky_note"}
+                <MarkdownField
+                  label="Content"
+                  required
+                  placeholder="## Block title&#10;What this group of nodes does + why."
+                  value={node.content ?? ""}
+                  oncommit={(v) => patch("content", v)}
+                />
+              {:else}
+                <MarkdownField
+                  required
                   value={node.description ?? ""}
-                  oninput={(e) => patch("description", (e.target as HTMLTextAreaElement).value)}
-                ></textarea>
-              </label>
+                  oncommit={(v) => patch("description", v)}
+                />
+              {/if}
 
               <!-- ── http ───────────────────────────────────────── -->
               {#if node.type === "http"}

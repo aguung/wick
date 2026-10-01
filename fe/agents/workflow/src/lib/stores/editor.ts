@@ -616,6 +616,11 @@ export function removeNode(id: string) {
   });
 }
 
+// Default sticky_note size when width/height are unset (matches the
+// Go descriptor: 240x160).
+export const STICKY_NOTE_W = 240;
+export const STICKY_NOTE_H = 160;
+
 export function connect(edge: Edge) {
   if (lockGuard("adding edges")) return;
   draftWorkflow.update((wf) => {

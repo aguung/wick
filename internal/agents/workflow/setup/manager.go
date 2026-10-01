@@ -99,6 +99,7 @@ func New(layout config.Layout) *Manager {
 	eng.Register(workflow.NodeSwitch, nodes.NewSwitchExecutor())
 	eng.Register(workflow.NodeTransform, nodes.NewTransformExecutor())
 	eng.Register(workflow.NodeEnd, nodes.NewEndExecutor())
+	eng.Register(workflow.NodeStickyNote, nodes.NewStickyNoteExecutor())
 	eng.Register(workflow.NodeClassify, nodes.NewClassifyExecutor(provReg))
 	eng.Register(workflow.NodeAgent, nodes.NewAgentExecutor(provReg, nil, nil))
 	eng.Register(workflow.NodeSessionInit, nodes.NewSessionInitExecutor(nil))
