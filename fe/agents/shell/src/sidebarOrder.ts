@@ -35,9 +35,10 @@ export function isRunningStatus(status: string): boolean {
 
 export type RowKey = { id: string; running: boolean; lastActive: number };
 
-/* sortRows mirrors orderSidebarIDs: running first, then newest first.
-   Stable, so rows with equal keys keep their current order and a re-sort
-   with nothing changed moves nothing. */
+/* sortRows mirrors orderSidebarIDs: running first, then newest first,
+   then by id — the same total order the server renders and pages the
+   ticket rail by, so a live re-sort never reshuffles equal-time rows.
+   A re-sort with nothing changed moves nothing. */
 export function sortRows<T extends RowKey>(rows: T[]): T[] {
   return rows
     .map((r, i) => ({ r, i }))
@@ -47,6 +48,9 @@ export function sortRows<T extends RowKey>(rows: T[]): T[] {
       }
       if (a.r.lastActive !== b.r.lastActive) {
         return b.r.lastActive - a.r.lastActive;
+      }
+      if (a.r.id !== b.r.id) {
+        return a.r.id < b.r.id ? -1 : 1;
       }
       return a.i - b.i;
     })
