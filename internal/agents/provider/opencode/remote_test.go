@@ -135,7 +135,6 @@ func TestPromptBodyToolOrder(t *testing.T) {
 type fakeOpencode struct {
 	summarized []string // POST /session/{id}/summarize bodies
 	noSummary  bool     // summarize writes no summary message
-	summarizeErr string // summarize fails with this (HTTP 400)
 	mu         sync.Mutex
 	subs       []chan string
 	hang       bool
@@ -144,6 +143,9 @@ type fakeOpencode struct {
 	created    int
 	prompts    []string
 	password   string
+
+	// summarizeErr, when set, fails summarize with it (HTTP 400).
+	summarizeErr string
 	// promptStatus, when set, is how prompt_async answers instead of 204.
 	promptStatus int
 	// gate, when set, holds the first prompt's idle until closed; later
