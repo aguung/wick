@@ -258,10 +258,12 @@ func (s *Store) recordLevelPoint(used int, at time.Time) error {
 		su.Providers[key] = p
 	}
 	p.ContextUsed = used
+	p.LastAt = at
 	p.Series = append(p.Series, UsagePoint{At: at, ContextUsed: used})
 	if n := len(p.Series); n > UsageSeriesMax {
 		p.Series = append(p.Series[:0], p.Series[n-UsageSeriesMax:]...)
 	}
+	su.UpdatedAt = at
 	return storage.WriteJSON(path, su)
 }
 

@@ -163,3 +163,49 @@ func TestStoppedTurnPlotsItsLastLevel(t *testing.T) {
 		t.Fatalf("series = %d points, want 1", n)
 	}
 }
+
+// An errored turn plots the level it reached and leaves nothing behind;
+// a compaction already plots its level, so the usage-less Done after it
+// adds no second point; a level point advances LastAt like other writers.
+func TestTurnLevelEndsWithErrorAndCompaction(t *testing.T) {
+	l := usageLayout(t)
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	s := &Store{layout: l, sessionID: "s1", provider: "omp/yoga", now: func() time.Time { return at }}
+	series := func() []UsagePoint {
+		su, err := LoadSessionUsage(l, "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return su.Providers["omp/yoga"].Series
+	}
+	if _, err := s.Apply(event.AgentEvent{ContextUsed: 90_000}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Apply(event.AgentEvent{Type: event.Error, ErrorMsg: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := series(); len(got) != 1 || got[0].ContextUsed != 90_000 {
+		t.Fatalf("errored turn: %+v", got)
+	}
+	if su, _ := LoadSessionUsage(l, "s1"); !su.Providers["omp/yoga"].LastAt.Equal(at) || !su.UpdatedAt.Equal(at) {
+		t.Fatalf("level point left LastAt/UpdatedAt behind: %+v", su)
+	}
+	if _, err := s.Apply(event.AgentEvent{Type: event.Done}); err != nil {
+		t.Fatal(err)
+	}
+	if got := series(); len(got) != 1 {
+		t.Fatalf("errored turn's level leaked into the next: %+v", got)
+	}
+
+	ci := &event.CompactionInfo{PreTokens: 90_000, PostTokens: 20_000}
+	if _, err := s.Apply(event.AgentEvent{Type: event.Compaction, Compaction: ci, ContextUsed: 20_000}); err != nil {
+		t.Fatal(err)
+	}
+	n := len(series())
+	if _, err := s.Apply(event.AgentEvent{Type: event.Done}); err != nil {
+		t.Fatal(err)
+	}
+	if got := series(); len(got) != n {
+		t.Fatalf("compaction level plotted twice: %+v", got)
+	}
+}

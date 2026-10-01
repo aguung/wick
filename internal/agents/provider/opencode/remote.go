@@ -176,6 +176,9 @@ type remoteProcess struct {
 	sessionID string
 	prompted  bool
 	killed    bool
+	// killDone closes when the first Kill is through; a second Kill
+	// waits on it, so no caller returns while an abort is in flight.
+	killDone chan struct{}
 	// finished: the session went idle — the turn is over on the server,
 	// so a Kill has nothing left to abort.
 	finished bool
@@ -242,10 +245,14 @@ func (p *remoteProcess) Wait() error {
 func (p *remoteProcess) Kill() error {
 	p.mu.Lock()
 	if p.killed {
+		kd := p.killDone
 		p.mu.Unlock()
+		<-kd
 		return nil
 	}
 	p.killed = true
+	p.killDone = make(chan struct{})
+	defer close(p.killDone)
 	c, sid, prompted, finished := p.client, p.sessionID, p.prompted, p.finished
 	p.mu.Unlock()
 	_ = p.pr.CloseWithError(errTurnKilled)
@@ -456,8 +463,8 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	// the meter's scale.
 	// With it, whether the server compacts by itself (GET /config) — only
 	// next to a known window: the panel shows the two together.
-	if w := modelWindow(ctx, c, t.model); w > 0 {
-		p.emit(event.ContextStateLine(w, autoCompaction(ctx, c)))
+	if w, auto := contextState(ctx, c, t.model); w > 0 {
+		p.emit(event.ContextStateLine(w, auto))
 	}
 	// "/compact": opencode's official compaction (POST
 	// /session/{id}/summarize — what its TUI's /compact calls). As a plain
@@ -530,9 +537,13 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	var lastAct atomic.Int64
 	lastAct.Store(time.Now().UnixNano())
 	var silent atomic.Bool
-	stopWatch := make(chan struct{})
-	defer close(stopWatch)
+	stopWatch, watchDone := make(chan struct{}), make(chan struct{})
+	// The turn returns only once the watchdog is gone: an abort it already
+	// started must land before the next turn prompts this session, or it
+	// aborts that one instead.
+	defer func() { close(stopWatch); <-watchDone }()
 	go func() {
+		defer close(watchDone)
 		t := time.NewTicker(silentTurnCheck)
 		defer t.Stop()
 		for {
@@ -564,14 +575,16 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		finished = done
 		return !done
 	})
+	// silent first: a turn the watchdog aborted is not a clean one, even
+	// when its last frame raced the abort in.
+	if silent.Load() {
+		return fmt.Errorf("opencode: model %s sent nothing for %s (no reply, no error from the server); the turn was stopped — try another model", t.model, silentTurnTimeout)
+	}
 	if finished {
 		if !tr.replied {
 			return errNoReply
 		}
 		return nil
-	}
-	if silent.Load() {
-		return fmt.Errorf("opencode: model %s sent nothing for %s (no reply, no error from the server); the turn was stopped — try another model", t.model, silentTurnTimeout)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()

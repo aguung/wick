@@ -173,6 +173,7 @@ func (cliModelSets) Expand(ctx context.Context, ins provider.Instance, path []st
 	if err != nil && len(models) == 0 {
 		return nil, err
 	}
+	pinned := account != "" && account != provider.AutoAccount
 	var rows []provider.ModelChoice
 	hasDefault := false
 	for _, m := range models {
@@ -180,6 +181,15 @@ func (cliModelSets) Expand(ctx context.Context, ins provider.Instance, path []st
 			continue
 		}
 		label := strings.TrimPrefix(m.ID, prov+"/")
+		if pinned {
+			// One account's level stands on its own: the Auto view's
+			// refusals and default are not this account's. Its own
+			// marks come from ApplyAvailability below; the instance's
+			// configured default stays the pin it falls back to.
+			rows = append(rows, provider.ModelChoice{ID: m.ID, Label: label, Desc: m.Desc,
+				Default: m.Default || (m.ID == ins.LiveModelDefault && ins.LiveModelDefault != "")})
+			continue
+		}
 		desc := m.Desc
 		if m.Unavailable && desc == "" {
 			desc = provider.NotAvailableDesc
@@ -190,9 +200,8 @@ func (cliModelSets) Expand(ctx context.Context, ins provider.Instance, path []st
 		rows = append(rows, provider.ModelChoice{ID: m.ID, Label: label, Desc: desc, Default: m.Default, Unavailable: m.Unavailable})
 		hasDefault = hasDefault || m.Default
 	}
-	if account != "" && account != provider.AutoAccount {
-		// One pinned account: its own refusals and last-worked model on
-		// top of the instance-wide marks.
+	if pinned {
+		// One pinned account: its own refusals and last-worked model.
 		return provider.ApplyAvailability(ins, provider.AvailabilityAccount(prov, account), rows), nil
 	}
 	if !hasDefault {

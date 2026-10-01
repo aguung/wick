@@ -100,4 +100,19 @@ describe("ProviderPicker last updated + Refresh", () => {
     expect(lm).toHaveBeenLastCalledWith("omp/yoga", { refresh: true });
     await vi.waitFor(() => expect(screen.getByTestId("picker-models-updated").textContent).toContain("cli"));
   });
+
+  test("a Refresh that comes back empty clears the old rows", async () => {
+    const { withModelListMeta } = await import("../model-list-meta.js");
+    const lm = vi.fn(async (_v: string, opts?: { entry?: string; refresh?: boolean }) =>
+      withModelListMeta(
+        opts?.refresh ? [] : [{ id: "openai-codex/gpt-5.6-luna", label: "gpt-5.6-luna", default: true }],
+        { fetched_at: "2026-10-01T00:55:00Z", source: opts?.refresh ? "cli" : "files", can_refresh: true },
+      ),
+    );
+    render(ProviderPicker, { options: [OMP], value: "", onChange: vi.fn(), loadModels: lm });
+    await openAndDrill();
+    expect(await screen.findByText("gpt-5.6-luna")).toBeTruthy();
+    await fireEvent.click(screen.getByTestId("picker-models-refresh"));
+    await vi.waitFor(() => expect(screen.queryByText("gpt-5.6-luna")).toBeNull());
+  });
 });

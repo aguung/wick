@@ -16,6 +16,7 @@
     AgentProfileEditor,
     ConfirmDialog,
     ToastHost,
+    withModelListMeta,
   } from "@wick-fe/common-ui";
   import { toastError, toastOk } from "@wick-fe/common-stores";
   import { onMount } from "svelte";
@@ -30,15 +31,19 @@
     const slash = optionValue.indexOf("/");
     const type = slash < 0 ? optionValue : optionValue.slice(0, slash);
     const name = slash < 0 ? optionValue : optionValue.slice(slash + 1);
-    const q = opts?.entry ? `?entry=${encodeURIComponent(opts.entry)}` : "";
+    const qs = new URLSearchParams();
+    if (opts?.entry) qs.set("entry", opts.entry);
+    if (opts?.refresh) qs.set("refresh", "1"); // the picker's Refresh (omp/opencode CLI, once)
+    const q = qs.toString() ? `?${qs.toString()}` : "";
     try {
       const resp = await fetch(
         `${base}/providers/options/${encodeURIComponent(type)}/${encodeURIComponent(name)}/models${q}`,
         { credentials: "same-origin", headers: { Accept: "application/json" } },
       );
       if (!resp.ok) return [];
-      const body = (await resp.json()) as { models?: unknown[] | null };
-      return (body.models ?? []) as never[];
+      const body = (await resp.json()) as { models?: unknown[] | null; fetched_at?: string; source?: string; can_refresh?: boolean };
+      // The server's "last updated" stamp rides on the list (Refresh row).
+      return withModelListMeta((body.models ?? []) as never[], body);
     } catch {
       return [];
     }

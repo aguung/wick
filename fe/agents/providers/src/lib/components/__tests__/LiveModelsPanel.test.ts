@@ -102,15 +102,30 @@ describe("LiveModelsPanel", () => {
     expect(api.apiGetEffectiveLiveModels).toHaveBeenCalledWith("", "omp", "oc");
   });
 
-  it("opening shows the cached list first, then fetches the live one", async () => {
-    vi.mocked(api.apiGetCLIModels)
-      .mockResolvedValueOnce({ models: [{ id: "openai/old" }], hostedAllowed: true, fetchedAt: "2026-10-01T00:00:00Z", source: "files" })
-      .mockResolvedValueOnce({ models: [{ id: "openai/old" }, { id: "openai/new" }], hostedAllowed: true, fetchedAt: "2026-10-01T01:00:00Z", source: "cli" });
+  it("opening only reads what the server knows — the CLI runs on Refresh alone", async () => {
+    vi.mocked(api.apiGetCLIModels).mockResolvedValue({ models: [{ id: "openai/old" }], hostedAllowed: true, fetchedAt: "2026-10-01T00:00:00Z", source: "files" });
     renderPanel({ type: "omp" });
-    await waitFor(() => expect(screen.getByTestId("live-models-updated").textContent).toContain("cli"));
-    expect(api.apiGetCLIModels).toHaveBeenNthCalledWith(1, "", "omp", "oc", false);
-    expect(api.apiGetCLIModels).toHaveBeenNthCalledWith(2, "", "omp", "oc", true);
-    expect(screen.getByTestId("live-models-list").textContent).toContain("openai/new");
+    await waitFor(() => expect(screen.getByTestId("live-models-updated").textContent).toContain("files"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.apiGetCLIModels).toHaveBeenCalledTimes(1);
+    expect(api.apiGetCLIModels).toHaveBeenCalledWith("", "omp", "oc", false);
+  });
+
+  it("a saved filter reads the server's list again instead of showing the old filter's rows", async () => {
+    vi.mocked(api.apiGetCLIModels).mockResolvedValue({ models, hostedAllowed: true, fetchedAt: "2026-09-29T00:00:00Z" });
+    // The server answers for whatever filter is saved at the time.
+    let saved = "gpt";
+    vi.mocked(api.apiGetEffectiveLiveModels).mockImplementation(async () =>
+      saved === "gpt" ? [{ id: "openai/gpt-5.5", default: true }] : [{ id: "anthropic/claude-sonnet", default: true }],
+    );
+    const props = { base: "", type: "omp", name: "oc", filter: "gpt", pin: "", onSaveFilter: vi.fn(), onSavePin: vi.fn() };
+    const { rerender } = render(LiveModelsPanel, { props });
+    await waitFor(() => expect(screen.getByTestId("live-models-list").textContent).toContain("openai/gpt-5.5"));
+    await new Promise((r) => setTimeout(r, 20));
+    saved = "claude";
+    await rerender({ ...props, filter: "claude" });
+    await waitFor(() => expect(screen.getByTestId("live-models-list").textContent).toContain("anthropic/claude-sonnet"));
+    expect(screen.getByTestId("live-models-list").textContent).not.toContain("openai/gpt-5.5");
   });
 
   it("says so when nothing is known yet", async () => {

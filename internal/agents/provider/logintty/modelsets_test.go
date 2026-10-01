@@ -73,6 +73,12 @@ func TestCLIModelSetsProviderAndAccountLevels(t *testing.T) {
 	if m[0].Unavailable {
 		t.Fatalf("refusal leaked to auto: %+v", m)
 	}
+	// Refused on Auto only → account 1 still offers it, as its default.
+	provider.MarkModelUnavailable(liveIns, provider.AvailabilityAccount("openai-codex", "auto"), "openai-codex/gpt-5.4", "quota")
+	m, _ = s.Expand(ctx, liveIns, []string{"openai-codex", "1"})
+	if m[1].Unavailable || !m[0].Default {
+		t.Fatalf("auto refusal leaked to a pinned account: %+v", m)
+	}
 }
 
 func TestCLIModelSetsSkipsTrivialLevels(t *testing.T) {

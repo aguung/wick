@@ -218,6 +218,9 @@ type rpcProcess struct {
 	conn     *rpcConn
 	prompted bool
 	killed   bool
+	// killDone closes when the first Kill is through; a second Kill
+	// waits on it, so no caller returns while an abort is in flight.
+	killDone chan struct{}
 	finished bool
 	early    []string
 
@@ -253,10 +256,14 @@ func (p *rpcProcess) Wait() error {
 func (p *rpcProcess) Kill() error {
 	p.mu.Lock()
 	if p.killed {
+		kd := p.killDone
 		p.mu.Unlock()
+		<-kd
 		return nil
 	}
 	p.killed = true
+	p.killDone = make(chan struct{})
+	defer close(p.killDone)
 	c, prompted, finished := p.conn, p.prompted, p.finished
 	p.mu.Unlock()
 	_ = p.pr.CloseWithError(errTurnKilled)
@@ -426,6 +433,9 @@ func (p *rpcProcess) turn(ctx context.Context, l *cliserver.Lease[*rpcConn], t r
 	// the UI kept spinning). The result's token counts become the notice,
 	// then the turn ends.
 	if instr, ok := compactPrompt(t.prompt); ok {
+		// No prompt goes out: the watchdog above would end a compaction
+		// at 2m; compactTurn has its own bound (rpcCompactWait).
+		guard.Stop()
 		return p.compactTurn(ctx, c, instr)
 	}
 

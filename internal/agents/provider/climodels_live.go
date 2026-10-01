@@ -183,7 +183,13 @@ func CachedCLIModels(ctx context.Context, ins Instance, refresh bool) (models []
 			cliModelsMu.Unlock()
 			select {
 			case <-wait:
-				continue // satisfied by the fetch that just ended
+				// Share the fetch that just ended, failure included: a
+				// waiter re-running a CLI that just failed only queues
+				// more failing runs.
+				cliModelsMu.Lock()
+				e, _ := cliModelsLookup(ins, key)
+				cliModelsMu.Unlock()
+				return e.models, e.at, e.err
 			case <-ctx.Done():
 				return nil, time.Time{}, ctx.Err()
 			}
@@ -226,11 +232,9 @@ func PeekCLIModels(ins Instance) []ModelSeed {
 	e, ok := cliModelsLookup(ins, key)
 	cliModelsMu.Unlock()
 	if !ok {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), cliModelsFetchTimeout)
-			defer cancel()
-			_, _, _ = CachedCLIModels(ctx, ins, false)
-		}()
+		// Debounced per instance: a harvester that finds nothing caches
+		// nothing, so without the gate every render would start another.
+		HarvestCLIModels(ins)
 	}
 	return e.models
 }

@@ -130,7 +130,9 @@
       const loaded = await loadModels(optionValue, opts);
       const meta = modelListMeta(loaded);
       if (meta) modelMeta = { ...modelMeta, [key]: meta };
-      if (loaded && loaded.length > 0) modelCache = { ...modelCache, [key]: loaded };
+      // A Refresh replaces the level even when it came back empty: keeping
+      // the old rows would show them under the new "updated" stamp.
+      if (loaded && (loaded.length > 0 || refresh)) modelCache = { ...modelCache, [key]: loaded };
     } catch {
       // keep whatever static models the option already carries
     } finally {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -892,9 +893,12 @@ func IsResumeNotFound(s string) bool {
 	if strings.Contains(l, "no conversation found") || strings.Contains(l, "session not found") {
 		return true
 	}
-	i := strings.Index(l, `session "`)
-	return i >= 0 && strings.Contains(l[i:], `" not found`)
+	return ompResumeNotFound.MatchString(l)
 }
+
+// ompResumeNotFound is omp's message exactly: the quoted id, then
+// " not found", on one line — a false match clears a live resume id.
+var ompResumeNotFound = regexp.MustCompile(`session "[^"\n]*" not found`)
 
 // PID returns the OS pid of the current subprocess, or 0 if not
 // running. Pool reads this after Start so the spawn log captures the

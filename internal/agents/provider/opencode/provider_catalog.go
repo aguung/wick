@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yogasw/wick/internal/agents/provider"
@@ -167,6 +168,48 @@ func fetchCatalog(ctx context.Context, c *apiClient) (*provider.OpencodeCatalog,
 	}
 	return cat, nil
 }
+
+// contextState is the meter's scale and the auto-compaction flag for
+// model on this running server, read once per server and model and kept
+// for contextStateTTL: both sit in front of every prompt, and neither
+// changes between turns. Each read is bounded by contextStateWait, so a
+// slow server delays the prompt by seconds, not minutes.
+func contextState(ctx context.Context, c *apiClient, model string) (int, *bool) {
+	key := c.base + "\x00" + c.password + "\x00" + model
+	contextStateMu.Lock()
+	e, ok := contextStateCache[key]
+	contextStateMu.Unlock()
+	if ok && time.Since(e.at) < contextStateTTL {
+		return e.window, e.auto
+	}
+	rctx, cancel := context.WithTimeout(ctx, contextStateWait)
+	defer cancel()
+	w := modelWindow(rctx, c, model)
+	if w <= 0 {
+		return 0, nil // not cached: the next turn asks again
+	}
+	auto := autoCompaction(rctx, c)
+	contextStateMu.Lock()
+	contextStateCache[key] = contextStateEntry{window: w, auto: auto, at: time.Now()}
+	contextStateMu.Unlock()
+	return w, auto
+}
+
+type contextStateEntry struct {
+	window int
+	auto   *bool
+	at     time.Time
+}
+
+var (
+	contextStateMu    sync.Mutex
+	contextStateCache = map[string]contextStateEntry{}
+)
+
+const (
+	contextStateTTL  = 10 * time.Minute
+	contextStateWait = 5 * time.Second
+)
 
 // modelWindow is model's ("provider/model") context limit from the running
 // server's GET /provider (limit.context), 0 when not listed.

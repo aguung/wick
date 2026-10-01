@@ -91,6 +91,24 @@ func TestResumeArgCachesPath(t *testing.T) {
 	}
 }
 
+// A planted cache entry outside every omp store is ignored: the path
+// handed to --resume is only ever one a scan could have found.
+func TestResumeArgIgnoresPlantedCache(t *testing.T) {
+	root, cache := t.TempDir(), filepath.Join(t.TempDir(), ".omp")
+	planted := filepath.Join(t.TempDir(), "2026-09-30T00-00-00-000Z_sid-2.jsonl")
+	if err := os.WriteFile(planted, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeResumePaths(cache, map[string]string{"sid-2": planted})
+	if got := resumeArg(root, "wick-yoga", "sid-2", cache); got != "sid-2" {
+		t.Fatalf("planted path used: %q", got)
+	}
+	real := writeTranscript(t, root, "wick-waba", "sid-2")
+	if got := resumeArg(root, "wick-yoga", "sid-2", cache); got != real {
+		t.Fatalf("real transcript: %q, want %q", got, real)
+	}
+}
+
 func TestOMPRoot(t *testing.T) {
 	if got := ompRoot("/h", ""); got != "/h/.omp" {
 		t.Fatal(got)

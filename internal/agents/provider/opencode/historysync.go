@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,6 +84,11 @@ func syncSource(owners map[string]string, resumeID, target string) string {
 // pinned by opencodeStoreEnv exactly as a spawn there would be. The
 // export lands in tmpDir and is removed afterwards.
 func copySession(ctx context.Context, bin, cwd, tmpDir, src, dst, id string) error {
+	// The id names the export file: one that could leave tmpDir is no
+	// opencode session id (as the omp side refuses it too).
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid session id %q", id)
+	}
 	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
 	out, err := syncRunner(ctx, bin, cwd, storeEnv(src), "export", id)
@@ -182,9 +188,10 @@ func readOwners(dir string) map[string]string {
 func writeOwners(dir string, m map[string]string) {
 	ownersMu.Lock()
 	defer ownersMu.Unlock()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Same modes as the export beside it (copySession).
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, ownersFile), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, ownersFile), b, 0o600)
 }

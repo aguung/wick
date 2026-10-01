@@ -902,11 +902,6 @@ func (p *Pool) send(ctx context.Context, sessionID, agentName, source, role, tex
 	// the per-provider cap alongside the global one.
 	pType, pName := p.providerForSession(sessionID, agentName)
 
-	// A spawn is about to be admitted: idle warm omp/opencode servers that
-	// will not serve it give their memory back first (before the free-RAM
-	// check, which they would otherwise fail).
-	yieldIdleServers(sessionID, pType, pName)
-
 	p.mu.Lock()
 	// If this session is already mid-spawn, the in-flight spawn's Drain
 	// will pick up the buffered message — nothing more to do here.
@@ -920,6 +915,11 @@ func (p *Pool) send(ctx context.Context, sessionID, agentName, source, role, tex
 	if p.slotFreeLocked(pType, pName) {
 		p.spawningKeys[key] = struct{}{}
 		p.mu.Unlock()
+		// Admitted: idle warm omp/opencode servers that will not serve
+		// this spawn give their memory back first (before the free-RAM
+		// check, which they would otherwise fail). Only here — a send that
+		// is queued or joins a spawn in flight starts nothing.
+		yieldIdleServers(sessionID, pType, pName)
 		err := p.spawn(ctx, sessionID, agentName, source)
 		p.mu.Lock()
 		delete(p.spawningKeys, key)
@@ -1579,25 +1579,15 @@ func (p *Pool) tryGrantQueue() {
 		p.mu.Unlock()
 		return
 	}
-	head := p.queue[0]
-	p.mu.Unlock()
-	// A queued spawn is waiting (for a slot or for memory): idle warm
-	// servers that will not serve it go first.
-	hType, hName := p.providerForSession(head.sessionID, head.agentName)
-	yieldIdleServers(head.sessionID, hType, hName)
-	p.mu.Lock()
-	if p.closed || len(p.queue) == 0 {
-		p.mu.Unlock()
-		return
-	}
 	// Find the first queued entry whose provider still has a free slot
 	// (global + per-provider). A head-of-line entry blocked by its
 	// provider cap shouldn't starve a different provider behind it.
 	idx := -1
+	var qType, qName string
 	for i, q := range p.queue {
 		pType, pName := p.providerForSession(q.sessionID, q.agentName)
 		if p.slotFreeLocked(pType, pName) {
-			idx = i
+			idx, qType, qName = i, pType, pName
 			break
 		}
 	}
@@ -1614,6 +1604,9 @@ func (p *Pool) tryGrantQueue() {
 	// Background spawn — don't block whoever fired the exit hook.
 	go func() {
 		defer p.wg.Done()
+		// The entry actually granted: idle warm servers that will not
+		// serve it go first (as on the direct Send path).
+		yieldIdleServers(q.sessionID, qType, qName)
 		_ = p.spawn(context.Background(), q.sessionID, q.agentName, "queue")
 		p.mu.Lock()
 		delete(p.spawningKeys, key)

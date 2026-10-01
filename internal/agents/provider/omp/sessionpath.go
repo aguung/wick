@@ -35,7 +35,7 @@ func resumeArg(root, profile, id, cacheDir string) string {
 		return ""
 	}
 	cache := readResumePaths(cacheDir)
-	if p := cache[id]; p != "" {
+	if p := cache[id]; p != "" && cachedSessionPathOK(root, id, p) {
 		if _, err := os.Stat(p); err == nil && !strings.HasPrefix(p, filepath.Join(root, "profiles", profile)+string(filepath.Separator)) {
 			return p
 		}
@@ -49,6 +49,25 @@ func resumeArg(root, profile, id, cacheDir string) string {
 		writeResumePaths(cacheDir, cache)
 	}
 	return p
+}
+
+// cachedSessionPathOK holds a remembered path to what findSessionPath
+// would have found: a transcript for id in an omp store under root. The
+// cache sits in the session workspace, so it is checked, not trusted.
+func cachedSessionPathOK(root, id, p string) bool {
+	if id == "" || strings.ContainsAny(id, `/\`) || !filepath.IsAbs(p) || filepath.Clean(p) != p {
+		return false
+	}
+	name := "*_" + globEscape(id) + "*.jsonl"
+	for _, pat := range []string{
+		filepath.Join(globEscape(root), "profiles", "*", "agent", "sessions", "*", name),
+		filepath.Join(globEscape(root), "agent", "sessions", "*", name),
+	} {
+		if ok, _ := filepath.Match(pat, p); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func readResumePaths(dir string) map[string]string {
@@ -67,11 +86,11 @@ func readResumePaths(dir string) map[string]string {
 func writeResumePaths(dir string, m map[string]string) {
 	resumePathsMu.Lock()
 	defer resumePathsMu.Unlock()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, resumePathsFile), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, resumePathsFile), b, 0o600)
 }
 
 // writersFile records, per wick session, the omp profile that last ran

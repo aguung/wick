@@ -381,9 +381,11 @@ func TestRPCCompactTurn(t *testing.T) {
 // only once the summary is written (session 292e2e51 got "no response in
 // 30s" for a compaction omp went on to finish).
 func TestRPCCompactOutlivesCallWait(t *testing.T) {
-	old := rpcCallWait
-	rpcCallWait = 100 * time.Millisecond
-	t.Cleanup(func() { rpcCallWait = old })
+	oldCall, oldPrompt := rpcCallWait, rpcPromptWait
+	rpcCallWait, rpcPromptWait = 100*time.Millisecond, 150*time.Millisecond
+	t.Cleanup(func() { rpcCallWait, rpcPromptWait = oldCall, oldPrompt })
+	// Slower than both the per-call bound and the prompt watchdog: a
+	// compact sends no prompt, so the watchdog must not end it.
 	f := &fakeOMP{compactDelay: 400 * time.Millisecond}
 	p, m := runFakeTurn(t, f, "/compact")
 	defer m.Shutdown()

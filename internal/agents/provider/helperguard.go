@@ -85,7 +85,7 @@ func HelperCommand(ctx context.Context, ins *Instance, label, bin string, args .
 		insName = string(ins.Type) + "/" + ins.Name
 	}
 	now := helperNow()
-	registerHelper(HelperRecord{Seq: seq, Label: label, Instance: insName, Unit: unit, Start: now, Deadline: now.Add(timeout)}, cmd, releaseScope)
+	registerHelper(HelperRecord{Seq: seq, Label: label, Instance: insName, Unit: unit, Start: now, Deadline: now.Add(timeout)}, cancel, releaseScope)
 	var once sync.Once
 	release := func() {
 		once.Do(func() {

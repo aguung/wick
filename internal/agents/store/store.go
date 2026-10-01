@@ -452,6 +452,12 @@ func (s *Store) Apply(ev event.AgentEvent) (bool, error) {
 		return true, nil
 
 	case event.Error:
+		// An errored turn ended too: plot the level it climbed to (as a
+		// usage-less Done does), and leave nothing for the next turn.
+		if s.turnLevel > 0 {
+			_ = s.recordLevelPoint(s.turnLevel, s.now().UTC())
+			s.turnLevel = 0
+		}
 		// On error we still want whatever partial text accumulated;
 		// don't lose it.
 		if err := s.flushAssistantTurn(false); err != nil {
@@ -494,6 +500,9 @@ func (s *Store) Apply(ev event.AgentEvent) (bool, error) {
 		// waiting for the next turn to say so makes the ring contradict
 		// the marker sitting right above it.
 		_ = s.recordCompaction(ev.Compaction, s.now().UTC())
+		// recordCompaction plotted this level: a usage-less Done right
+		// after must not plot it a second time.
+		s.turnLevel = 0
 		return false, nil
 
 	case event.Trace:

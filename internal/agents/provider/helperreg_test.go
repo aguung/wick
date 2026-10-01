@@ -22,7 +22,7 @@ func TestReaperKillsPastDeadline(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if hs := Helpers(); len(hs) == 0 || hs[len(hs)-1].Label != "omp-usage" || hs[len(hs)-1].Instance != "omp/reap" || hs[len(hs)-1].Pid == 0 {
+	if hs := Helpers(); len(hs) == 0 || hs[len(hs)-1].Label != "omp-usage" || hs[len(hs)-1].Instance != "omp/reap" {
 		t.Fatalf("not recorded: %+v", hs)
 	}
 	done := make(chan error, 1)

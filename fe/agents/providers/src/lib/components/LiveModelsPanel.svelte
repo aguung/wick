@@ -34,6 +34,8 @@
   let models = $state<CLIModel[]>([]);
   let offered = $state<CLIModel[]>([]);
   let serverDefault = $state("");
+  // The saved filter `offered` was computed with (null: not fetched yet).
+  let offeredFor = $state<string | null>(null);
   let hostedAllowed = $state(true);
   // Fresh CLI run in flight over a list already on screen.
   let updating = $state(false);
@@ -55,12 +57,7 @@
       const r = await apiGetCLIModels(base, type, name, refresh);
       models = r.models;
       // After a refresh the server cache is fresh, so this reads it too.
-      try {
-        offered = (await apiGetEffectiveLiveModels(base, type, name)) ?? [];
-      } catch {
-        offered = [];
-      }
-      serverDefault = offered.find((m) => m.default && !m.unavailable)?.id ?? "";
+      await loadOffered();
       onCount?.(models.length);
       hostedAllowed = r.hostedAllowed;
       fetchedAt = r.fetchedAt;
@@ -73,12 +70,25 @@
       updating = false;
     }
   }
-  // Detail page = live: show what the server already knows at once, then
-  // fetch the CLI's list now and swap it in. The server serializes the
-  // run, shares an in-flight one, serves a fetch younger than its minimum
-  // interval, and kills the helper after — so reopening costs nothing.
-  // (The composer picker stays cache-only; only this page goes live.)
-  onMount(() => { void fetchModels(false).then(() => fetchModels(true)); });
+  // The server's effective list for the SAVED filter (refusals, default).
+  async function loadOffered() {
+    const f = filter;
+    try {
+      offered = (await apiGetEffectiveLiveModels(base, type, name)) ?? [];
+    } catch {
+      offered = [];
+    }
+    serverDefault = offered.find((m) => m.default && !m.unavailable)?.id ?? "";
+    offeredFor = f;
+  }
+  // Opening reads what the server already knows (its saved list, the
+  // CLI's files, a running server) — no CLI run; Refresh is that.
+  onMount(() => { void fetchModels(false); });
+  // A saved filter changes the server's list: read it again, or the panel
+  // shows the previous filter's rows as if they were this one's.
+  $effect(() => {
+    if (offeredFor !== null && filter !== offeredFor) void loadOffered();
+  });
 
   async function recheck(id: string) {
     try {
@@ -96,7 +106,7 @@
   const hiddenHosted = $derived(models.length - eligible.length);
   const dirty = $derived(draft.trim() !== filter.trim());
   // Saved filter: the server's effective list. Unsaved: a client preview.
-  const useServer = $derived(!dirty && offered.length > 0);
+  const useServer = $derived(!dirty && offered.length > 0 && offeredFor === filter);
   const matched = $derived(useServer ? offered : eligible.filter((m) => matchModelFilter(hay(m), draft)));
   const usable = $derived(matched.filter((m) => !m.unavailable));
   const pinUnavailable = $derived(!!pin && matched.some((m) => m.id === pin && m.unavailable));
@@ -107,7 +117,9 @@
   const shown = $derived(showAll ? searched : searched.slice(0, PREVIEW_LIMIT));
   // A refused model cannot be chosen as Default.
   const pinOptions = $derived([
-    { label: "First match", value: "", description: usable[0]?.id ?? "no model matches" },
+    // What an empty pin runs: the server's pick (last worked, else first
+    // usable) when it is known, else the first usable row.
+    { label: "First match", value: "", description: (useServer && !pin && serverDefault ? serverDefault : usable[0]?.id) ?? "no model matches" },
     ...usable.map((m) => ({ label: m.id, value: m.id, description: m.desc })),
   ]);
 

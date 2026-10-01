@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -27,6 +26,10 @@ import (
 // deadline (release never ran, a kill that did not land) is killed and
 // dropped. At boot, helper scopes a previous wick process left running are
 // stopped. Every kill is logged.
+//
+// The registry never reads cmd.Process: Start writes it in the owner's
+// goroutine with no lock, so the reaper kills through the helper's context
+// instead (exec then runs cmd.Cancel → the group kill on its own side).
 
 // HelperRecord is one registered helper.
 type HelperRecord struct {
@@ -34,15 +37,14 @@ type HelperRecord struct {
 	Label    string
 	Instance string
 	Unit     string
-	Pid      int // 0 until the process started
 	Start    time.Time
 	Deadline time.Time
 }
 
 type helperEntry struct {
 	rec     HelperRecord
-	cmd     *exec.Cmd
-	release func()
+	cancel  context.CancelFunc // ends the helper (exec kills its group)
+	release func()             // its scope
 }
 
 var (
@@ -55,9 +57,9 @@ var (
 // reaper acts (the timeout's own kill gets there first when it works).
 const reaperGrace = 15 * time.Second
 
-func registerHelper(rec HelperRecord, cmd *exec.Cmd, releaseScope func()) {
+func registerHelper(rec HelperRecord, cancel context.CancelFunc, releaseScope func()) {
 	helperRegMu.Lock()
-	helperReg[rec.Seq] = &helperEntry{rec: rec, cmd: cmd, release: releaseScope}
+	helperReg[rec.Seq] = &helperEntry{rec: rec, cancel: cancel, release: releaseScope}
 	helperRegMu.Unlock()
 }
 
@@ -72,11 +74,7 @@ func Helpers() []HelperRecord {
 	helperRegMu.Lock()
 	out := make([]HelperRecord, 0, len(helperReg))
 	for _, e := range helperReg {
-		r := e.rec
-		if e.cmd != nil && e.cmd.Process != nil {
-			r.Pid = e.cmd.Process.Pid
-		}
-		out = append(out, r)
+		out = append(out, e.rec)
 	}
 	helperRegMu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
@@ -97,16 +95,14 @@ func ReapHelpers() int {
 	}
 	helperRegMu.Unlock()
 	for _, e := range due {
-		pid := 0
-		if e.cmd != nil && e.cmd.Process != nil {
-			pid = e.cmd.Process.Pid
-			killGroup(pid)
+		if e.cancel != nil {
+			e.cancel()
 		}
 		if e.release != nil {
 			e.release()
 		}
 		log.Warn().Str("component", "memguard").Str("label", e.rec.Label).Str("instance", e.rec.Instance).
-			Str("unit", e.rec.Unit).Int("pid", pid).Time("deadline", e.rec.Deadline).
+			Str("unit", e.rec.Unit).Time("deadline", e.rec.Deadline).
 			Msg("helper process reaped past its deadline")
 	}
 	return len(due)

@@ -128,6 +128,29 @@ func TestCarryHistoryFailedImport(t *testing.T) {
 	}
 }
 
+// An id that could name a file outside the state dir is never exported,
+// and the owners file is private like the export beside it.
+func TestCarryHistoryRefusesPathID(t *testing.T) {
+	base := t.TempDir()
+	a, b := mkStore(t, filepath.Join(base, "a")), mkStore(t, filepath.Join(base, "b"))
+	state := filepath.Join(base, ".opencode-wick")
+	writeOwners(state, map[string]string{"../../x": a})
+	calls := fakeSync(t, "")
+	carryHistory(context.Background(), "opencode", base, state, "../../x", b)
+	if len(*calls) != 0 {
+		t.Fatalf("path-like id exported: %+v", *calls)
+	}
+	for _, f := range []string{state, filepath.Join(state, ownersFile)} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("%s mode %v, want private", f, fi.Mode().Perm())
+		}
+	}
+}
+
 // A PWD inherited from wick's own environment is overridden by the
 // workspace; getenv-style readers take the last entry.
 func TestPinPWD(t *testing.T) {
