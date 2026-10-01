@@ -438,8 +438,11 @@ type ValidateResult struct {
 }
 
 // Validate runs parse + validate (no guard).
+// Validate checks the draft when one exists (falling back to the published
+// copy), because that is what the next publish will promote — validating the
+// published copy reported warnings for edits that were already fixed in draft.
 func (m *Ops) Validate(id string) ValidateResult {
-	w, err := m.Service.Load(id)
+	w, err := m.Service.LoadDraft(id)
 	if err != nil {
 		return ValidateResult{OK: false, Errors: []parse.Error{{Path: "load", Message: err.Error()}}}
 	}
