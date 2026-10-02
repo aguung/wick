@@ -3,9 +3,12 @@
        - file artifacts in the gallery (pass `url` — content is fetched), and
        - inline HTML the model emitted in the message body (pass `src`).
      It renders a borderless, auto-height iframe (no inner scrollbar — it grows
-     to its content via the height reporter) with a floating ⋮ menu carrying
+     to its content via the height reporter, up to about the visible chat
+     height; past that it scrolls internally — see artifactHeight.ts) with a
+     floating ⋮ menu carrying
      Full screen / Show code / Download. Self-contained fullscreen so it works
      the same whether mounted in the Svelte tree or via mount() from richRender. */
+  import { tick } from "svelte";
   import { KebabMenu } from "@wick-fe/common-ui";
   import {
     buildAutoHeightSrcdoc,
@@ -15,6 +18,14 @@
     onWidgetPolicyChange,
   } from "../richRender.js";
   import { safeReadPath } from "../artifactPath.js";
+  import {
+    DEFAULT_HEIGHT,
+    anchorShift,
+    artifactKey,
+    fitHeight,
+    recallHeight,
+    rememberHeight,
+  } from "../artifactHeight.js";
 
   type Props = {
     /** inline source (message-body HTML). Mutually exclusive with url. */
@@ -36,7 +47,13 @@
   let raw = $state<string | null>(src ?? null);
   let srcdoc = $state("");
   let loadErr = $state("");
-  let height = $state(320);
+  // A remount of the same artifact (live turn → final turn, a re-render)
+  // starts at the height the previous mount settled on, so the thread does
+  // not collapse under the reader and grow back.
+  const rememberedHeight = recallHeight(artifactKey(url, src));
+  let height = $state(rememberedHeight ?? DEFAULT_HEIGHT);
+  // Last height the document reported, so a window resize can re-fit it.
+  let reportedHeight = 0;
   let showCode = $state(false);
   let fullscreen = $state(false);
   // Bumped on every reload so the iframe remounts even when the refetched
@@ -48,8 +65,6 @@
   // screen each request is served exactly once (by its own host).
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let fsFrameEl = $state<HTMLIFrameElement | null>(null);
-
-  const MAX_HEIGHT = 2400;
 
   // The sandbox attribute and the CSP inside the srcdoc must always come from
   // the same policy, so both are derived from this one piece of state. It
@@ -198,6 +213,38 @@
     }
   }
 
+  function applyHeight(reported: number) {
+    const scroller = frameEl?.closest<HTMLElement>("[data-chat-panel]") ?? null;
+    reportedHeight = reported;
+    const fit = fitHeight(reported, scroller?.clientHeight || window.innerHeight);
+    const next = fit.height;
+    // Tell the document whether to show its own scrollbar (only when it is
+    // taller than the cap). Sent every time: a remounted frame starts hidden.
+    try {
+      frameEl?.contentWindow?.postMessage({ type: "wick-artifact-overflow", id, on: fit.scroll }, "*");
+    } catch { /* frame gone */ }
+    rememberHeight(artifactKey(url, raw), next);
+    if (next === height) return;
+    // Keep the reader's place when this preview resizes while it sits above
+    // the visible part of the thread (the panel has scroll anchoring off).
+    // Not while the thread is still landing on a fresh open: that pass
+    // re-measures and places the thread itself.
+    const shift = scroller && frameEl && !scroller.hasAttribute("data-scroll-landing")
+      ? anchorShift(height, next, frameEl.getBoundingClientRect().bottom, scroller.getBoundingClientRect().top)
+      : 0;
+    height = next;
+    if (shift) void tick().then(() => { scroller!.scrollTop += shift; });
+  }
+
+  // The cap follows the chat height, so re-fit on window resize. applyHeight
+  // compensates scrollTop when this preview sits above the visible part, so
+  // a changing cap does not move the reader either.
+  $effect(() => {
+    const onResize = () => { if (reportedHeight > 0) applyHeight(reportedHeight); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  });
+
   $effect(() => {
     ensureLoaded();
     function onMsg(e: MessageEvent) {
@@ -206,7 +253,7 @@
         | null;
       if (!d) return;
       if (d.type === "wick-artifact-height" && d.id === id && d.height) {
-        height = Math.min(MAX_HEIGHT, Math.ceil(d.height));
+        applyHeight(d.height);
         return;
       }
       // Only answer requests coming from THIS component's own iframe(s), so
@@ -315,14 +362,16 @@
         {srcdoc}
         {sandbox}
         referrerpolicy="no-referrer"
-        scrolling="no"
         title={name}
         class="block w-full"
-        style="height:{height}px;border:0;overflow:hidden;background:transparent"
+        style="height:{height}px;border:0;background:transparent"
       ></iframe>
     {/key}
   {:else}
-    <div class="px-4 py-3 text-xs text-black-600 dark:text-black-700">loading preview…</div>
+    <div
+      class="px-4 py-3 text-xs text-black-600 dark:text-black-700"
+      style={rememberedHeight ? `min-height:${height}px` : undefined}
+    >loading preview…</div>
   {/if}
 </div>
 
@@ -338,7 +387,7 @@
     </div>
     <iframe
       bind:this={fsFrameEl}
-      srcdoc={raw !== null ? buildAutoHeightSrcdoc(raw, `${id}-fs`) : ""}
+      srcdoc={raw !== null ? buildAutoHeightSrcdoc(raw, `${id}-fs`, undefined, false) : ""}
       {sandbox}
       referrerpolicy="no-referrer"
       title={name}

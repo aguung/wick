@@ -417,7 +417,7 @@
     </div>
   </div>
 {:else if isUser}
-  <div class="flex min-w-0 max-w-full justify-end gap-2 group">
+  <div data-user-turn class="flex min-w-0 max-w-full justify-end gap-2 group">
     <div class="flex flex-col items-end gap-1 max-w-[80%] min-w-0">
       {#if safeAttachments.length > 0}
         <div class="flex flex-wrap justify-end gap-1.5 max-w-full">
