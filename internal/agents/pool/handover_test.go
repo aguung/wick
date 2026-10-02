@@ -115,6 +115,16 @@ func TestHandoverBlockersGhost(t *testing.T) {
 		}
 	})
 
+	t.Run("dead pid with a fresh event blocks (respawn in flight)", func(t *testing.T) {
+		// A respawn reports the exited pid until the new process is
+		// attached; the new turn's events are already arriving.
+		stubLiveness(t, 4242, true, false)
+		p := &Pool{active: map[string]*runEntry{"a": entryAt("sess-a", young, event.ToolUse)}}
+		if got := p.HandoverBlockers(); len(got) != 1 || got[0] != "sess-a" {
+			t.Fatalf("want sess-a to block, got %v", got)
+		}
+	})
+
 	t.Run("working with a live process blocks", func(t *testing.T) {
 		stubLiveness(t, 4242, true, true)
 		p := &Pool{active: map[string]*runEntry{"a": entryAt("sess-a", old, event.ToolUse)}}
@@ -133,8 +143,8 @@ func TestHandoverBlockersGhost(t *testing.T) {
 	})
 
 	t.Run("pidless turn whose transport ended does not block", func(t *testing.T) {
-		// The 0.1.409 drain: an opencode turn stuck at working after its
-		// stream was gone held the old process open for half an hour.
+		// An opencode turn stuck at working after its stream was gone used
+		// to hold the old process open indefinitely.
 		stubLiveness(t, 0, true, false)
 		transportEnded = func(*runEntry) bool { return true }
 		p := &Pool{active: map[string]*runEntry{"a": entryAt("sess-a", young, event.ToolUse)}}
@@ -185,7 +195,8 @@ func TestGhostTurn(t *testing.T) {
 		want     bool
 	}{
 		{"idle is never a ghost", state.LifecycleIdle, 7, true, false, time.Hour, dead, false},
-		{"working dead pid", state.LifecycleWorking, 7, true, false, 0, dead, true},
+		{"working dead pid, quiet", state.LifecycleWorking, 7, true, false, ghostDeadGrace, dead, true},
+		{"working dead pid, fresh event (respawn in flight)", state.LifecycleWorking, 7, true, false, time.Second, dead, false},
 		{"working live pid", state.LifecycleWorking, 7, true, false, time.Hour, live, false},
 		{"working pidless attached, streaming", state.LifecycleWorking, 0, true, false, time.Minute, dead, false},
 		{"working pidless attached, transport ended", state.LifecycleWorking, 0, true, true, time.Second, dead, true},

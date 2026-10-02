@@ -920,16 +920,21 @@ func (a *Agent) PID() int {
 	return a.proc.Pid()
 }
 
-// HasProcess reports whether a spawn has ever been attached to this agent.
-// Unlike PID it stays true for transports with no OS pid of their own — an
-// opencode turn on the shared server, an omp RPC turn, the in-process wick
-// provider all report Pid() == 0 while the turn is very much alive. The
-// handover drain uses the pair to tell "no pid because nothing was spawned"
-// apart from "no pid because the transport has none".
-func (a *Agent) HasProcess() bool {
+// ProcessState returns the current subprocess's OS pid and whether any
+// spawn is attached, read together under one lock so a respawn between
+// them cannot pair one process's pid with another's presence. attached
+// stays true for transports with no OS pid of their own — an opencode turn
+// on the shared server, an omp RPC turn, the in-process wick provider all
+// report pid 0 while the turn is very much alive. The handover drain uses
+// the pair to tell "no pid because nothing was spawned" apart from "no pid
+// because the transport has none".
+func (a *Agent) ProcessState() (pid int, attached bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.proc != nil
+	if a.proc == nil {
+		return 0, false
+	}
+	return a.proc.Pid(), true
 }
 
 // TransportEnded reports whether a pid-less transport has already closed

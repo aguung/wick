@@ -1937,53 +1937,90 @@ func (p *Pool) Drain(ctx context.Context) int {
 // on it meant waiting on the idle TTL, and the only way out was a deadline
 // that also cut live turns.
 func (p *Pool) HandoverBlockers() []string {
-	p.mu.Lock()
+	// Snapshot under p.mu, probe outside it. The probes go into the agent
+	// (its own lock, which Start/respawn hold across a whole Spawn) and the
+	// OS, so doing them under p.mu would stall the pool behind a slow spawn
+	// — and a panic in any of them would leave p.mu held for good.
+	type candidate struct {
+		key string
+		e   *runEntry
+		lc  state.Lifecycle
+		age time.Duration
+	}
+	var cands []candidate
+	func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for k, e := range p.active {
+			if e == nil || e.state == nil {
+				continue
+			}
+			lc := e.state.Lifecycle()
+			if lc != state.LifecycleSpawning && lc != state.LifecycleWorking {
+				continue
+			}
+			cands = append(cands, candidate{k, e, lc, time.Since(e.state.LastActive())})
+		}
+	}()
+
+	type ghost struct {
+		candidate
+		pid int
+	}
 	var out []string
-	var reap []*runEntry
-	for k, e := range p.active {
-		if e == nil || e.state == nil {
+	var ghosts []ghost
+	for _, c := range cands {
+		pid, attached := turnProcess(c.e)
+		if !ghostTurn(c.lc, pid, attached, transportEnded(c.e), c.age, processAlive) {
+			out = append(out, c.e.sessID)
 			continue
 		}
-		lc := e.state.Lifecycle()
-		if lc != state.LifecycleSpawning && lc != state.LifecycleWorking {
-			continue
-		}
-		pid, attached := turnProcess(e)
-		age := time.Since(e.state.LastActive())
-		if !ghostTurn(lc, pid, attached, transportEnded(e), age, processAlive) {
-			out = append(out, e.sessID)
-			continue
-		}
+		ghosts = append(ghosts, ghost{c, pid})
+	}
+
+	var reap []ghost
+	func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		if p.ghostWarned == nil {
 			p.ghostWarned = make(map[string]bool)
 		}
-		if p.ghostWarned[k] {
-			continue
+		for _, g := range ghosts {
+			if p.ghostWarned[g.key] {
+				continue
+			}
+			p.ghostWarned[g.key] = true
+			log.Warn().Str("session", g.e.sessID).Str("agent", g.e.agentNm).
+				Str("lifecycle", g.lc.String()).Int("pid", g.pid).
+				Dur("since_last_active", g.age.Round(time.Second)).
+				Msg("pool.handover: turn has no live process behind it — not holding the handover for it")
+			// Only a pid we watched die is reaped. A turn with nothing
+			// attached may still be inside Start (which holds the agent lock
+			// across Spawn), and stopping it there races the spawn — skipping
+			// it is enough for the drain; the UI keeps it until the exit path
+			// runs.
+			if g.pid > 0 && g.e.agent != nil {
+				reap = append(reap, g)
+			}
 		}
-		p.ghostWarned[k] = true
-		log.Warn().Str("session", e.sessID).Str("agent", e.agentNm).
-			Str("lifecycle", lc.String()).Int("pid", pid).
-			Dur("since_last_active", age.Round(time.Second)).
-			Msg("pool.handover: turn has no live process behind it — not holding the handover for it")
-		// Only a pid we watched die is reaped. A turn with nothing attached
-		// may still be inside Start (which holds the agent lock across
-		// Spawn), and stopping it there races the spawn — skipping it is
-		// enough for the drain; the UI keeps it until the exit path runs.
-		if pid > 0 && e.agent != nil {
-			reap = append(reap, e)
+		for k := range p.ghostWarned {
+			if _, ok := p.active[k]; !ok {
+				delete(p.ghostWarned, k)
+			}
 		}
-	}
-	for k := range p.ghostWarned {
-		if _, ok := p.active[k]; !ok {
-			delete(p.ghostWarned, k)
-		}
-	}
-	p.mu.Unlock()
+	}()
 	// Stop blocks up to the terminate grace and fires the exit hook, which
 	// takes p.mu — so never under the lock, and never on the drain's
 	// polling goroutine. The same path ReconcileDead uses for idle zombies.
-	for _, e := range reap {
-		go func(e *runEntry) { _ = e.agent.Stop() }(e)
+	// The pid is read again first: a respawn may have attached a new process
+	// since the probe, and that one is alive and must be left alone.
+	for _, g := range reap {
+		go func(g ghost) {
+			if pid, _ := turnProcess(g.e); pid != g.pid || processAlive(pid) {
+				return
+			}
+			_ = g.e.agent.Stop()
+		}(g)
 	}
 	sort.Strings(out)
 	return out
@@ -1994,6 +2031,13 @@ func (p *Pool) HandoverBlockers() []string {
 // resolving binaries / starting a server in that window, so a young one is
 // real work; one this old with nothing behind it never got a process.
 const ghostSpawnGrace = 2 * time.Minute
+
+// ghostDeadGrace is how long a dead pid must have gone without an event
+// before its turn counts as a ghost. A respawn swaps the agent's process
+// only once the new one is spawned, so for that moment the entry still
+// reports the previous, exited pid while its new turn is already starting.
+// A fresh event means exactly that; only a quiet one is left behind.
+const ghostDeadGrace = 30 * time.Second
 
 // turnProcess and processAlive are the handover's liveness probes, as
 // variables so tests can stand in for real subprocesses.
@@ -2006,7 +2050,7 @@ var (
 		if e.agent == nil {
 			return 0, true
 		}
-		return e.agent.PID(), e.agent.HasProcess()
+		return e.agent.ProcessState()
 	}
 	// transportEnded reports a pid-less transport that has already said its
 	// turn is over (opencode: the remote turn's done channel is closed).
@@ -2021,8 +2065,10 @@ var (
 // ever finish it (a reader goroutine stuck on a pipe some orphan still
 // holds, a missed exit). Pure, so the rules are testable without spawning.
 //
-//   - pid > 0 → ghost iff that process is gone. processctl.ProcessAlive
-//     treats EPERM as alive, so a pid we can't signal still counts.
+//   - pid > 0 → ghost iff that process is gone AND no event arrived for
+//     ghostDeadGrace (a respawn reports the old pid for a moment).
+//     processctl.ProcessAlive treats EPERM as alive, so a pid we can't
+//     signal still counts.
 //   - attached with pid 0 → how opencode (shared server), omp RPC and the
 //     in-process wick provider look while a turn is genuinely running;
 //     there is no per-turn process to probe. A ghost only when the
@@ -2036,7 +2082,7 @@ func ghostTurn(lc state.Lifecycle, pid int, attached, ended bool, age time.Durat
 		return false
 	}
 	if pid > 0 {
-		return !alive(pid)
+		return age >= ghostDeadGrace && !alive(pid)
 	}
 	if attached {
 		return ended
