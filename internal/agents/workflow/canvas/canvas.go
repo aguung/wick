@@ -32,109 +32,35 @@ func New(svc service.Service) *Canvas {
 // AddNode appends a node to the workflow.
 func (c *Canvas) AddNode(id string, n workflow.Node) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		if err := parse.ValidateNodeID(n.ID); err != nil {
-			return err
-		}
-		for _, existing := range w.Graph.Nodes {
-			if existing.ID == n.ID {
-				return fmt.Errorf("node %q already exists", n.ID)
-			}
-		}
-		w.Graph.Nodes = append(w.Graph.Nodes, n)
-		return nil
+		return addNode(w, n)
 	})
 }
 
 // UpdateNode merges a patch into an existing node.
 func (c *Canvas) UpdateNode(id, nodeID string, patch map[string]any) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		idx := -1
-		for i, n := range w.Graph.Nodes {
-			if n.ID == nodeID {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return fmt.Errorf("node %q not found", nodeID)
-		}
-		if err := applyNodePatch(&w.Graph.Nodes[idx], patch); err != nil {
-			return err
-		}
-		return nil
+		return updateNode(w, nodeID, patch)
 	})
 }
 
 // DeleteNode removes a node and every edge touching it.
 func (c *Canvas) DeleteNode(id, nodeID string) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		if w.Graph.Entry == nodeID {
-			return fmt.Errorf("cannot delete entry node %q — reassign graph.entry to another node first", nodeID)
-		}
-		idx := -1
-		for i, n := range w.Graph.Nodes {
-			if n.ID == nodeID {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return fmt.Errorf("node %q not found", nodeID)
-		}
-		w.Graph.Nodes = append(w.Graph.Nodes[:idx], w.Graph.Nodes[idx+1:]...)
-		kept := w.Graph.Edges[:0]
-		for _, e := range w.Graph.Edges {
-			if e.From == nodeID || e.To == nodeID {
-				continue
-			}
-			kept = append(kept, e)
-		}
-		w.Graph.Edges = kept
-		return nil
+		return deleteNode(w, nodeID)
 	})
 }
 
 // Connect adds an edge.
 func (c *Canvas) Connect(id, fromID, toID, caseLabel string) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		nodes := indexNodes(w.Graph)
-		from, ok := nodes[fromID]
-		if !ok {
-			return fmt.Errorf("from node %q not found", fromID)
-		}
-		if _, ok := nodes[toID]; !ok {
-			return fmt.Errorf("to node %q not found", toID)
-		}
-		if caseLabel != "" && !from.Type.IsBranchSource() {
-			return errors.New("case only valid on edges from classify/branch source")
-		}
-		for _, e := range w.Graph.Edges {
-			if e.From == fromID && e.To == toID && e.Case == caseLabel {
-				return fmt.Errorf("edge %s→%s (case=%q) already exists", fromID, toID, caseLabel)
-			}
-		}
-		w.Graph.Edges = append(w.Graph.Edges, workflow.Edge{From: fromID, To: toID, Case: caseLabel})
-		return nil
+		return connect(w, fromID, toID, caseLabel)
 	})
 }
 
 // Disconnect removes an edge.
 func (c *Canvas) Disconnect(id, fromID, toID string) (workflow.Workflow, error) {
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		kept := w.Graph.Edges[:0]
-		removed := false
-		for _, e := range w.Graph.Edges {
-			if e.From == fromID && e.To == toID && !removed {
-				removed = true
-				continue
-			}
-			kept = append(kept, e)
-		}
-		if !removed {
-			return fmt.Errorf("edge %s→%s not found", fromID, toID)
-		}
-		w.Graph.Edges = kept
-		return nil
+		return disconnect(w, fromID, toID)
 	})
 }
 
@@ -168,21 +94,7 @@ func (c *Canvas) MoveNodes(id string, moves []NodeMove) (workflow.Workflow, erro
 		return workflow.Workflow{}, errors.New("moves: at least one entry required")
 	}
 	return c.mutate(id, func(w *workflow.Workflow) error {
-		if w.Canvas == nil {
-			w.Canvas = map[string]any{}
-		}
-		positions, _ := w.Canvas["positions"].(map[string]any)
-		if positions == nil {
-			positions = map[string]any{}
-		}
-		for _, mv := range moves {
-			if mv.NodeID == "" {
-				return errors.New("move: node_id is required")
-			}
-			positions[mv.NodeID] = map[string]any{"x": mv.X, "y": mv.Y}
-		}
-		w.Canvas["positions"] = positions
-		return nil
+		return moveNodes(w, moves)
 	})
 }
 
@@ -700,5 +612,117 @@ func applyNodePatch(n *workflow.Node, patch map[string]any) error {
 		}
 		n.Command = out
 	}
+	return nil
+}
+
+func addNode(w *workflow.Workflow, n workflow.Node) error {
+	if err := parse.ValidateNodeID(n.ID); err != nil {
+		return err
+	}
+	for _, existing := range w.Graph.Nodes {
+		if existing.ID == n.ID {
+			return fmt.Errorf("node %q already exists", n.ID)
+		}
+	}
+	w.Graph.Nodes = append(w.Graph.Nodes, n)
+	return nil
+}
+
+func updateNode(w *workflow.Workflow, nodeID string, patch map[string]any) error {
+	idx := -1
+	for i, n := range w.Graph.Nodes {
+		if n.ID == nodeID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("node %q not found", nodeID)
+	}
+	if err := applyNodePatch(&w.Graph.Nodes[idx], patch); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteNode(w *workflow.Workflow, nodeID string) error {
+	if w.Graph.Entry == nodeID {
+		return fmt.Errorf("cannot delete entry node %q — reassign graph.entry to another node first", nodeID)
+	}
+	idx := -1
+	for i, n := range w.Graph.Nodes {
+		if n.ID == nodeID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("node %q not found", nodeID)
+	}
+	w.Graph.Nodes = append(w.Graph.Nodes[:idx], w.Graph.Nodes[idx+1:]...)
+	kept := w.Graph.Edges[:0]
+	for _, e := range w.Graph.Edges {
+		if e.From == nodeID || e.To == nodeID {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	w.Graph.Edges = kept
+	return nil
+}
+
+func connect(w *workflow.Workflow, fromID, toID, caseLabel string) error {
+	nodes := indexNodes(w.Graph)
+	from, ok := nodes[fromID]
+	if !ok {
+		return fmt.Errorf("from node %q not found", fromID)
+	}
+	if _, ok := nodes[toID]; !ok {
+		return fmt.Errorf("to node %q not found", toID)
+	}
+	if caseLabel != "" && !from.Type.IsBranchSource() {
+		return errors.New("case only valid on edges from classify/branch source")
+	}
+	for _, e := range w.Graph.Edges {
+		if e.From == fromID && e.To == toID && e.Case == caseLabel {
+			return fmt.Errorf("edge %s→%s (case=%q) already exists", fromID, toID, caseLabel)
+		}
+	}
+	w.Graph.Edges = append(w.Graph.Edges, workflow.Edge{From: fromID, To: toID, Case: caseLabel})
+	return nil
+}
+
+func disconnect(w *workflow.Workflow, fromID, toID string) error {
+	kept := w.Graph.Edges[:0]
+	removed := false
+	for _, e := range w.Graph.Edges {
+		if e.From == fromID && e.To == toID && !removed {
+			removed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !removed {
+		return fmt.Errorf("edge %s→%s not found", fromID, toID)
+	}
+	w.Graph.Edges = kept
+	return nil
+}
+
+func moveNodes(w *workflow.Workflow, moves []NodeMove) error {
+	if w.Canvas == nil {
+		w.Canvas = map[string]any{}
+	}
+	positions, _ := w.Canvas["positions"].(map[string]any)
+	if positions == nil {
+		positions = map[string]any{}
+	}
+	for _, mv := range moves {
+		if mv.NodeID == "" {
+			return errors.New("move: node_id is required")
+		}
+		positions[mv.NodeID] = map[string]any{"x": mv.X, "y": mv.Y}
+	}
+	w.Canvas["positions"] = positions
 	return nil
 }

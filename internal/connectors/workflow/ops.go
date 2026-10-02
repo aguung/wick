@@ -286,6 +286,43 @@ func (h *handlers) moveNodes(c *connector.Ctx) (any, error) {
 	return h.ops.MoveNodes(c.Input("id"), moves)
 }
 
+// apply runs a whole edit batch and answers with counts and warnings only.
+// Echoing the full workflow (as the single-step ops do) is what made a
+// ten-step edit cost ten copies of it; the caller already knows what it
+// sent, and workflow_canvas_view / workflow_get are there when it needs more.
+func (h *handlers) apply(c *connector.Ctx) (any, error) {
+	var ops []wfcanvas.EditOp
+	if err := parseJSON(c.Input("ops"), &ops); err != nil {
+		return nil, fmt.Errorf("ops: %w", err)
+	}
+	for i := range ops {
+		// Same contract as workflow_add_node: an id-less node gets a minted one.
+		if ops[i].Op == "add_node" && ops[i].Node != nil && ops[i].Node.ID == "" {
+			ops[i].Node.ID = uuid.NewString()
+		}
+	}
+	w, err := h.ops.Apply(c.Input("id"), ops)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"ok":       true,
+		"applied":  len(ops),
+		"nodes":    len(w.Graph.Nodes),
+		"edges":    len(w.Graph.Edges),
+		"triggers": len(w.Triggers),
+		"draft":    true,
+	}
+	if vr := h.ops.ValidateRich(c.Input("id")); len(vr.Warnings) > 0 {
+		msgs := make([]string, 0, len(vr.Warnings))
+		for _, warn := range vr.Warnings {
+			msgs = append(msgs, warn.Path+": "+warn.Message)
+		}
+		out["warnings"] = msgs
+	}
+	return out, nil
+}
+
 func (h *handlers) autoLayout(c *connector.Ctx) (any, error) {
 	var nodeIDs []string
 	if s := strings.TrimSpace(c.Input("node_ids")); s != "" {
