@@ -50,9 +50,12 @@
   // A remount of the same artifact (live turn → final turn, a re-render)
   // starts at the height the previous mount settled on, so the thread does
   // not collapse under the reader and grow back.
-  const rememberedHeight = recallHeight(artifactKey(url, src));
+  // One key for read AND write: the url, or a hash of the source currently
+  // shown (raw starts as src and follows a streaming host).
+  const memoKey = () => artifactKey(url, raw);
+  const rememberedHeight = recallHeight(memoKey());
   let height = $state(rememberedHeight ?? DEFAULT_HEIGHT);
-  // Last height the document reported, so a window resize can re-fit it.
+  // Last height the document reported, so a resize of the chat can re-fit it.
   let reportedHeight = 0;
   let showCode = $state(false);
   let fullscreen = $state(false);
@@ -216,33 +219,47 @@
   function applyHeight(reported: number) {
     const scroller = frameEl?.closest<HTMLElement>("[data-chat-panel]") ?? null;
     reportedHeight = reported;
-    const fit = fitHeight(reported, scroller?.clientHeight || window.innerHeight);
+    // A chat panel that measures 0 is hidden or detached (another view is
+    // showing): fitting to that would shrink the preview to the minimum, so
+    // keep the current height until it measures again.
+    if (scroller && scroller.clientHeight === 0) return;
+    const fit = fitHeight(reported, scroller ? scroller.clientHeight : window.innerHeight);
     const next = fit.height;
     // Tell the document whether to show its own scrollbar (only when it is
     // taller than the cap). Sent every time: a remounted frame starts hidden.
     try {
       frameEl?.contentWindow?.postMessage({ type: "wick-artifact-overflow", id, on: fit.scroll }, "*");
     } catch { /* frame gone */ }
-    rememberHeight(artifactKey(url, raw), next);
+    rememberHeight(memoKey(), next);
     if (next === height) return;
     // Keep the reader's place when this preview resizes while it sits above
     // the visible part of the thread (the panel has scroll anchoring off).
-    // Not while the thread is still landing on a fresh open: that pass
-    // re-measures and places the thread itself.
-    const shift = scroller && frameEl && !scroller.hasAttribute("data-scroll-landing")
+    // Not while the thread is pinned to the bottom: the pin follows the
+    // resize itself, and two writers in one frame make the panel jump.
+    const shift = scroller && frameEl && !scroller.hasAttribute("data-stick-bottom")
       ? anchorShift(height, next, frameEl.getBoundingClientRect().bottom, scroller.getBoundingClientRect().top)
       : 0;
     height = next;
     if (shift) void tick().then(() => { scroller!.scrollTop += shift; });
   }
 
-  // The cap follows the chat height, so re-fit on window resize. applyHeight
-  // compensates scrollTop when this preview sits above the visible part, so
-  // a changing cap does not move the reader either.
+  // The cap follows the chat panel's height (window resize, a rail opening,
+  // the composer growing), so re-fit when the panel itself resizes; window
+  // resize is the fallback outside the chat. applyHeight compensates scrollTop
+  // when this preview sits above the visible part, so a changing cap does not
+  // move the reader either.
   $effect(() => {
-    const onResize = () => { if (reportedHeight > 0) applyHeight(reportedHeight); };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const frame = frameEl;
+    if (!frame) return;
+    const refit = () => { if (reportedHeight > 0) applyHeight(reportedHeight); };
+    const scroller = frame.closest<HTMLElement>("[data-chat-panel]");
+    if (scroller && typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(refit);
+      ro.observe(scroller);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", refit);
+    return () => window.removeEventListener("resize", refit);
   });
 
   $effect(() => {

@@ -115,3 +115,64 @@ describe("artifact height reporter — inner scroll switch", () => {
     expect(document.documentElement.style.overflow).toBe("");
   });
 });
+
+// Review #5: a taller reading dropped as an echo is re-measured once the
+// echo window closes, so real growth landing inside it is not lost.
+describe("artifact height reporter — dropped echo is resent", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete (document.documentElement as unknown as { scrollHeight?: number }).scrollHeight;
+  });
+
+  test("re-sends after the window", () => {
+    vi.useFakeTimers();
+    const posted: number[] = [];
+    vi.spyOn(window, "postMessage").mockImplementation(((m: { height: number }) => { posted.push(m.height); }) as typeof window.postMessage);
+    let content = 500;
+    Object.defineProperty(document.documentElement, "scrollHeight", { configurable: true, get: () => content });
+    vi.stubGlobal("innerHeight", 320);
+    runScript(artifactHeightReporter("rs"));
+    window.dispatchEvent(new Event("load"));
+    // (reporters from earlier tests share this window, so compare values)
+    expect(new Set(posted)).toEqual(new Set([500]));
+    vi.stubGlobal("innerHeight", 500);
+    content = 650; // an image finished right as the frame resized
+    window.dispatchEvent(new Event("resize"));
+    expect(posted).not.toContain(650);
+    vi.advanceTimersByTime(30); // the 50ms timer is still inside the window
+    vi.advanceTimersByTime(300);
+    expect(posted).toContain(650);
+  });
+});
+
+// Review #6: an element inside a shadow root still scrolls the light-DOM
+// container around its host, and still never escapes the document.
+describe("artifact scroll guard — shadow DOM", () => {
+  const origSIV = Element.prototype.scrollIntoView;
+  afterEach(() => {
+    Element.prototype.scrollIntoView = origSIV;
+    document.body.innerHTML = "";
+  });
+
+  test("crosses the shadow boundary to the scrolling container", () => {
+    runScript(artifactScrollGuard());
+    const box = document.createElement("div");
+    box.style.overflowY = "auto";
+    Object.defineProperty(box, "scrollHeight", { value: 1000 });
+    Object.defineProperty(box, "clientHeight", { value: 200 });
+    box.getBoundingClientRect = () => ({ top: 0, bottom: 200, left: 0, right: 300 }) as DOMRect;
+    const host = document.createElement("div");
+    box.appendChild(host);
+    document.body.appendChild(box);
+    const root = host.attachShadow({ mode: "open" });
+    const row = document.createElement("div");
+    root.appendChild(row);
+    row.getBoundingClientRect = () => ({ top: 500, bottom: 540, left: 0, right: 300 }) as DOMRect;
+    const boxScroll = vi.fn();
+    (box as unknown as { scrollBy: unknown }).scrollBy = boxScroll;
+    vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    row.scrollIntoView({ block: "nearest" });
+    expect(boxScroll).toHaveBeenCalledWith({ top: 340, left: 0, behavior: "auto" });
+  });
+});

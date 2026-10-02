@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy, untrack, tick } from "svelte";
-  import { anchorTop, jumpVisible, latestTop, spacerHeight } from "../threadScroll.js";
+  import { onMount, onDestroy, untrack } from "svelte";
+  import { attachThreadScroll, type ThreadScroll } from "../threadStick.js";
   import { railRefreshTargets, type RefreshableRailTab } from "../railRefresh.js";
   import { get } from "svelte/store";
   import { Effect } from "effect";
@@ -1410,88 +1410,17 @@
     }
   }
 
-  /* ── thread scroll (claude.ai pattern) ─────────────────────────
-     The thread never follows content by itself — streaming text, tool cards
-     and HTML-artifact iframes resizing all leave scrollTop alone, so nothing
-     can drag the reader. scrollTop is written at exactly three moments:
-       1. the user sends → their new bubble is anchored near the top and the
-          reply grows into the empty space below it (anchorLatestUser);
-       2. a fresh open / refresh → it lands on the latest turn, re-landing
-          through the post-mount settle (iframes sizing themselves) until the
-          user scrolls or a short window passes (land / endLanding);
-       3. Jump to latest / Ctrl+↓ (scrollToBottom).
-     (Plus the history-prepend compensation, which keeps the reader's place.)
-     The empty space is a spacer after the real content, sized from the last
-     user bubble so only the latest turn is padded — see threadScroll.ts. The
-     Jump button measures to the end of REAL content, never the spacer. */
+  /* ── auto-scroll thread to bottom ─────────────────────────────── */
+  /* Pin-to-bottom: while the reader is at the bottom, growth is followed;
+     a gesture up releases it. The rules (and why a clamp or an iframe's
+     scrollIntoView must not release it) live in threadStick.ts. */
   let showJumpBtn = $state(false);
-  let suppressScrollCheck = false;
-  let spacerEl: HTMLElement | undefined = $state();
-  let landing = true;
-  let landingTimer: ReturnType<typeof setTimeout> | null = null;
-  let landedTop = 0;
-  const LANDING_SETTLE_MS = 1500;
+  let scrollCtl: ThreadScroll | null = null;
 
-  // Content-coordinate geometry of the thread: where the real content ends
-  // (the spacer's top), the top of the last user bubble, and the gap kept
-  // above an anchored bubble (the column's own top padding).
-  function measure(el: HTMLElement) {
-    const origin = el.getBoundingClientRect().top - el.scrollTop;
-    const contentBottom = spacerEl ? spacerEl.getBoundingClientRect().top - origin : el.scrollHeight;
-    const users = el.querySelectorAll<HTMLElement>("[data-user-turn]");
-    const last = users.length ? users[users.length - 1] : null;
-    const userTop = last ? last.getBoundingClientRect().top - origin : null;
-    const col = el.firstElementChild as HTMLElement | null;
-    const gap = col ? parseFloat(getComputedStyle(col).paddingTop) || 0 : 0;
-    return { contentBottom, userTop, gap };
-  }
-
-  function updateSpacer(el: HTMLElement) {
-    if (!spacerEl) return;
-    const m = measure(el);
-    spacerEl.style.height = `${spacerHeight(el.clientHeight, m.contentBottom, m.userTop, m.gap)}px`;
-  }
-
-  function updateJump(el: HTMLElement) {
-    showJumpBtn = jumpVisible(measure(el).contentBottom, el.scrollTop, el.clientHeight);
-  }
-
-  function setTop(el: HTMLElement, top: number) {
-    suppressScrollCheck = true;
-    el.scrollTop = top;
-    landedTop = el.scrollTop;
-    requestAnimationFrame(() => { suppressScrollCheck = false; });
-  }
-
-  function endLanding() {
-    landing = false;
-    threadEl?.removeAttribute("data-scroll-landing");
-    if (landingTimer) { clearTimeout(landingTimer); landingTimer = null; }
-  }
-
-  function land(el: HTMLElement) {
-    updateSpacer(el);
-    setTop(el, latestTop(measure(el).contentBottom, el.clientHeight));
-    updateJump(el);
-  }
-
+  // Send, Jump to latest, Ctrl+↓, ask_user: glide down (instant under
+  // prefers-reduced-motion). The open / view-switch landing is instant.
   function scrollToBottom() {
-    const el = threadEl;
-    if (!el) return;
-    endLanding();
-    land(el);
-  }
-
-  async function anchorLatestUser() {
-    endLanding();
-    await tick();
-    const el = threadEl;
-    if (!el) return;
-    updateSpacer(el);
-    const m = measure(el);
-    if (m.userTop === null) return;
-    setTop(el, anchorTop(m.userTop, m.gap));
-    updateJump(el);
+    scrollCtl?.scrollToBottom({ smooth: true });
   }
 
   $effect(() => {
@@ -1523,61 +1452,25 @@
 
   $effect(() => {
     if (!threadEl) return;
-    const el = threadEl;
-    if (landing) el.setAttribute("data-scroll-landing", "");
-
-    // Drives the Jump button and pulls older history in near the top. A
-    // scroll that did not come from us while still landing means the user
-    // took over (a wheel or drag over an artifact iframe only shows up here).
-    function onScroll() {
-      if (landing && Math.abs(el.scrollTop - landedTop) > 2) endLanding();
-      if (suppressScrollCheck) return;
-      updateJump(el);
-      // Near the top → pull the next older history page in.
-      if (el.scrollTop < 80) loadOlderHistory();
-    }
-
-    // Content changed size with no scroll: re-size the spacer (it absorbs
-    // the change below the latest turn), re-land while still landing, and
-    // otherwise only re-evaluate the Jump button.
-    function onResize() {
-      updateSpacer(el);
-      if (landing) land(el);
-      else updateJump(el);
-    }
-
-    // Any gesture on the panel ends the landing pass.
-    const stopLanding = () => { if (landing) endLanding(); };
-
-    el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", stopLanding, { passive: true });
-    el.addEventListener("touchstart", stopLanding, { passive: true });
-    el.addEventListener("pointerdown", stopLanding, { passive: true });
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(() => onResize());
-      ro.observe(el);
-      const col = el.firstElementChild;
-      if (col) ro.observe(col);
-    }
+    const ctl = attachThreadScroll(threadEl, {
+      onJump: (show) => { showJumpBtn = show; },
+      onNearTop: () => loadOlderHistory(),
+    });
+    scrollCtl = ctl;
+    // The scroller is recreated whenever the conversation view is shown again
+    // (switching tabs), so land at the bottom of the new one right away.
+    ctl.scrollToBottom();
     return () => {
-      el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", stopLanding);
-      el.removeEventListener("touchstart", stopLanding);
-      el.removeEventListener("pointerdown", stopLanding);
-      ro?.disconnect();
+      ctl.destroy();
+      if (scrollCtl === ctl) scrollCtl = null;
     };
   });
 
-  // Moment 2: land on the latest turn once turns arrive, and keep re-landing
-  // while the post-mount settle runs (until a gesture or the window ends).
   $effect(() => {
     const _dep1 = turns.length;
     const _dep2 = live?.text?.length;
     const _dep3 = live?.blocks?.length;
-    if (!threadEl || !landing || turns.length === 0) return;
-    land(threadEl);
-    if (!landingTimer) landingTimer = setTimeout(endLanding, LANDING_SETTLE_MS);
+    scrollCtl?.followIfStuck();
   });
 
   /* ── SCM island mount when source tab opens ───────────────────── */
@@ -1741,9 +1634,7 @@
         thread.prependHistory(res.turns);
         requestAnimationFrame(() => {
           if (el) {
-            suppressScrollCheck = true;
-            el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
-            requestAnimationFrame(() => { suppressScrollCheck = false; });
+            scrollCtl?.setTop(prevTop + (el.scrollHeight - prevHeight));
           }
         });
       })
@@ -1765,6 +1656,7 @@
       if (ev.type === "ask_user") {
         try {
           showAsk(JSON.parse(ev.data ?? "{}"));
+          setTimeout(() => scrollToBottom(), 50);
         } catch (_) { /* skip */ }
       } else if (ev.type === "ask_user_resolved") {
         try { hideAsk(JSON.parse(ev.data ?? "{}")); } catch (_) { /* skip */ }
@@ -1985,7 +1877,7 @@
       size: f.size,
     }));
     thread.appendUserTurn(msg.text, optimisticAttachments);
-    void anchorLatestUser();
+    scrollToBottom();
     try {
       await run(sendMessage(base, sessionId, msg).pipe(Effect.provide(WickClientLayer)));
     } catch (e: unknown) {
@@ -2527,9 +2419,6 @@
           {/if}
           <ConversationThread {turns} {live} {typing} compacting={compactInFlight} loadTrace={(turnId) => Effect.runPromise(getTurnTrace(base, sessionId, turnId).pipe(Effect.provide(WickClientLayer)))} loadTraceEvent={(turnId, eventId) => Effect.runPromise(getTurnEvent(base, sessionId, turnId, eventId).pipe(Effect.provide(WickClientLayer)))} onOpenPath={openFileByPath} onCancelRun={handleCancelRun} onStopTurn={handleStopFromTool} onDismissTool={(toolUseId) => thread.dismissToolBlock(toolUseId)} onOpenSubAgent={openSubAgent} />
         </div>
-        <!-- Blank room after the latest turn so its user bubble can sit at
-             the top while the reply grows below it (see threadScroll.ts). -->
-        <div bind:this={spacerEl} data-thread-spacer aria-hidden="true"></div>
       </div>
 
       <!-- Zone 3: ask inline. Its top edge fades the thread text scrolling

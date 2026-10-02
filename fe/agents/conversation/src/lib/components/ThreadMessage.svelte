@@ -417,7 +417,9 @@
     </div>
   </div>
 {:else if isUser}
-  <div data-user-turn class="flex min-w-0 max-w-full justify-end gap-2 group">
+  <!-- Only the bubble the user just sent (optimistic local turn) slides in;
+       history and refreshes render still. -->
+  <div class="flex min-w-0 max-w-full justify-end gap-2 group" class:wick-enter-up={turn.turn_id?.startsWith("local-user-")}>
     <div class="flex flex-col items-end gap-1 max-w-[80%] min-w-0">
       {#if safeAttachments.length > 0}
         <div class="flex flex-wrap justify-end gap-1.5 max-w-full">
@@ -674,3 +676,17 @@
 {/if}
 
 <MediaLightbox items={lightbox?.items ?? null} index={lightbox?.index ?? 0} onClose={closeLightbox} />
+
+<style>
+  /* transform + opacity only: no layout work, so the bottom pin is unaffected. */
+  .wick-enter-up {
+    animation: wick-enter-up 180ms ease-out both;
+  }
+  @keyframes wick-enter-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wick-enter-up { animation: none; }
+  }
+</style>

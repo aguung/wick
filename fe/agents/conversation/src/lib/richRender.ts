@@ -750,7 +750,7 @@ export function artifactHeightReporter(id: string, clip = true): string {
   // is always reported, and growth from real changes (mutations, images)
   // outside that short window still goes through.
   return `<script>(function(){
-    var de=document.documentElement, last=0, vh=window.innerHeight, echoUntil=0;
+    var de=document.documentElement, last=0, vh=window.innerHeight, echoUntil=0, retry=0;
     // The inline frame never shows its own scrollbar unless the host says the
     // document is taller than its cap (wick-artifact-overflow). Done here, on
     // the document, rather than with the iframe's scrolling attribute: that
@@ -773,7 +773,13 @@ export function artifactHeightReporter(id: string, clip = true): string {
       var now=Date.now(), cur=window.innerHeight;
       if(cur!==vh){vh=cur; echoUntil=now+250;}
       var hh=h(); if(!(hh>0))return;
-      if(last>0 && hh>last && now<echoUntil)return;
+      // A dropped echo is re-measured once the window closes, so growth that
+      // happened to land inside it (an image, a late font) is not lost. The
+      // host caps the frame at the chat height, so this settles there.
+      if(last>0 && hh>last && now<echoUntil){
+        if(!retry)retry=setTimeout(function(){retry=0;send();},Math.max(0,echoUntil-now)+20);
+        return;
+      }
       last=hh;
       try{parent.postMessage({type:"wick-artifact-height",id:${JSON.stringify(id)},height:hh},"*");}catch(e){}
     }
@@ -797,6 +803,9 @@ export function artifactScrollGuard(): string {
   return `<script>(function(){
     var EP=Element.prototype, HP=HTMLElement.prototype;
     function isRoot(c){return c===document.scrollingElement||c===document.documentElement||c===document.body;}
+    // Next box up, crossing slots and shadow roots: an element inside a web
+    // component still scrolls the light-DOM containers around its host.
+    function up(n){return n.assignedSlot||n.parentElement||(n.parentNode&&n.parentNode.host)||null;}
     function scrollable(p){
       if(isRoot(p))return true;
       var s=getComputedStyle(p);
@@ -815,7 +824,7 @@ export function artifactScrollGuard(): string {
       var o=arg===false?{block:"end"}:(arg&&typeof arg==="object")?arg:{block:"start"};
       var block=o.block||"start", inline=o.inline||"nearest", behavior=o.behavior||"auto";
       var rootDone=false;
-      for(var p=this.parentElement;p&&!rootDone;p=p.parentElement){
+      for(var p=up(this);p&&!rootDone;p=up(p)){
         if(!scrollable(p))continue;
         var r=this.getBoundingClientRect(), root=isRoot(p);
         var c=root?{top:0,left:0,bottom:window.innerHeight,right:window.innerWidth}:p.getBoundingClientRect();
