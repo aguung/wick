@@ -178,6 +178,30 @@ func TestResolveProps_SkipsReadOnlyAndUnknown(t *testing.T) {
 	}
 }
 
+// A relation column is flagged so createPage can write it in a second
+// transaction: Notion 400s ("association_relation") when the relation is set in
+// the same transaction that creates the row.
+func TestResolveProps_FlagsRelationColumns(t *testing.T) {
+	nameToID := map[string]string{"Ticket": "t1", "Activity": "a1"}
+	idToType := map[string]string{"t1": "relation", "a1": "select"}
+
+	sets, _ := resolveProps(map[string]string{
+		"Ticket":   "3ed1f07f-4ae0-81c4-afb3-dcedee41dc60",
+		"Activity": "Debug",
+	}, nameToID, idToType)
+
+	byID := map[string]propSet{}
+	for _, s := range sets {
+		byID[s.ID] = s
+	}
+	if !byID["t1"].Relation {
+		t.Errorf("relation column not flagged: %+v", byID["t1"])
+	}
+	if byID["a1"].Relation {
+		t.Errorf("select column wrongly flagged as relation: %+v", byID["a1"])
+	}
+}
+
 // privateError must surface Notion's debugMessage. The private API answers every
 // validation failure with a generic message ("Something went wrong. (400)") and
 // puts the real reason in debugMessage; reporting only the generic one turns an
