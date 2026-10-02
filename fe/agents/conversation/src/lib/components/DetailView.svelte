@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
+  import { attachThreadScroll, type ThreadScroll } from "../threadStick.js";
   import { railRefreshTargets, type RefreshableRailTab } from "../railRefresh.js";
   import { get } from "svelte/store";
   import { Effect } from "effect";
@@ -1410,25 +1411,16 @@
   }
 
   /* ── auto-scroll thread to bottom ─────────────────────────────── */
-  let userScrolledUp = $state(false);
+  /* Pin-to-bottom: while the reader is at the bottom, growth is followed;
+     a gesture up releases it. The rules (and why a clamp or an iframe's
+     scrollIntoView must not release it) live in threadStick.ts. */
   let showJumpBtn = $state(false);
-  let suppressScrollCheck = false;
-  /* While true, the thread stays pinned to the bottom as content grows — the
-     natural chat behaviour. Starts true (a fresh open should land at the
-     latest turn) and, crucially, stays true through the post-mount settle when
-     HTML-artifact iframes resize to their content: each growth re-pins instead
-     of stranding the user above the fold. Any manual scroll up releases it. */
-  let stickToBottom = $state(true);
+  let scrollCtl: ThreadScroll | null = null;
 
+  // Send, Jump to latest, Ctrl+↓, ask_user: glide down (instant under
+  // prefers-reduced-motion). The open / view-switch landing is instant.
   function scrollToBottom() {
-    if (threadEl) {
-      suppressScrollCheck = true;
-      userScrolledUp = false;
-      showJumpBtn = false;
-      stickToBottom = true;
-      threadEl.scrollTop = threadEl.scrollHeight;
-      requestAnimationFrame(() => { suppressScrollCheck = false; });
-    }
+    scrollCtl?.scrollToBottom({ smooth: true });
   }
 
   $effect(() => {
@@ -1460,85 +1452,17 @@
 
   $effect(() => {
     if (!threadEl) return;
-    const el = threadEl;
-
-    // A real user scroll: release the bottom-pin the moment they move up, and
-    // re-pin once they return to the bottom. Drives the Jump button.
-    //
-    // The two thresholds are deliberately NOT the same. 80px is the Jump-button
-    // threshold — far enough up that an overlay is worth showing. Re-pinning is
-    // stricter: only when the thread is actually parked at the bottom. Sharing
-    // the 80px for both made every short scroll (one wheel notch ≈ 40px) set
-    // stickToBottom back to true, which re-ran the pin effect below and yanked
-    // the thread down again — the panel appeared to blink on small scrolls.
-    function onScroll() {
-      if (suppressScrollCheck) return;
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      userScrolledUp = distFromBottom > 80;
-      if (distFromBottom <= 4) stickToBottom = true;
-      showJumpBtn = userScrolledUp;
-      // Near the top → pull the next older history page in.
-      if (el.scrollTop < 80) loadOlderHistory();
-    }
-
-    // Content can grow AFTER the initial layout with no scroll event — an HTML
-    // artifact iframe auto-resizes to its content a beat after mount. While
-    // pinned, follow that growth down (smooth, no overlay, no timing guess) so
-    // a refresh lands at the latest turn even though the height wasn't known at
-    // mount. Once the user has scrolled up (stickToBottom false), don't yank
-    // them — just surface the Jump button.
-    function onResize() {
-      if (suppressScrollCheck) return;
-      if (stickToBottom) {
-        el.scrollTop = el.scrollHeight;
-        showJumpBtn = false;
-        userScrolledUp = false;
-      } else {
-        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        userScrolledUp = distFromBottom > 80;
-        showJumpBtn = userScrolledUp;
-      }
-    }
-
-    // A wheel notch or an upward drag is the user's INTENT to leave the
-    // bottom, and it has to win instantly. The scroll event that follows is
-    // dispatched a beat later, so a turn (or an iframe resize) arriving in
-    // that gap still saw stickToBottom true, re-pinned the thread, and
-    // swallowed the gesture — the panel snapped back down mid-scroll.
-    function releaseUp() {
-      stickToBottom = false;
-      userScrolledUp = true;
-      showJumpBtn = true;
-    }
-    function onWheel(e: WheelEvent) {
-      if (e.deltaY < 0) releaseUp();
-    }
-    let touchY = 0;
-    function onTouchStart(e: TouchEvent) {
-      touchY = e.touches[0]?.clientY ?? 0;
-    }
-    function onTouchMove(e: TouchEvent) {
-      const y = e.touches[0]?.clientY ?? touchY;
-      if (y > touchY + 2) releaseUp();
-      touchY = y;
-    }
-
-    el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(() => onResize());
-      ro.observe(el);
-      for (const child of Array.from(el.children)) ro.observe(child);
-    }
+    const ctl = attachThreadScroll(threadEl, {
+      onJump: (show) => { showJumpBtn = show; },
+      onNearTop: () => loadOlderHistory(),
+    });
+    scrollCtl = ctl;
+    // The scroller is recreated whenever the conversation view is shown again
+    // (switching tabs), so land at the bottom of the new one right away.
+    ctl.scrollToBottom();
     return () => {
-      el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      ro?.disconnect();
+      ctl.destroy();
+      if (scrollCtl === ctl) scrollCtl = null;
     };
   });
 
@@ -1546,9 +1470,7 @@
     const _dep1 = turns.length;
     const _dep2 = live?.text?.length;
     const _dep3 = live?.blocks?.length;
-    if (threadEl && stickToBottom) {
-      threadEl.scrollTop = threadEl.scrollHeight;
-    }
+    scrollCtl?.followIfStuck();
   });
 
   /* ── SCM island mount when source tab opens ───────────────────── */
@@ -1712,9 +1634,7 @@
         thread.prependHistory(res.turns);
         requestAnimationFrame(() => {
           if (el) {
-            suppressScrollCheck = true;
-            el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
-            requestAnimationFrame(() => { suppressScrollCheck = false; });
+            scrollCtl?.setTop(prevTop + (el.scrollHeight - prevHeight));
           }
         });
       })
@@ -1736,7 +1656,6 @@
       if (ev.type === "ask_user") {
         try {
           showAsk(JSON.parse(ev.data ?? "{}"));
-          userScrolledUp = false;
           setTimeout(() => scrollToBottom(), 50);
         } catch (_) { /* skip */ }
       } else if (ev.type === "ask_user_resolved") {
@@ -2502,8 +2421,10 @@
         </div>
       </div>
 
-      <!-- Zone 3: ask inline -->
-      <div class="shrink-0 px-4 md:px-6 bg-white-200 dark:bg-navy-800">
+      <!-- Zone 3: ask inline. Its top edge fades the thread text scrolling
+           under it, the way the composer edge does on claude.ai. -->
+      <div class="relative shrink-0 px-4 md:px-6 bg-white-200 dark:bg-navy-800">
+        <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-white-200 to-transparent dark:from-navy-800"></div>
         <div class="page-col">
           <AskUserModal
             request={$currentAsk}
