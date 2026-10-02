@@ -78,6 +78,13 @@ type Agent struct {
 	// when both the idle goroutine and the reader-exit path race.
 	exitReasonSet bool
 
+	// idleKilled: the idle timer is about to kill (or has killed) this
+	// spawn. The kill closes the stdout pipe, so the reader can reach EOF
+	// before the timer records WHY; without this flag the exit was filed
+	// as a clean one and the pool treated a killed turn as a turn
+	// boundary (status stuck "running", nothing flushed).
+	idleKilled bool
+
 	// sliceOOMAtSpawn snapshots the agents slice's oom counter when this
 	// spawn started. ClassifyExit diffs it against the counter at exit to
 	// attribute a kill to the aggregate slice ceiling — the slice counter
@@ -1057,27 +1064,24 @@ func (a *Agent) run(ctx context.Context) {
 		for {
 			select {
 			case <-idle.C:
+				if a.procBusy() {
+					idle.Reset(a.cfg.IdleTimeout)
+					continue
+				}
 				if a.cfg.KillAfterIdle <= 0 {
-					a.mu.Lock()
-					proc := a.proc
-					a.mu.Unlock()
-					if proc != nil {
-						_ = proc.Kill()
-					}
-					a.exitReason(ExitIdle)
+					a.idleKill()
 					return
 				}
 				// Grace period: new output cancels the kill.
 				grace := time.NewTimer(a.cfg.KillAfterIdle)
 				select {
 				case <-grace.C:
-					a.mu.Lock()
-					proc := a.proc
-					a.mu.Unlock()
-					if proc != nil {
-						_ = proc.Kill()
+					if a.procBusy() {
+						grace.Stop()
+						idle.Reset(a.cfg.IdleTimeout)
+						continue
 					}
-					a.exitReason(ExitIdle)
+					a.idleKill()
 					grace.Stop()
 					return
 				case <-a.activityCh:
@@ -1316,6 +1320,13 @@ drained:
 	reason := ExitClean
 	if waitErr != nil && !isCleanExitErr(waitErr) {
 		reason = ExitError
+	}
+	a.mu.Lock()
+	idleKilled := a.idleKilled
+	a.mu.Unlock()
+	if idleKilled {
+		// The idle timer killed this process; whatever Wait says is the kill.
+		reason = ExitIdle
 	}
 	// A respawn-mode CLI whose turn already failed in-band exits non-zero
 	// because of that failure. The user has the error; calling it a crash
@@ -1584,4 +1595,42 @@ func isCleanExitErr(err error) bool {
 	// Killed processes report ExitError on both platforms; treat as
 	// clean since we asked for it.
 	return false
+}
+
+// procBusy asks the running process whether it is still working on its
+// turn, for those that can say (BusyReporter). A silent stream is then not
+// taken for a dead one: a server-mode turn waiting on a long tool or a
+// sub-agent keeps running instead of being aborted by the idle timer.
+func (a *Agent) procBusy() bool {
+	a.mu.Lock()
+	proc := a.proc
+	a.mu.Unlock()
+	b, ok := proc.(BusyReporter)
+	return ok && b.Busy()
+}
+
+// idleKill ends a spawn whose stream has been silent for the idle window and
+// whose process did not say it is still working (see procBusy).
+//
+// Order matters. The reason is claimed first (idleKilled), because the kill
+// closes the stdout pipe and the reader races to file the exit. A turn that
+// was mid-flight is flushed to the transcript with the cause, instead of
+// vanishing into inflight.jsonl until the next wick boot: the person
+// watching sees what the agent had done and why it was stopped, not a
+// spinner. Between turns (state idle) nothing is written — an idle reap of
+// a finished agent interrupts nothing.
+func (a *Agent) idleKill() {
+	a.mu.Lock()
+	a.idleKilled = true
+	proc := a.proc
+	a.mu.Unlock()
+	if a.store != nil && a.state != nil && a.state.Current() != state.Idle {
+		a.store.SetInterruptCauseIfUnset("wick",
+			fmt.Sprintf("no output for %s and the process did not report the turn as still working, so the idle timer stopped it", a.cfg.IdleTimeout))
+		_ = a.store.Flush()
+	}
+	if proc != nil {
+		_ = proc.Kill()
+	}
+	a.exitReason(ExitIdle)
 }

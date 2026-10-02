@@ -71,6 +71,8 @@ type fakeOMP struct {
 	compactDelay time.Duration // holds the compact answer this long (a slow model)
 	out          *io.PipeWriter
 	done         chan struct{}
+	// state is merged into get_state's data (isStreaming, …).
+	state map[string]any
 }
 
 func (f *fakeOMP) write(v any) {
@@ -91,9 +93,15 @@ func (f *fakeOMP) serve(in io.Reader) {
 		switch typ {
 		case "get_state":
 			// The model object omp 18.4.4 returns carries contextWindow.
-			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true, "data": map[string]any{"sessionId": "omp-s1",
+			data := map[string]any{"sessionId": "omp-s1",
 				"model": map[string]any{"id": "gpt-5.6-luna", "provider": "openai-codex", "contextWindow": 272000}, "autoCompactionEnabled": true,
-				"contextUsage": map[string]any{"tokens": 25900, "contextWindow": 272000, "percent": 9.5}}})
+				"contextUsage": map[string]any{"tokens": 25900, "contextWindow": 272000, "percent": 9.5}}
+			f.mu.Lock()
+			for k, v := range f.state {
+				data[k] = v
+			}
+			f.mu.Unlock()
+			f.write(map[string]any{"type": "response", "id": id, "command": typ, "success": true, "data": data})
 		case "compact":
 			time.Sleep(f.compactDelay)
 			if f.compactErr != "" {

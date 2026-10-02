@@ -311,6 +311,40 @@ func (p *rpcProcess) Inject(text string) error {
 	return err
 }
 
+// busyCheckWait bounds Busy's get_state: the idle timer asks from its own
+// goroutine and must not stall on an RPC that answers nothing.
+var busyCheckWait = 5 * time.Second
+
+// Busy reports whether omp still runs this turn's session: streaming,
+// compacting, or holding async work (a background sub-agent) that will wake
+// it again. The agent's idle timer asks before aborting a silent turn — a
+// long tool leaves the frame stream quiet while the work goes on. A turn
+// that is over, killed, not yet prompted, or whose RPC does not answer is
+// not busy, so the timer takes its usual course.
+func (p *rpcProcess) Busy() bool {
+	p.mu.Lock()
+	c, ok := p.conn, p.prompted && !p.killed && !p.finished
+	p.mu.Unlock()
+	if !ok || c == nil || c.dead() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busyCheckWait)
+	defer cancel()
+	st, err := c.callWait(ctx, map[string]any{"type": "get_state"}, busyCheckWait)
+	if err != nil {
+		return false
+	}
+	var state struct {
+		IsStreaming         bool `json:"isStreaming"`
+		IsCompacting        bool `json:"isCompacting"`
+		HasPendingAsyncWork bool `json:"hasPendingAsyncWork"`
+	}
+	if json.Unmarshal(st.Data, &state) != nil {
+		return false
+	}
+	return state.IsStreaming || state.IsCompacting || state.HasPendingAsyncWork
+}
+
 func (p *rpcProcess) emit(b []byte) { _, _ = p.pw.Write(b) }
 
 func (p *rpcProcess) finish(err error) {

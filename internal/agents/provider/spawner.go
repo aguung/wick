@@ -59,6 +59,15 @@ type Process interface {
 	Env() []string
 }
 
+// BusyReporter is an optional interface a Process may implement when its
+// turn runs on a server wick can ask (opencode serve, omp RPC) rather than
+// in a child whose silence is all wick sees. The idle timer asks before
+// killing: a turn the server still reports as working is left alone.
+// Absence means "cannot say", i.e. the timer decides on silence alone.
+type BusyReporter interface {
+	Busy() bool
+}
+
 // ScopedProcess is an optional interface a Process may implement to
 // report the systemd scope it was launched inside.
 //

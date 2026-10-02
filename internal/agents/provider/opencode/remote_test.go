@@ -62,7 +62,7 @@ func TestTranslatorMatchesRunFormat(t *testing.T) {
 		}
 		kinds = append(kinds, m.Type)
 	}
-	if got := strings.Join(kinds, ","); got != "step_start,tool_use,step_finish,text,step_finish" {
+	if got := strings.Join(kinds, ","); got != "step_start,tool_running,tool_use,step_finish,text,step_finish" {
 		t.Fatalf("kinds = %s", got)
 	}
 
@@ -80,6 +80,20 @@ func TestTranslatorMatchesRunFormat(t *testing.T) {
 	}
 	if text != "hi there" {
 		t.Fatalf("text = %q", text)
+	}
+	// The started frame announces the tool; the finished one only closes
+	// it, so the call is not reported twice.
+	uses, results := 0, 0
+	for _, ty := range types {
+		switch ty {
+		case event.ToolUse:
+			uses++
+		case event.ToolResult:
+			results++
+		}
+	}
+	if uses != 1 || results != 1 {
+		t.Fatalf("tool events: %d use, %d result, want 1 and 1 (%v)", uses, results, types)
 	}
 	if types[0] != event.SessionStart || types[len(types)-1] != event.Done {
 		t.Fatalf("event types = %v", types)
@@ -167,6 +181,34 @@ type fakeOpencode struct {
 	// joined tracks prompts that joined the gated run: like opencode, the
 	// run goes idle only once every joined message has been answered.
 	joined sync.WaitGroup
+
+	// midTurn, when set, plays the run after the prompt's user message and
+	// busy frame instead of the canned reply.
+	midTurn func(sid string)
+	// onSubscribe, when set, runs as the n-th GET /event (1-based) opens.
+	onSubscribe func(n int)
+	subscribed  int
+	// status is GET /session/status's type for every session ("" = none).
+	status string
+	// messages is GET /session/{id}/message's body ("" = the token fixture).
+	messages string
+}
+
+// dropStreams ends every open GET /event, as a server or proxy dropping
+// the connection does.
+func (f *fakeOpencode) dropStreams() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.subs {
+		close(c)
+	}
+	f.subs = nil
+}
+
+func (f *fakeOpencode) setStatus(s string) {
+	f.mu.Lock()
+	f.status = s
+	f.mu.Unlock()
 }
 
 func (f *fakeOpencode) publish(typ string, props any) {
@@ -188,19 +230,38 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c := make(chan string, 64)
 		f.mu.Lock()
 		f.subs = append(f.subs, c)
+		f.subscribed++
+		n, hook := f.subscribed, f.onSubscribe
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
+		if hook != nil {
+			go hook(n)
+		}
 		for {
 			select {
-			case s := <-c:
+			case s, ok := <-c:
+				if !ok {
+					return
+				}
 				_, _ = io.WriteString(w, s)
 				w.(http.Flusher).Flush()
 			case <-r.Context().Done():
 				return
 			}
 		}
+	case r.URL.Path == "/session/status" && r.Method == http.MethodGet:
+		f.mu.Lock()
+		st := f.status
+		f.mu.Unlock()
+		out := map[string]any{}
+		if st != "" {
+			for i := 1; i <= 3; i++ {
+				out[fmt.Sprintf("ses_new%d", i)] = map[string]string{"type": st}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	case r.URL.Path == "/session" && r.Method == http.MethodPost:
 		f.mu.Lock()
 		f.created++
@@ -266,6 +327,10 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				f.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
 				return
 			}
+			if f.midTurn != nil {
+				f.midTurn(sid)
+				return
+			}
 			if hang {
 				return
 			}
@@ -302,7 +367,12 @@ func (f *fakeOpencode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodGet:
 		f.mu.Lock()
 		done := len(f.summarized) > 0 && !f.noSummary
+		stored := f.messages
 		f.mu.Unlock()
+		if stored != "" {
+			_, _ = io.WriteString(w, stored)
+			return
+		}
 		// m2 = the first turn (system prompt + tools + one prompt: the
 		// overhead floor), m4 = the last turn before /compact.
 		msgs := `[{"info":{"id":"m1","role":"user","summary":{"diffs":[]}}},{"info":{"id":"m2","role":"assistant","tokens":{"input":1051,"output":300,"cache":{"read":40000,"write":0}}}},` +
@@ -754,5 +824,31 @@ func TestRemoteAutoCompactOff(t *testing.T) {
 	}
 	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, `"autoCompact":false`) {
 		t.Fatalf("want autoCompact false: %s", joined)
+	}
+}
+
+// A tool the server keeps updating while it runs is announced once, and
+// only while it is running: an update with no call id is not a start.
+func TestTranslatorAnnouncesRunningToolOnce(t *testing.T) {
+	tr := newTranslator("ses_1")
+	run := func(id string) []string {
+		lines, _ := tr.feed(part(map[string]any{"type": "tool", "tool": "task", "callID": id, "sessionID": "ses_1", "messageID": "msg_a", "state": map[string]any{"status": "running"}}))
+		var out []string
+		for _, l := range lines {
+			out = append(out, strings.TrimSpace(string(l)))
+		}
+		return out
+	}
+	if got := run("c1"); len(got) != 1 || !strings.Contains(got[0], `"type":"tool_running"`) {
+		t.Fatalf("first running update = %v", got)
+	}
+	if got := run("c1"); len(got) != 0 {
+		t.Fatalf("repeat running update emitted %v", got)
+	}
+	if got := run(""); len(got) != 0 {
+		t.Fatalf("running update without call id emitted %v", got)
+	}
+	if got := run("c2"); len(got) != 1 {
+		t.Fatalf("second tool not announced: %v", got)
 	}
 }

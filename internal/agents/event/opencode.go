@@ -33,6 +33,9 @@ type OpencodeParser struct {
 	usage          TokenUsage
 	sawUsage       bool
 	errored        bool
+	// announced: tool calls already reported as started (tool_running), so
+	// their finished frame yields only the result.
+	announced map[string]bool
 	// window: the active model's context limit (wick's context line).
 	window int
 	// autoCompact: the provider's own auto-compact state (context line).
@@ -140,18 +143,30 @@ func (p *OpencodeParser) events(raw opencodeRaw, trimmed string) []AgentEvent {
 			return nil
 		}
 		return []AgentEvent{{Type: Thinking, Text: part.Text, Raw: trimmed}}
+	case "tool_running":
+		// wick-added frame: the tool has started but not finished. Emitting
+		// ToolUse now lets the agent hold its idle timer while it runs.
+		if part == nil || part.State == nil || part.CallID == "" {
+			return nil
+		}
+		if p.announced == nil {
+			p.announced = map[string]bool{}
+		}
+		p.announced[part.CallID] = true
+		return []AgentEvent{{Type: ToolUse, ToolName: part.Tool, ToolUseID: part.CallID, ToolInput: toolInput(part.State.Input), Raw: trimmed}}
 	case "tool_use":
 		if part == nil || part.State == nil {
 			return []AgentEvent{{Type: Trace, Text: trimmed, Raw: trimmed}}
 		}
-		in := string(part.State.Input)
-		if in == "null" || in == "{}" {
-			in = ""
-		}
+		in := toolInput(part.State.Input)
 		res := AgentEvent{Type: ToolResult, Text: part.State.Output, ToolUseID: part.CallID, Raw: trimmed}
 		if part.State.Status == "error" {
 			res.IsError = true
 			res.Text = part.State.Error
+		}
+		if p.announced[part.CallID] {
+			delete(p.announced, part.CallID)
+			return []AgentEvent{res}
 		}
 		return []AgentEvent{
 			{Type: ToolUse, ToolName: part.Tool, ToolUseID: part.CallID, ToolInput: in, Raw: trimmed},
@@ -238,4 +253,13 @@ func opencodeErrorText(b json.RawMessage) string {
 		return s
 	}
 	return string(b)
+}
+
+// toolInput is a tool call's input as the event carries it: empty for none.
+func toolInput(raw json.RawMessage) string {
+	in := string(raw)
+	if in == "null" || in == "{}" {
+		return ""
+	}
+	return in
 }

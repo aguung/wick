@@ -274,6 +274,19 @@ func (p *remoteProcess) Kill() error {
 	return nil
 }
 
+// Busy reports whether the server still lists this turn's session as
+// working. The agent's idle timer asks it before aborting a silent turn: a
+// long tool or a sub-agent (its own session, whose frames are not this
+// turn's) leaves the stream quiet while the work goes on. A turn that is
+// over, killed, not yet prompted, or whose server does not answer is not
+// busy, so the timer takes its usual course.
+func (p *remoteProcess) Busy() bool {
+	p.mu.Lock()
+	c, sid, ok := p.client, p.sessionID, p.prompted && !p.killed && !p.finished
+	p.mu.Unlock()
+	return ok && c != nil && sid != "" && stillBusy(c, sid)
+}
+
 // errTurnOver is Inject's answer once the turn cannot take a message.
 var errTurnOver = errors.New("opencode turn is over")
 
@@ -491,20 +504,20 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	}
 
 	// Subscribe before prompting, or the first frames are lost.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/event"), nil)
+	resp, err := subscribe(ctx, c)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(serverUser, c.password)
-	req.Header.Set("Accept", "text/event-stream")
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return fmt.Errorf("opencode server event stream: %w", err)
+	// The stream can be replaced (reconnect below): the watchdog and the
+	// deferred close act on whichever body is current.
+	var bodyMu sync.Mutex
+	body := resp.Body
+	closeBody := func() {
+		bodyMu.Lock()
+		_ = body.Close()
+		bodyMu.Unlock()
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opencode server event stream: %d", resp.StatusCode)
-	}
+	defer closeBody()
 
 	p.injMu.Lock()
 	p.mu.Lock()
@@ -537,6 +550,10 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 	var lastAct atomic.Int64
 	lastAct.Store(time.Now().UnixNano())
 	var silent atomic.Bool
+	// reconnecting: the stream dropped and wick is waiting to resubscribe
+	// to a session the server still runs. That pause is not the model's
+	// silence, so the watchdog leaves it alone.
+	var reconnecting atomic.Bool
 	stopWatch, watchDone := make(chan struct{}), make(chan struct{})
 	// The turn returns only once the watchdog is gone: an abort it already
 	// started must land before the next turn prompts this session, or it
@@ -551,16 +568,20 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 			case <-stopWatch:
 				return
 			case <-t.C:
+				if reconnecting.Load() {
+					lastAct.Store(time.Now().UnixNano())
+					continue
+				}
 				if time.Since(time.Unix(0, lastAct.Load())) > silentTurnTimeout {
 					silent.Store(true)
 					_ = abortSession(c, sid)
-					_ = resp.Body.Close()
+					closeBody()
 					return
 				}
 			}
 		}
 	}()
-	err = readSSE(resp.Body, func(ev sseEvent) bool {
+	onEvent := func(ev sseEvent) bool {
 		lastAct.Store(time.Now().UnixNano())
 		lines, done := tr.feed(ev)
 		p.mu.Lock()
@@ -574,7 +595,32 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		}
 		finished = done
 		return !done
-	})
+	}
+	cur := resp.Body
+	for {
+		err = readSSE(cur, onEvent)
+		if finished || silent.Load() || ctx.Err() != nil || p.wasKilled() {
+			break
+		}
+		// The stream ended but the turn did not. A dropped connection is
+		// not the end of the work: the server may still be running it.
+		reconnecting.Store(true)
+		next, done, rerr := p.reconnect(ctx, c, sid, tr)
+		reconnecting.Store(false)
+		lastAct.Store(time.Now().UnixNano())
+		if rerr != nil || done || next == nil {
+			if rerr != nil {
+				err = rerr
+			}
+			finished = done
+			break
+		}
+		bodyMu.Lock()
+		_ = body.Close()
+		body = next.Body
+		bodyMu.Unlock()
+		cur = next.Body
+	}
 	// silent first: a turn the watchdog aborted is not a clean one, even
 	// when its last frame raced the abort in.
 	if silent.Load() {
@@ -590,9 +636,142 @@ func (p *remoteProcess) turn(ctx context.Context, l *lease, t turnSpec) error {
 		return ctx.Err()
 	}
 	if err == nil {
-		err = errors.New("opencode server closed the event stream mid-turn")
+		err = errStreamClosed
 	}
 	return err
+}
+
+// errStreamClosed ends a turn whose event stream dropped and whose session
+// the server no longer runs, without a finished answer to show for it.
+var errStreamClosed = errors.New("opencode server closed the event stream mid-turn")
+
+// Reconnect bounds for a dropped event stream (vars: shortened in tests).
+// The wait doubles each attempt: 1s, 2s, 4s… so a server that is briefly
+// unreachable is waited out, and one that is gone is given up on.
+var (
+	reconnectBackoff  = time.Second
+	reconnectAttempts = 10
+)
+
+// subscribe opens GET /event.
+func subscribe(ctx context.Context, c *apiClient) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/event"), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(serverUser, c.password)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("opencode server event stream: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("opencode server event stream: %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// reconnect picks a turn back up after its event stream ended before the
+// turn did. While the server still runs the session, it resubscribes and
+// replays what the gap hid (resync); once the session is no longer running,
+// the stored parts say how the turn ended. It returns the new stream, or
+// done=true when the turn finished in the gap, or the error that ends it.
+func (p *remoteProcess) reconnect(ctx context.Context, c *apiClient, sid string, tr *translator) (*http.Response, bool, error) {
+	ended := func() (bool, error) {
+		p.resync(ctx, c, sid, tr)
+		if !tr.stopped {
+			return false, errStreamClosed
+		}
+		if p.moreInjected(c, sid) {
+			return false, nil // an injected prompt keeps it running
+		}
+		return true, nil
+	}
+	wait := reconnectBackoff
+	for attempt := 0; attempt < reconnectAttempts; attempt++ {
+		if !stillBusy(c, sid) {
+			if done, err := ended(); done || err != nil {
+				return nil, done, err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case <-time.After(wait):
+		}
+		wait *= 2
+		if p.wasKilled() {
+			return nil, false, nil
+		}
+		resp, err := subscribe(ctx, c)
+		if err != nil {
+			log.Warn().Err(err).Str("session", sid).Int("attempt", attempt+1).Msg("agents.opencode: event stream reconnect failed")
+			continue
+		}
+		// Subscribed first, then caught up: a part stored between the two
+		// arrives on both paths and is passed on once (translator.emitted).
+		p.resync(ctx, c, sid, tr)
+		if !stillBusy(c, sid) {
+			// It ended while we were away; the idle frame is not coming.
+			resp.Body.Close()
+			if done, err := ended(); done || err != nil {
+				return nil, done, err
+			}
+			continue
+		}
+		log.Info().Str("session", sid).Int("attempt", attempt+1).Msg("agents.opencode: event stream reconnected mid-turn")
+		return resp, false, nil
+	}
+	return nil, false, fmt.Errorf("opencode server event stream dropped mid-turn and did not come back after %d reconnect attempts", reconnectAttempts)
+}
+
+// resync passes on the parts of this turn the server stored while wick was
+// not listening: GET /session/{sid}/message, from the turn's first prompt
+// on, through the translator, which drops what was already passed on and
+// what is not finished yet.
+func (p *remoteProcess) resync(ctx context.Context, c *apiClient, sid string, tr *translator) {
+	var msgs []struct {
+		Info struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+		} `json:"info"`
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/session/"+sid+"/message", nil, &msgs); err != nil {
+		log.Warn().Err(err).Str("session", sid).Msg("agents.opencode: resync after a dropped stream failed")
+		return
+	}
+	// The turn starts at its prompt: the first user message the stream
+	// showed, else the last one stored. Earlier turns are history.
+	start, last := -1, -1
+	for i, m := range msgs {
+		if m.Info.Role != "user" {
+			continue
+		}
+		last = i
+		if start < 0 && tr.userMsgs[m.Info.ID] {
+			start = i
+		}
+	}
+	if start < 0 {
+		start = last
+	}
+	if start < 0 {
+		return
+	}
+	for _, m := range msgs[start+1:] {
+		if m.Info.Role != "assistant" {
+			continue
+		}
+		for _, part := range m.Parts {
+			props, _ := json.Marshal(map[string]json.RawMessage{"part": part})
+			lines, _ := tr.feed(sseEvent{Type: "message.part.updated", Properties: props})
+			for _, ln := range lines {
+				p.emit(ln)
+			}
+		}
+	}
 }
 
 // moreInjected is called on the idle that would end the turn. With no
