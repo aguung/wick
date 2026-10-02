@@ -70,6 +70,16 @@ type translator struct {
 	// error. An idle with nothing before it is a run opencode dropped
 	// without a word (seen with a cwd that does not exist).
 	replied bool
+	// running: tool calls already announced as started (callID), so each
+	// is announced once however many updates the server streams for it.
+	running map[string]bool
+	// emitted: parts already passed on (part id). A resync after a dropped
+	// stream replays the session's stored parts, and each must reach the
+	// agent once whichever path brought it.
+	emitted map[string]bool
+	// stopped: the last step seen finished with reason "stop" — the model's
+	// answer is complete even if the idle that ends the turn was missed.
+	stopped bool
 }
 
 // userCount is how many of this session's user messages the stream has
@@ -77,14 +87,17 @@ type translator struct {
 func (t *translator) userCount() int { return len(t.userMsgs) }
 
 func newTranslator(sessionID string) *translator {
-	return &translator{sessionID: sessionID, now: time.Now, userMsgs: map[string]bool{}}
+	return &translator{sessionID: sessionID, now: time.Now, userMsgs: map[string]bool{}, running: map[string]bool{}, emitted: map[string]bool{}}
 }
 
 type busPart struct {
+	ID        string `json:"id"`
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	MessageID string `json:"messageID"`
+	CallID    string `json:"callID"`
 	Synthetic bool   `json:"synthetic"`
+	Reason    string `json:"reason"`
 	Time      *struct {
 		End int64 `json:"end"`
 	} `json:"time"`
@@ -123,11 +136,20 @@ func (t *translator) feed(ev sseEvent) (lines [][]byte, done bool) {
 		case "tool":
 			if part.State != nil && (part.State.Status == "completed" || part.State.Status == "error") {
 				kind = "tool_use"
+			} else if part.State != nil && part.State.Status == "running" && part.CallID != "" && !t.running[part.CallID] {
+				// A tool is only reported once it has finished, so a long
+				// one (a sub-agent, a build) leaves the stream silent and
+				// looks like a stalled turn. Announce the start, once, so
+				// the agent knows a tool is in flight.
+				t.running[part.CallID] = true
+				kind = "tool_running"
 			}
 		case "step-start":
 			kind = "step_start"
+			t.stopped = false
 		case "step-finish":
 			kind = "step_finish"
+			t.stopped = part.Reason == "stop"
 		case "text":
 			if part.Time != nil && part.Time.End != 0 && !part.Synthetic {
 				kind = "text"
@@ -136,6 +158,12 @@ func (t *translator) feed(ev sseEvent) (lines [][]byte, done bool) {
 			if part.Time != nil && part.Time.End != 0 {
 				kind = "reasoning"
 			}
+		}
+		if kind != "" && kind != "tool_running" && part.ID != "" {
+			if t.emitted[part.ID] {
+				return nil, false
+			}
+			t.emitted[part.ID] = true
 		}
 		if kind != "" {
 			t.started = true

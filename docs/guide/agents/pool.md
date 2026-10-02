@@ -235,6 +235,43 @@ When the agent subprocess exits ([pool.go: `onAgentExit`](https://github.com/yog
 
 The body runs under `p.wg` so `Stop()` can wait for tail work to finish before tearing down.
 
+## Stuck and silent turns
+
+A turn can go quiet without being dead: a long `bash`, a build, a sub-agent. The idle timer ([`agent.go`](https://github.com/yogasw/wick/blob/master/internal/agents/provider/agent.go): `idleKill`) must tell that apart from a hung one, and whichever way a turn ends, the person watching has to see what it had done and why it stopped. This section records why it works the way it does, because the first version of each rule below was learned from a real stuck session.
+
+### What went wrong (2026-10-02, opencode session stuck "running")
+
+1. opencode reports a tool only once it has **finished**. A long tool or a `task` sub-agent therefore looked like a silent turn, and the 120 s idle timer killed it. The sub-agent runs in its *own* opencode session, whose frames the translator drops (it filters on session id), so nothing told wick it was still working.
+2. The kill closes the stdout pipe, and the reader reached EOF **before** the idle goroutine recorded why. The exit was filed as `ExitClean`. `Pool.HandleExit` treats a clean exit of a respawn provider (opencode, omp, codex) as a *turn boundary* and returns early: session status stayed `running`, the slot was not released, and `inflight.jsonl` was only merged into `conversation.jsonl` at the next wick boot. The UI showed a spinner with no answer.
+
+### Rules
+
+| Rule | Where | Why |
+|---|---|---|
+| An idle kill is always recorded as `ExitIdle` (`idleKilled` is set **before** `Kill`) | `agent.go` `idleKill` + the `drained` path | The kill is what closes the pipe; without the flag the reader wins the race and reports `ExitClean` |
+| A turn killed mid-flight is flushed to `conversation.jsonl` with the cause ("no output for N s … idle timer stopped it") | `idleKill` → `store.Flush` | The reader sees the partial work and the reason; between turns (state idle) nothing is written |
+| The idle timer asks the process first (`BusyReporter.Busy()`); a process that says it is still working is left alone | `spawner.go`, `agent.go` `procBusy` | Silence on the stream is not death when the work runs on a server wick can ask |
+| opencode announces a started tool (`tool_running` frame → `ToolUse`) and the finished frame only closes it | `opencode/translate.go`, `event/opencode.go` | Lets the agent hold its idle timer while a tool runs; no duplicate tool call in the transcript |
+| opencode: a dropped `/event` stream is reconnected while the session is still busy (backoff 1, 2, 4 … s, max 10 tries), missed parts are replayed from `GET /session/{id}/message`, each passed on once | `opencode/remote.go` `reconnect`, `resync` | The server keeps running the turn when the connection drops; ending the turn there threw the work away |
+
+### Per provider
+
+| | claude | codex | gemini | omp | opencode |
+|---|---|---|---|---|---|
+| `ExitIdle` always recorded, status back to idle, partial turn flushed with the cause | yes | yes | yes | yes | yes |
+| Idle timer asks the process (`Busy()`) | no | no | no | yes (`get_state`: streaming, compacting or pending async work) | yes (`GET /session/status`) |
+| Started-tool event, so a long tool is not silence | not changed (the agent loop pauses the idle timer from `ToolUse` to `ToolResult`; whether the claude parser reports tool starts early was not re-checked) | not changed (not re-checked) | not changed (not re-checked) | already sent (`tool_execution_start`) | yes |
+| Reconnect and resync | no | no | no | not applicable | yes |
+
+- **omp** talks to its child over stdio RPC. A dropped pipe *is* a dead process, so "connection lost but process alive" cannot happen and there is nothing to reconnect to.
+- **claude, codex, gemini** run the turn inside the process itself, so it cannot be re-attached. After an idle kill the next user message respawns with `--resume`, as for any idle reap; wick does not replay the cut-off turn by itself.
+- The reconnect budget (about 17 minutes in total) is deliberately long: turns of 30 minutes are normal here. A server that is *gone* is detected at once (`/session/status` fails), not after the full budget.
+- The silence watchdog in `opencode/remote.go` (`silentTurnTimeout`) pauses during a reconnect, because that gap is not the model's silence.
+
+### Not done
+
+Activity-based liveness for claude, codex and gemini (for example a child process still running or CPU still moving) and an automatic resume after an idle kill. Both need a decision on how often a turn may be repeated.
+
 ## Resume flow
 
 The point of `CLISessionID` is to make the kill-revive cycle invisible to the user.
