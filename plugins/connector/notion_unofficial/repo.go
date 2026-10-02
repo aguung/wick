@@ -1298,6 +1298,12 @@ func (cl *v3Client) deleteBlock(parentID, blockID string) error {
 type propSet struct {
 	ID    string
 	Value json.RawMessage
+	// Relation marks a relation column. Notion refuses a relation written in the
+	// same transaction that creates the row (400 "User does not have sufficient
+	// permissions for association_relation" — the server also has to update the
+	// related page's back-reference and does not treat the half-built row as
+	// writable yet), so createPage writes these in a second transaction.
+	Relation bool
 }
 
 // createPage creates a page as a child of parentID (a page block or a
@@ -1337,7 +1343,12 @@ func (cl *v3Client) createPage(parentID, parentTable, title string, extraProps [
 	// working throughout the 2026-09-28 outage that killed every edit of an
 	// EXISTING row. Do not "make it consistent" with propOp without testing a
 	// live create; the asymmetry is the server's, not an oversight here.
+	var relations []propSet
 	for _, p := range extraProps {
+		if p.Relation {
+			relations = append(relations, p)
+			continue
+		}
 		ops = append(ops, op("block", newID, spaceID, []any{"properties", p.ID}, "set", p.Value))
 	}
 	if parentTable == "block" {
@@ -1345,6 +1356,15 @@ func (cl *v3Client) createPage(parentID, parentTable, title string, extraProps [
 	}
 	if err := cl.saveTransactions(spaceID, ops); err != nil {
 		return "", err
+	}
+	// Relations go in a second transaction, once the row exists, with the same
+	// high-level op an edit uses (the shape update_page_properties already
+	// writes successfully). Verified live 2026-10-02: create-without-relation
+	// then update-relation works; relation inside the create transaction 400s.
+	if len(relations) > 0 {
+		if err := cl.saveTransactions(spaceID, propOps(newID, spaceID, relations)); err != nil {
+			return "", fmt.Errorf("row %s was created but its relation could not be set: %w", newID, err)
+		}
 	}
 	return newID, nil
 }
@@ -1386,7 +1406,7 @@ func resolveProps(props map[string]string, nameToID, idToType map[string]string)
 			skipped = append(skipped, name+" ("+idToType[id]+" is read-only)")
 			continue
 		}
-		sets = append(sets, propSet{ID: id, Value: v})
+		sets = append(sets, propSet{ID: id, Value: v, Relation: idToType[id] == "relation"})
 	}
 	return sets, skipped
 }
