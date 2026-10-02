@@ -920,6 +920,36 @@ func (a *Agent) PID() int {
 	return a.proc.Pid()
 }
 
+// ProcessState returns the current subprocess's OS pid and whether any
+// spawn is attached, read together under one lock so a respawn between
+// them cannot pair one process's pid with another's presence. attached
+// stays true for transports with no OS pid of their own — an opencode turn
+// on the shared server, an omp RPC turn, the in-process wick provider all
+// report pid 0 while the turn is very much alive. The handover drain uses
+// the pair to tell "no pid because nothing was spawned" apart from "no pid
+// because the transport has none".
+func (a *Agent) ProcessState() (pid int, attached bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil {
+		return 0, false
+	}
+	return a.proc.Pid(), true
+}
+
+// TransportEnded reports whether a pid-less transport has already closed
+// its turn on its own side — for opencode, the remote turn's done channel.
+// The handover drain uses it to tell a ghost (lifecycle still "working",
+// nothing left to finish it) from a turn that is genuinely running.
+// False for transports that cannot say, and whenever nothing is attached.
+func (a *Agent) TransportEnded() bool {
+	a.mu.Lock()
+	proc := a.proc
+	a.mu.Unlock()
+	te, ok := proc.(interface{ TurnEnded() bool })
+	return ok && te.TurnEnded()
+}
+
 // QueuedCount returns how many messages are waiting to run after the
 // current turn (RespawnQueue providers). 0 for append-mode agents.
 // Surfaced in the Process panel so the operator sees the backlog.
