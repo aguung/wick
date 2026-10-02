@@ -222,6 +222,17 @@ func (p *remoteProcess) Pid() int              { return 0 }
 func (p *remoteProcess) Binary() string        { return p.bin }
 func (p *remoteProcess) Argv() []string        { return append([]string(nil), p.argv...) }
 
+// TurnEnded reports that this turn is over on the server side: done is
+// closed once the stream has finished, whatever the reader made of it.
+func (p *remoteProcess) TurnEnded() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *remoteProcess) Wait() error {
 	<-p.done
 	p.mu.Lock()
