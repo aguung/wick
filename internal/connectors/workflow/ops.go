@@ -327,9 +327,9 @@ func (h *handlers) apply(c *connector.Ctx) (any, error) {
 // mintedID tells the caller which id an id-less add_node step received;
 // without it the new node could not be referenced by any later call.
 type mintedID struct {
-	Op    int    `json:"op"`
-	Label string `json:"label,omitempty"`
-	ID    string `json:"id"`
+	OpIndex int    `json:"op_index"` // position of the add_node step in the ops array
+	Label   string `json:"label,omitempty"`
+	ID      string `json:"id"`
 }
 
 // prepareApplyOps checks a batch before it reaches the canvas and mints ids
@@ -347,7 +347,7 @@ func prepareApplyOps(ops []wfcanvas.EditOp) ([]mintedID, error) {
 		case "add_node":
 			if n := ops[i].Node; n != nil && n.ID == "" {
 				n.ID = uuid.NewString()
-				minted = append(minted, mintedID{Op: i, Label: n.Label, ID: n.ID})
+				minted = append(minted, mintedID{OpIndex: i, Label: n.Label, ID: n.ID})
 			}
 		}
 	}

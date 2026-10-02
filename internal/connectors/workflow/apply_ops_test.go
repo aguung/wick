@@ -35,7 +35,7 @@ func TestPrepareApplyOps_ReportsMintedIDs(t *testing.T) {
 	if ops[0].Node.ID != "keep" {
 		t.Errorf("explicit id was changed to %q", ops[0].Node.ID)
 	}
-	if len(minted) != 1 || minted[0].Op != 1 || minted[0].Label != "done" || minted[0].ID == "" || minted[0].ID != ops[1].Node.ID {
+	if len(minted) != 1 || minted[0].OpIndex != 1 || minted[0].Label != "done" || minted[0].ID == "" || minted[0].ID != ops[1].Node.ID {
 		t.Errorf("unexpected minted report %+v (node id %q)", minted, ops[1].Node.ID)
 	}
 }
