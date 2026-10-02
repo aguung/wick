@@ -139,6 +139,8 @@ These keep a workflow readable by the next person — human or AI — who opens 
    - Steps run in order and later steps see earlier ones, so add a node and connect, patch and place it in the same call.
    - It is all-or-nothing: if one step fails nothing is saved, and the error names the step (`ops[3] connect: …`). Fix that step and resend the batch.
    - The draft is validated once, on the end state, so a node that is only reachable after a later `connect` is fine.
+   - Give every `add_node` an explicit `id` so later steps (and later calls) can reference it. An id-less node gets a minted UUID, reported back under `minted` as `{op, label, id}`.
+   - Deleting is not batched: `delete_node` is refused, because deletion is a destructive op an admin can switch off. Use `workflow_delete_node` for it, separately.
 
    The order of work that keeps an edit cheap:
 

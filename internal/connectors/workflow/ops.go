@@ -295,11 +295,9 @@ func (h *handlers) apply(c *connector.Ctx) (any, error) {
 	if err := parseJSON(c.Input("ops"), &ops); err != nil {
 		return nil, fmt.Errorf("ops: %w", err)
 	}
-	for i := range ops {
-		// Same contract as workflow_add_node: an id-less node gets a minted one.
-		if ops[i].Op == "add_node" && ops[i].Node != nil && ops[i].Node.ID == "" {
-			ops[i].Node.ID = uuid.NewString()
-		}
+	minted, err := prepareApplyOps(ops)
+	if err != nil {
+		return nil, err
 	}
 	w, err := h.ops.Apply(c.Input("id"), ops)
 	if err != nil {
@@ -313,6 +311,9 @@ func (h *handlers) apply(c *connector.Ctx) (any, error) {
 		"triggers": len(w.Triggers),
 		"draft":    true,
 	}
+	if len(minted) > 0 {
+		out["minted"] = minted
+	}
 	if vr := h.ops.ValidateRich(c.Input("id")); len(vr.Warnings) > 0 {
 		msgs := make([]string, 0, len(vr.Warnings))
 		for _, warn := range vr.Warnings {
@@ -321,6 +322,36 @@ func (h *handlers) apply(c *connector.Ctx) (any, error) {
 		out["warnings"] = msgs
 	}
 	return out, nil
+}
+
+// mintedID tells the caller which id an id-less add_node step received;
+// without it the new node could not be referenced by any later call.
+type mintedID struct {
+	Op    int    `json:"op"`
+	Label string `json:"label,omitempty"`
+	ID    string `json:"id"`
+}
+
+// prepareApplyOps checks a batch before it reaches the canvas and mints ids
+// for id-less add_node steps, the same contract as workflow_add_node.
+//
+// delete_node is refused here: workflow_delete_node is a destructive op an
+// admin can leave switched off, and a non-destructive batch op that could
+// delete anyway would make that gate meaningless.
+func prepareApplyOps(ops []wfcanvas.EditOp) ([]mintedID, error) {
+	var minted []mintedID
+	for i := range ops {
+		switch ops[i].Op {
+		case "delete_node":
+			return nil, fmt.Errorf("ops[%d] delete_node: not allowed in a batch — deleting is destructive, use workflow_delete_node", i)
+		case "add_node":
+			if n := ops[i].Node; n != nil && n.ID == "" {
+				n.ID = uuid.NewString()
+				minted = append(minted, mintedID{Op: i, Label: n.Label, ID: n.ID})
+			}
+		}
+	}
+	return minted, nil
 }
 
 func (h *handlers) autoLayout(c *connector.Ctx) (any, error) {
